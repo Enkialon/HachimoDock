@@ -56,7 +56,7 @@
     "componentCount": 27,
     "physicalDeviceValidationThisPackagingRun": false,
     "windowsRuntimeValidationThisPackagingRun": false,
-    "scope": "The macOS and Windows installer payloads and four factory kits were inspected. The macOS disk image and app passed Developer ID and Apple notarization checks. The Windows installer is unsigned."
+    "scope": "The macOS and Windows installer payloads and four factory kits were inspected. The macOS disk image and app passed Developer ID and Apple notarization checks. The Windows installer is unsigned. The replacement WiFi6 v1 factory kit was verified by full erase, complete write and first boot on an ESP32-P4 v1.3 board. The desktop installers still contain the original WiFi6 v1 OTA image."
   },
   "artifacts": [
     {
@@ -72,10 +72,10 @@
       "sha256": "1ac7ac34e2d4fb2ad49d9cedea60c5c4cde867e5238061b01294eee6bdf46cfa"
     },
     {
-      "file": "HachimoDock-P4-v1_0.7.103-p4-r229-wifi6_Factory-Flasher.zip",
+      "file": "HachimoDock-P4-v1_0.7.103-p4-r229-wifi6-h264fix_Factory-Flasher.zip",
       "role": "factory-v1",
-      "bytes": 26393009,
-      "sha256": "dbb19192a92d8961cbcacf54390100dfdd2cdd5a6234b6d27aa2df87ee6c18a1"
+      "bytes": 26396684,
+      "sha256": "9cf09b833ece80581a8df34d013c9d0cc7e7db7dfc5bb1efdf415028096a0f6e"
     },
     {
       "file": "HachimoDock-P4-v3_0.7.103-p4-r229-wifi6_Factory-Flasher.zip",
@@ -98,8 +98,8 @@
     {
       "file": "SHA256SUMS",
       "role": "checksums",
-      "bytes": 712,
-      "sha256": "aa42298c1e91cc6cb2bcaa43aa4582f3af090a34fd6672184fea0e77c2811d9f"
+      "bytes": 720,
+      "sha256": "e9d23af136da5be76ad5cfde586b738017b15d5c8ea88d3c92f5ae6231d6123e"
     }
   ]
 }
