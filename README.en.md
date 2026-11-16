@@ -8,11 +8,11 @@ HachimoDock is a desktop interface for AI Agents. A Windows/macOS manager and an
 
 | Component | Version | Download |
 | --- | --- | --- |
-| Windows x64 | **0.1.230** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.230/HachimiDock_0.1.230_Windows-x64-setup.exe) |
-| macOS (Apple silicon) | **0.1.230** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.230/HachimiDock_0.1.230_macOS-arm64.dmg) |
-| Device firmware | **0.7.103-p4-r229** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.230#设备固件) |
+| Windows x64 | **0.1.232** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/HachimiDock_0.1.232_Windows-x64-setup.exe) |
+| macOS (Apple silicon) | **0.1.232** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/HachimiDock_0.1.232_macOS-arm64.dmg) |
+| Device firmware | **0.7.103-p4-r272 / R273** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.232#设备固件) |
 
-Version 0.1.230 adds a dedicated device settings page and local network pairing. It updates PetUI authoring, WASM previews, component sync and community publishing, and adds a combined ideas and tasks component and offline audio for WASM components. The desktop client includes OTA firmware for WiFi6 and Pico boards with ESP32-P4 v1 or v3 chips. Verify downloads against `SHA256SUMS` on the [release page](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.230). Intel Mac and Linux installers are not provided. See the release notes for how the public source relates to the binaries.
+Version 0.1.232 supports changing the followed agent over paired Wi-Fi and shows the active connection in the device dashboard. The desktop client prefers USB when connected. WiFi6 v3 firmware adds custom Bluetooth shortcuts. Both installers include OTA firmware for the WiFi6 and Pico boards with ESP32-P4 v1 and v3 chips. WiFi6 v1 uses R273 with an H.264 compatibility fix, while the other variants use R272. Verify downloads with [SHA256SUMS](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/SHA256SUMS). Prebuilt installers support Apple silicon and Windows x64. See the release notes for the public source baseline.
 
 Complete flashing kits are for first installation or factory recovery. Match both the board model and the chip revision; **WiFi6 and Pico, and v1 and v3, are not interchangeable**. A complete flash erases settings, appearances and components. Routine client OTA updates only the application and does not repartition existing devices. See [firmware build and flashing](firmware/BUILD.md).
 
