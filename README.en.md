@@ -39,6 +39,8 @@ SW1 short press and joystick centre confirm; SW2 short press switches pet/compon
 
 ## Hardware and development
 
+The original display is currently out of stock. Community contributor fosen provides an [alternative 2.8-inch touch-display adapter project](https://oshwhub.com/fosen/project_tzekpmhv), including adapter design, a matching enclosure model, HD28091C40-V1 mechanical drawings and display initialization data. Use its matching panel, adapter, cable, enclosure and configuration. The replacement panel has not yet been tested with this project’s firmware; the same diagonal size does not establish drop-in compatibility.
+
 The paired hardware uses ESP32-P4, 32 MiB Flash, 32 MiB PSRAM and a 480×640 MIPI-DSI panel. Components use a rotated 640×480 logical canvas. Connect the display to **DSI**, not CSI, with power disconnected. Consult the [hardware project](https://oshwhub.com/eda_gqvzlprk/project_cnbmkbjc#3-%E7%A1%AC%E4%BB%B6%E5%A4%8D%E5%88%BB) before substituting parts.
 
 - [Desktop source and build guide](pc/README.md)
