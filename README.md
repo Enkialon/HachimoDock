@@ -40,13 +40,15 @@ HachimoDock（哈基米机）是面向 AI Agent 的桌面交互终端，由 Wind
 
 | 项目 | 版本 | 下载 |
 | --- | --- | --- |
-| Windows x64 | **0.1.232** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/HachimiDock_0.1.232_Windows-x64-setup.exe) |
-| macOS Apple silicon | **0.1.232** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/HachimiDock_0.1.232_macOS-arm64.dmg) |
-| 配套设备固件 | **0.7.103-p4-r272 / R273** | [WiFi6 / Pico 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.232#设备固件) |
+| Windows x64 | **0.1.237** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_Windows-x64-setup.exe) |
+| macOS Apple silicon | **0.1.237** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_macOS-arm64.dmg) |
+| 配套设备固件 | **0.7.103-p4-r284 / R284** | [WiFi6 / Pico 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) |
 
-0.1.232 支持已配对设备通过 Wi‑Fi 切换 Agent 跟随，控制台显示当前连接方式，USB 在线时优先使用 USB。WiFi6 v3 固件支持自定义蓝牙快捷键。安装包内置 WiFi6 和 Pico 两种板型的 v1、v3 OTA 固件，其中 WiFi6 v1 使用带 H.264 兼容修复的 R273，其余为 R272。下载后请核对 [SHA256SUMS](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/SHA256SUMS)。
+更新说明见 [0.1.237 发布页](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237)。客户端内置 WiFi6 与 Pico 的 v1、v3 四种 R284 OTA 固件；Wi-Fi 按键与对话状态同步需要同时更新客户端和固件。Wi-Fi 配对后可脱离电脑 USB 数据连接，设备仍需供电，电脑协同功能仍需管理端运行；Pico 固件不包含 Wi-Fi／蓝牙。下载后请核对 [SHA256SUMS](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/SHA256SUMS)。
 
-当前预编译客户端支持 Apple silicon Mac 和 Windows x64；不提供 Intel Mac 或 Linux 安装包。本版 macOS 安装包已使用 Developer ID 签名并通过 Apple 公证。Windows 安装器未做数字签名，首次运行可能出现系统提示。公开源码与安装包的对应关系见发布说明；[PC 构建](pc/README.md)和[固件构建](firmware/BUILD.md)文档以当前源码为准。
+完整烧录包用于新设备或恢复出厂，会清除设置、形象和组件；请同时核对板型和芯片修订版，WiFi6 与 Pico、v1 与 v3 不可混刷。日常升级优先使用客户端 OTA，独立 OTA ZIP 不能替代完整烧录包。
+
+当前预编译客户端支持 Apple silicon Mac 和 Windows x64；不提供 Intel Mac 或 Linux 安装包。macOS 包使用 Developer ID 签名并通过 Apple 公证；Windows 安装器未做 Authenticode 签名。发行包不内置服务 Key。GitHub 自动生成的源码归档对应公开仓库标签，并非本次二进制的构建源码快照；[PC 构建](pc/README.md)和[固件构建](firmware/BUILD.md)文档以当前公开源码为准。
 
 ## 核心能力
 
