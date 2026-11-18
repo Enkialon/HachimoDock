@@ -69,12 +69,6 @@
       "sha256": "1ea273645605914d5f39e8de00d985dc938bc3b94c245c1014598791cd4522f0"
     },
     {
-      "file": "HachimiDock_0.1.237_P4-OTA.zip",
-      "role": "ota",
-      "bytes": 7766551,
-      "sha256": "9176f8399ba20b331859342ec399d4b282c8fbc90c517d4fac8129dc3184dcb7"
-    },
-    {
       "file": "HachimiDock_0.1.237_pico-v1_FULL-FACTORY.zip",
       "role": "factory-v1-pico",
       "bytes": 11936321,
@@ -97,24 +91,6 @@
       "role": "factory-v3",
       "bytes": 12249816,
       "sha256": "f40854151bfacd4c9b97aa508c2912d90d1ec679ece81c785719ecff14c07bd4"
-    },
-    {
-      "file": "SHA256SUMS",
-      "role": "checksums",
-      "bytes": 753,
-      "sha256": "dbeaabbe0acc266f2368b7ce8f27890d8b0158ba7d1b1dc2889a5cf6c29f0b1f"
-    },
-    {
-      "file": "PUBLIC-RELEASE-MANIFEST.json",
-      "role": "public-manifest",
-      "bytes": 2118,
-      "sha256": "572473a69ba06762e555060b4649f589342c8105504fdbe619319ee159629750"
-    },
-    {
-      "file": "FACTORY-MANIFEST.json",
-      "role": "factory-manifest",
-      "bytes": 3590,
-      "sha256": "5d1485e262e5bde81b9a6c7c563682a0e9e94fe75f6ec0bb7bb7f9d88fa192bc"
     }
   ]
 }
