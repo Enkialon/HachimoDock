@@ -111,7 +111,7 @@ static void pet_p4_native_usb_send_json_line(const char*line,void*ctx){(void)lin
         code += function(native,name)+'\n'
     code += function(protocol,'asset_phase_send_current')+'\n'
     for name in ('send_topic_payload','send_protocol_ack','send_widget_ack',
-                 'send_widget_inventory','handle_widget_topic','pet_p4_protocol_source_valid'):
+                 'pet_p4_widget_inventory','send_widget_inventory','handle_widget_topic','pet_p4_protocol_source_valid'):
         code += function(protocol,name)+'\n'
     # The real outer representation/envelope parser prefix, then only its real
     # widget delegate; unrelated hardware dispatch branches are not compiled.
