@@ -4,6 +4,7 @@ Uses the project's locked PlatformIO environments. No device discovery, upload,
 fixture substitutions, ignored test selection or runtime acceptance claims.
 """
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -38,6 +39,22 @@ def check_checkout_inputs(project):
                if name not in tracked or not (project / name).is_file()]
     if missing:
         raise SystemExit("Required SDK inputs must be tracked and present: " + ", ".join(missing))
+
+
+@contextmanager
+def preserve_sdkconfig(project, target):
+    # ESP-IDF rewrites this input during configure. Keep the actual generated
+    # headers/database, but restore the reviewed source input byte-for-byte so
+    # later source-profile checks see the checkout, not SDK-normalized output.
+    path = project / f"sdkconfig.{target}"
+    original = path.read_bytes() if path.exists() else None
+    try:
+        yield
+    finally:
+        if original is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.write_bytes(original)
 
 
 def prepare_wamr(cache, archive=None):
@@ -111,8 +128,9 @@ def main():
 
     def configure(family, target):
         env = {**os.environ, "PLATFORMIO_CORE_DIR": str(cores[family]), "WAMR_ROOT": str(wamr)}
-        subprocess.run([sys.executable, "-m", "platformio", "run", "--project-dir", str(project),
-                        "--environment", target, "--target", "compiledb", "--disable-auto-clean"], env=env, check=True)
+        with preserve_sdkconfig(project, target):
+            subprocess.run([sys.executable, "-m", "platformio", "run", "--project-dir", str(project),
+                            "--environment", target, "--target", "compiledb", "--disable-auto-clean"], env=env, check=True)
 
     for family, core in cores.items():
         target = "esp32_p4_program_public_candidate" + ("_v3" if family == "v3" else "")

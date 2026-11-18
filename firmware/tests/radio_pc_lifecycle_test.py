@@ -152,16 +152,9 @@ def test_radio_pc_fresh_visibility_format_handoff_and_owner(tmp_path):
         cargo = str(candidates[0]) if candidates else None
     if not cargo:
         pytest.skip("Rust toolchain required for production radio host tests")
-    (tmp_path/"src").mkdir()
-    (tmp_path/"src/lib.rs").write_text(fixture())
-    (tmp_path/"Cargo.toml").write_text('''[package]
-name="radio-lifecycle-host"
-version="0.0.0"
-edition="2021"
-[dependencies]
-serde={version="1",features=["derive"]}
-serde_json="1"
-tempfile="3"
-''')
+    harness = Path(__file__).with_name("radio_pc_lifecycle_harness")
+    for name in ("Cargo.toml", "Cargo.lock"):
+        shutil.copyfile(harness/name, tmp_path/name)
+    (tmp_path/"generated.rs").write_text(fixture())
     env = dict(os.environ, PATH=str(Path(cargo).parent)+os.pathsep+os.environ.get("PATH", ""))
-    subprocess.run([cargo,"test","--offline","--manifest-path",str(tmp_path/"Cargo.toml"),"--","--nocapture"], env=env, check=True, timeout=120)
+    subprocess.run([cargo,"test","--offline","--locked","--manifest-path",str(tmp_path/"Cargo.toml"),"--","--nocapture"], env=env, check=True, timeout=120)

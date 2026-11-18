@@ -76,6 +76,8 @@ jobs:
             ${{ runner.temp }}/p4-v3-core
             ${{ runner.temp }}/p4-ci-inputs/*.tar.gz
           key: p4-sdk-${{ runner.os }}-${{ hashFiles('firmware/platformio.ini', 'firmware/dependencies*.lock', 'firmware/tools/prepare_ci_sdk.py') }}
+      - name: Fetch only locked radio host harness dependencies
+        run: cargo fetch --locked --target x86_64-unknown-linux-gnu --manifest-path firmware/tests/radio_pc_lifecycle_harness/Cargo.toml
       - run: python -m pytest firmware/tests -q
       - run: python firmware/tests/protocol_contract_test.py
       - run: python firmware/tools/build_builtin_bundle.py --check

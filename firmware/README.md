@@ -119,6 +119,17 @@ ESP32-P4-WIFI6-M 的 M 表示焊接排针，不代表芯片版本。v1 与 v3 �
 
 串口救援应按 [构建与烧录指南](BUILD.md) 选择实际板型与芯片；先核对设备分区布局，并在写入后核验版本和镜像。不要将旧工具的通用 v1 默认值当作四板通用目标。
 
+### Windows 通用开发板与旧分区维护
+
+以下 PowerShell 命令适用于 `esp32_p4_evboard` 通用开发板。从 `firmware` 目录运行，先核对板型、芯片、分区表和端口。WiFi6 或 Pico 成品板请选对应的完整烧录包或客户端 OTA。
+
+```powershell
+.\tools\p4.ps1 build
+.\tools\p4.ps1 flash -Port COM5
+```
+
+如需将兼容的早期通用开发板恢复至出厂状态，先备份设备数据，再使用 `.\tools\p4.ps1 factory-flash -Port COM5 -FactoryReset`。仍使用旧版单应用分区和 16 MiB SPIFFS 的通用开发板可用 `.\tools\migrate_to_ab.ps1 -Port COM5 -FactoryReset` 迁移。工具会先备份旧 SPIFFS，再执行完整烧录。旧文件系统不会原样写回较小的新分区。
+
 ### 首次烧录 / 恢复出厂
 
 首次安装应使用**完整烧录包**，不能只刷应用分区的 `firmware.bin`。完整包包含引导程序、分区表、固件、OTA 元数据、西高地形象、内置组件、校验清单及烧录工具。

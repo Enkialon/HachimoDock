@@ -15,6 +15,7 @@ def test_trusted_connection_and_exact_image_own_wireless_ota(tmp_path):
     )
     test = tmp_path / "test.c"
     test.write_text(r'''
+#define _POSIX_C_SOURCE 200809L
 #include "pet_p4_wireless_ota.h"
 #include <assert.h>
 #include <stdio.h>

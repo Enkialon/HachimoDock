@@ -39,3 +39,36 @@ def test_sdk_defaults_must_survive_a_clean_checkout(tmp_path, monkeypatch, state
     with pytest.raises(SystemExit, match=missing):
         module.main()
     assert not (tmp_path / "ci-env").exists()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("fails", [False, True])
+def test_sdk_configure_restores_exact_input_and_keeps_generated_context(tmp_path, monkeypatch, existing, fails):
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    monkeypatch.syspath_prepend(str(tools))
+    spec = importlib.util.spec_from_file_location("ci_sdk_restore", tools / "prepare_ci_sdk.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = "esp32_p4_program_public_candidate_v3"
+    config = tmp_path / f"sdkconfig.{target}"
+    original = b"# Reviewed input\r\nCONFIG_FLASH_SIZE=32\r\n"
+    if existing:
+        config.write_bytes(original)
+    generated = tmp_path / ".pio/build" / target / "config/sdkconfig.h"
+    generated.parent.mkdir(parents=True)
+    sdk_header = b"/* actual generated context remains available */\n"
+    def configure():
+        with module.preserve_sdkconfig(tmp_path, target):
+            config.write_bytes(b"# normalized by SDK\nCONFIG_FLASH_SIZE=32\n")
+            generated.write_bytes(sdk_header)
+            if fails:
+                raise subprocess.CalledProcessError(1, ["platformio", "compiledb"])
+    if fails:
+        with pytest.raises(subprocess.CalledProcessError):
+            configure()
+    else:
+        configure()
+    assert config.exists() == existing
+    if existing:
+        assert config.read_bytes() == original
+    assert generated.read_bytes() == sdk_header
