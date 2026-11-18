@@ -12,11 +12,31 @@ use sha2::{Digest, Sha256};
 use std::{
     io::Write,
     net::{Shutdown, TcpStream},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
 const MODE: u8 = 12;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(4);
+
+// Wi-Fi status identifies the board family. Offer a version comparison only
+// when both bundled chip variants agree; chip selection remains in the updater.
+pub(super) fn bundled_wifi6_version(app: &tauri::AppHandle) -> Option<&'static str> {
+    static VERSION: OnceLock<Option<String>> = OnceLock::new();
+    VERSION.get_or_init(|| {
+        let board = P4BoardModel::Wifi6;
+        let inspect = |target| {
+            let path = crate::bundled_p4_firmware_path(
+                app, usb_serial::bundled_resource_for_device(board, target),
+            ).ok()?;
+            let info = usb_serial::inspect_firmware_image(&path, target).ok()?;
+            board.image_version_matches(&info.version).then_some(info.version)
+        };
+        let v1 = inspect(P4ChipTarget::LegacyV1)?;
+        let v3 = inspect(P4ChipTarget::Revision(302))?;
+        (v1 == v3).then_some(v1)
+    }).as_deref()
+}
 
 struct Link {
     stream: TcpStream,

@@ -18,87 +18,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {COMPONENT_CONTROL_OPTIONS,componentControlOptionAllowed} from "./component-center/button-config.js";
-import {previewFormCapabilityAccepts,previewCanvasCapabilityAccepts} from "./component-center/preview-lifecycle.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 const srcDir = dirname(fileURLToPath(import.meta.url));
 
-test('optional form support affects preview compatibility, not installation admission',()=>{
-  const source=readSource('ComponentCenter.jsx'),body=source.slice(source.indexOf('function gameInstallBlockedReason('),source.indexOf('\nfunction localInstallBlockedReason('));
-  const check=new Function("previewFormCapabilityAccepts","previewCanvasCapabilityAccepts",`${body};return gameInstallBlockedReason;`)(previewFormCapabilityAccepts,previewCanvasCapabilityAccepts);
-  const component={appRuntime:{form:{engine:'p4-app-form-v2'}}};
-  assert.equal(previewFormCapabilityAccepts('p4-app-form-v2',{widgetAppForm:'p4-app-form-v1'}),false);
-  assert.equal(previewFormCapabilityAccepts('p4-app-form-v2',{widgetAppFormV2:'p4-app-form-v2'}),true);
-  assert.equal(check(component,{capabilities:{widgetAppForm:'p4-app-form-v1'}}),'');
-  assert.equal(check(component,{capabilities:{widgetAppFormV2:'p4-app-form-v2'}}),'');
-  assert.equal(check({appRuntime:{form:{engine:'p4-app-form-v1'}}},{capabilities:{widgetAppForm:'p4-app-form-v1'}}),'');
-  assert.equal(check({appRuntime:{surface:{canvas:{engine:'p4-canvas-v1'}}}},{capabilities:{}}),'');
-  assert.equal(check({appRuntime:{surface:{canvas:{engine:'p4-canvas-v1'}}}},{capabilities:{widgetCanvas:'p4-canvas-v1'}}),'');
-  assert.equal(check({appRuntime:{form:{engine:'p4-app-form-v3'}}},{capabilities:{widgetAppForm:'p4-app-form-v1'}}),'');
-  assert.equal(check({appRuntime:{form:{engine:'p4-app-form-v3'}}},{capabilities:{widgetAppFormV3:'p4-app-form-v3'}}),'');
-  assert.equal(check({appRuntime:{form:{engine:'future'}}},{capabilities:{widgetAppForm:'p4-app-form-v1'}}),'');
-  assert.equal(check({appRuntime:{surface:{canvas:{engine:'p4-canvas-v1'}}}},{capabilities:{widgetCanvas:'p4-canvas-v2'}}),'');
-  assert.equal(check({appRuntime:{surface:{canvas:{engine:'p4-canvas-v2'}}}},{capabilities:{widgetCanvas:'p4-canvas-v2'}}),'');
-  assert.equal(check({appRuntime:{surface:{canvas:{engine:'future'}}}},{capabilities:{widgetCanvas:'p4-canvas-v2'}}),'');
-});
-
 function readSource(fileName) {
   return readFileSync(join(srcDir, fileName), "utf8");
 }
-test('optional host context does not block installation',()=>{
-  const source=readSource('ComponentCenter.jsx');const body=source.slice(source.indexOf('function gameInstallBlockedReason('),source.indexOf('\nfunction localInstallBlockedReason('));
-  const check=new Function("previewFormCapabilityAccepts","previewCanvasCapabilityAccepts",`${body};return gameInstallBlockedReason;`)(previewFormCapabilityAccepts,previewCanvasCapabilityAccepts);
-  assert.equal(check({appRuntime:{host_context:'p4-host-context-v1'}},{capabilities:{}}),'');
-  assert.equal(check({appRuntime:{host_context:'p4-host-context-v1'}},{capabilities:{widgetHostContext:'p4-host-context-v1'}}),'');
-  const panel=readSource('component-center/ComponentAppPanel.jsx');
-  assert.match(panel,/eventId:crypto\.randomUUID\(\),context:data\?\.ui\?\.context/);
-});
-test('named binding packages install independently of optional device adverts',()=>{
-  const source=readSource('ComponentCenter.jsx');
-  const body=source.slice(source.indexOf('function gameInstallBlockedReason('),source.indexOf('\nfunction localInstallBlockedReason('));
-  const check=new Function("previewFormCapabilityAccepts","previewCanvasCapabilityAccepts",`${body};return gameInstallBlockedReason;`)(previewFormCapabilityAccepts,previewCanvasCapabilityAccepts);
-  for(const component of [{mediaSurface:{bindings:'p4-variable-bindings-v1'}},{appRuntime:{surface:{bindings:'p4-variable-bindings-v1'}}}]){
-    assert.equal(check(component,{capabilities:{}}),'');
-    assert.equal(check(component,{capabilities:{widgetVariableBindings:'p4-variable-bindings-v1'}}),'');
-  }
-  assert.equal(check({mediaSurface:{}},{capabilities:{}}),'');
-});
-
-// ── Unified library + modal layout ────────────────────────────────────────────
-
-test('optional viewport support is not inferred from version or used to reject installation',()=>{
-  const source=readSource('ComponentCenter.jsx'),body=source.slice(source.indexOf('function gameInstallBlockedReason('),source.indexOf('\nfunction localInstallBlockedReason('));
-  const check=new Function("previewFormCapabilityAccepts","previewCanvasCapabilityAccepts",`${body};return gameInstallBlockedReason;`)(previewFormCapabilityAccepts,previewCanvasCapabilityAccepts);
-  for(const component of [{mediaSurface:{viewport:{engine:'p4-app-viewport-v1'}}},{appRuntime:{surface:{viewport:{engine:'p4-app-viewport-v1'}}}}]){
-    assert.equal(check(component,{firmware:'9.9.9',capabilities:{}}),'');
-    assert.equal(check(component,{capabilities:{widgetAppViewport:'p4-app-viewport-v1'}}),'');
-  }
-});
-
-test('independent viewport packages remain installable on legacy-only firmware',()=>{
-  const source=readSource('ComponentCenter.jsx'),body=source.slice(source.indexOf('function gameInstallBlockedReason('),source.indexOf('\nfunction localInstallBlockedReason('));
-  const check=new Function("previewFormCapabilityAccepts","previewCanvasCapabilityAccepts",`${body};return gameInstallBlockedReason;`)(previewFormCapabilityAccepts,previewCanvasCapabilityAccepts);
-  for(const component of [{mediaSurface:{viewports:{engine:'p4-app-viewports-v1'}}},{appRuntime:{surface:{viewports:{engine:'p4-app-viewports-v1'}}}}]){
-    assert.equal(check(component,{capabilities:{widgetAppViewport:'p4-app-viewport-v1'}}),'');
-    assert.equal(check(component,{capabilities:{widgetAppViewports:'p4-app-viewports-v1'}}),'');
-  }
-});
-
 test('durable workflow actions send unique identity and current host context',()=>{
   const panel=readSource('component-center/ComponentAppPanel.jsx');
   assert.match(panel,/\["pc-app-composition-v2","pc-app-composition-v3","pc-service-bridge-v1"\]\.includes\(component\.pcApplication\.engine\)/);
   assert.match(panel,/eventId:crypto\.randomUUID\(\),context:data\?\.ui\?\.context/);
-});
-
-test('side scene packages remain installable without optional motion capability',()=>{
-  const source=readSource('ComponentCenter.jsx'),body=source.slice(source.indexOf('function gameInstallBlockedReason('),source.indexOf('\nfunction localInstallBlockedReason('));
-  const check=new Function("previewFormCapabilityAccepts","previewCanvasCapabilityAccepts",`${body};return gameInstallBlockedReason;`)(previewFormCapabilityAccepts,previewCanvasCapabilityAccepts);
-  for(const c of [{scene:{engine:'p4-side-scene-v1'}},{appRuntime:{scene:{engine:'p4-side-scene-v1'}}}]){
-    assert.equal(check(c,{capabilities:{widgetMotion:'p4-motion-v1',widgetPlatformTrack:'p4-platform-track-v1'}}),'');
-    assert.equal(check(c,{capabilities:{widgetSideScene:'p4-side-scene-v1'}}),'');
-  }
 });
 
 test("stock management lives only in the matching component details", () => {
@@ -183,7 +115,7 @@ test("direct sync preflights one component and respects board capacity", () => {
     component.indexOf("async function installSelectedComponent"),
   );
   assert.match(syncBody, /localInstallBlockedReason\(component\)/);
-  assert.match(syncBody, /gameInstallBlockedReason\(component, usb\)/);
+  assert.match(syncBody, /componentUsbInstallBlockedReason\(component, usb\)/);
   assert.match(syncBody, /deviceInventory\.items\.length >= maxInstalled/);
   assert.match(syncBody, /await installSelectedComponent\(component, \{freshImport\}\)/);
   assert.match(syncBody, /设备组件已满/);
@@ -456,7 +388,8 @@ test("component center uses PageShell and shell components", () => {
   // App.jsx wiring
   assert.match(app, /const ComponentCenter = lazy\(\(\) => import\("\.\/ComponentCenter"\)\)/);
   assert.match(app, /title="组件中心"/);
-  assert.match(app, /<ComponentCenter active=\{view === "components"\} \/>/);
+  assert.match(app, /<ComponentCenter active=\{view === "components"\} onOpenWirelessMaintenance=\{openWirelessMaintenance\} \/>/);
+  assert.match(component, /wifi\?\.componentDelivery && !wirelessInventoryReady && onOpenWirelessMaintenance/);
 });
 
 test("component center preserves install, formal-library delete, and device-remove pipelines", () => {
@@ -710,7 +643,7 @@ test("a live USB handshake wins over a remembered SSH target during install", ()
   assert.ok(useSshIndex > liveStatusIndex);
   assert.match(
     installBody,
-    /const useSsh = !options\.forceUsb && !liveUsbConnected && sshHost\.length > 0/,
+    /const useSsh = !useWifi && !options\.forceUsb && !liveUsbConnected && sshHost\.length > 0/,
   );
 });
 

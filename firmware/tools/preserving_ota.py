@@ -9,6 +9,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -87,19 +88,40 @@ def upgrade(link, opts, save):
     before = link.request('diagnostics/query', {'includeBootMemory': True}, 'diagnostics/status')
     if before.get('boardDeviceId') != opts.board:
         raise ValueError('Unexpected board; no update started')
-    if before['runtime']['firmware'] == opts.version:
-        raise ValueError('Already on candidate; inspect instead of repeating update')
     image = opts.image.read_bytes()
     low, high = validate_image(image, opts.version, opts.sha256, before['runtime']['chipRevision'])
+    expected_running_elf = getattr(opts, 'expected_running_elf', None)
+    initial_identity = None
+    target_elf = None
+    if expected_running_elf is not None:
+        if not re.fullmatch(r'[0-9a-f]{64}', expected_running_elf):
+            raise ValueError('Expected running ELF must be a lowercase SHA-256 digest')
+        # ESP image header + segment header + esp_app_desc_t app_elf_sha256 offset.
+        target_elf = image[176:208].hex()
+        initial_identity = link.request('debug/identity', {}, 'debug/identity')
+        if (initial_identity.get('engine') != 'p4-evidence-identity-v1'
+                or initial_identity.get('boardDeviceId') != opts.board
+                or not initial_identity.get('bootId')
+                or initial_identity.get('appElfSha256') != expected_running_elf):
+            raise ValueError('Running ELF or board identity changed; no update started')
+        if target_elf == '0' * 64 or target_elf == expected_running_elf:
+            raise ValueError('Same firmware image or missing candidate ELF identity')
+    elif before['runtime']['firmware'] == opts.version:
+        raise ValueError('Same version requires an explicit running ELF digest')
     status = link.request('firmware/query', {}, 'firmware/status')
     if not status.get('supported') or status.get('active') or status.get('pendingVerify'):
         raise ValueError('OTA unavailable/busy/pending verification')
+    original_partition = before['runtime'].get('runningPartition')
+    target_partition = status.get('nextPartition', {}).get('label')
+    if initial_identity and (target_partition not in ('ota_0', 'ota_1') or target_partition == original_partition):
+        raise ValueError('Inactive application partition could not be verified')
     catalog = link.request('widget/list', {}, 'widget/inventory')
     if not catalog.get('complete') or not catalog.get('ok'):
         raise ValueError('Incomplete inventory; no update started')
     ids = [v['id'] for v in catalog['items']]
     save('before', {'diagnostics': sanitize(before), 'componentIds': ids,
-                    'activeAppearanceSlot': before.get('storage', {}).get('activeAppearanceSlot')})
+                    'activeAppearanceSlot': before.get('storage', {}).get('activeAppearanceSlot'),
+                    **({'appElfSha256': expected_running_elf} if initial_identity else {})})
     tid = 'memory-ota-' + uuid.uuid4().hex
     commit_sent = False
     try:
@@ -130,9 +152,11 @@ def upgrade(link, opts, save):
         ack = link.request('firmware/commit', {'transferId': tid}, 'firmware/ack', 30)
         if (ack.get('transferId') != tid or ack.get('phase') != 'commit'
                 or ack.get('ok') is not True or ack.get('sha256') != opts.sha256
-                or ack.get('version') != opts.version):
+                or ack.get('version') != opts.version
+                or (target_partition and ack.get('targetPartition') != target_partition)):
             raise RuntimeError('Commit confirmation invalid; inspect before retrying')
-        save('commit', {'version': ack['version'], 'sha256': ack['sha256']})
+        save('commit', {'version': ack['version'], 'sha256': ack['sha256'],
+                        'targetPartition': ack.get('targetPartition')})
     finally:
         if not commit_sent:
             # Firmware verifies transferId; never abort someone else's transfer.
@@ -148,12 +172,24 @@ def upgrade(link, opts, save):
         if after.get('boardDeviceId') != opts.board:
             raise RuntimeError('Board changed after update')
         r = after['runtime']
-        if r.get('firmware') == opts.version and r.get('imageState') == 'valid':
-            break
+        if (r.get('firmware') != opts.version or r.get('imageState') != 'valid'
+                or r.get('runningPartition') == original_partition
+                or (target_partition and r.get('runningPartition') != target_partition)):
+            continue
+        if initial_identity:
+            try:
+                identity = link.request('debug/identity', {}, 'debug/identity', 5)
+            except TimeoutError:
+                continue
+            if (identity.get('engine') != 'p4-evidence-identity-v1'
+                    or identity.get('boardDeviceId') != opts.board
+                    or identity.get('appElfSha256') != target_elf
+                    or not identity.get('bootId')
+                    or identity['bootId'] == initial_identity['bootId']):
+                raise RuntimeError('New boot image identity did not match the committed candidate')
+        break
     else:
         raise RuntimeError('New boot not confirmed; inspect, do not repeat update')
-    if r['runningPartition'] == before['runtime']['runningPartition']:
-        raise RuntimeError('OTA partition did not change')
     inventory = link.request('widget/list', {}, 'widget/inventory')
     if not inventory.get('complete') or not inventory.get('ok'):
         raise RuntimeError('Post-update inventory incomplete')
@@ -161,7 +197,8 @@ def upgrade(link, opts, save):
     # catalog migration must remain inspectable without repeating a committed OTA.
     save('after_observed', {'diagnostics': sanitize(after),
          'componentIds': [v['id'] for v in inventory['items']],
-         'activeAppearanceSlot': after.get('storage', {}).get('activeAppearanceSlot')})
+         'activeAppearanceSlot': after.get('storage', {}).get('activeAppearanceSlot'),
+         **({'appElfSha256': target_elf} if initial_identity else {})})
     if ids != [v['id'] for v in inventory['items']]:
         raise RuntimeError('Component catalog changed')
     if after['storage']['activeAppearanceSlot'] != before['storage']['activeAppearanceSlot']:
@@ -169,7 +206,8 @@ def upgrade(link, opts, save):
     if after['faultResetCount'] != before['faultResetCount']:
         raise RuntimeError('New fault reset detected')
     save('after', {'diagnostics': sanitize(after), 'componentIds': ids,
-                  'appearanceSlotUnchanged': True, 'componentCatalogUnchanged': True})
+                  'appearanceSlotUnchanged': True, 'componentCatalogUnchanged': True,
+                  **({'appElfSha256': target_elf} if initial_identity else {})})
     print(json.dumps({'firmware': r['firmware'], 'imageState': r['imageState'],
                       'componentCount': len(ids), 'faultResetCount': after['faultResetCount']}), flush=True)
 
@@ -179,6 +217,8 @@ def main():
     for name in ('port', 'board', 'version', 'sha256'):
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--image', type=Path, required=True)
+    parser.add_argument('--expected-running-elf',
+                        help='Verify the old and new ELF digests, including for a same-version build')
     parser.add_argument('--output-dir', type=Path, required=True)
     opts = parser.parse_args()
     occupied = subprocess.run(['lsof', opts.port], capture_output=True, text=True)

@@ -61,6 +61,7 @@ typedef struct {
   char text[PET_P4_SPEECH_MAX];
 } pet_p4_conversation_cue_t;
 
+struct cJSON;
 typedef void (*pet_p4_send_line_fn)(const char *line, void *ctx);
 /* Boot-configured paired callbacks. begin admits only the current locked
  * protocol command; on success the slot-query owns an unlocked read/TX window
@@ -313,6 +314,8 @@ bool pet_p4_handle_storage_query(pet_p4_runtime_state_t *state,
 /* Dispatcher-owned slot for the current locked dispatch; see pet_p4_query_reply.h. */
 void pet_p4_protocol_set_deferred_reply(pet_p4_query_reply_t *reply);
 #endif
+
+struct cJSON *pet_p4_widget_inventory(const pet_p4_runtime_state_t *state, const char *request_id);
 
 #ifdef __cplusplus
 }

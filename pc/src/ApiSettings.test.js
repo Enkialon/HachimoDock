@@ -138,6 +138,7 @@ test("API settings owns voice and generation credential inputs", () => {
   assert.equal((source.match(/Key 获取方式/g) || []).length, 2);
   assert.equal((source.match(/target="_blank"/g) || []).length, 3);
   assert.equal((source.match(/rel="noreferrer"/g) || []).length, 3);
+  assert.doesNotMatch(source, /devin_cloud_|Devin 云端会话/);
 });
 
 test("saved ASR credentials are broadcast before the optional cloud probe", () => {

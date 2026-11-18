@@ -2673,13 +2673,7 @@ static void send_widget_ack(
 }
 
 __attribute__((optimize("Oz")))
-static bool send_widget_inventory(
-  const pet_p4_runtime_state_t *state,
-  const cJSON *request,
-  pet_p4_send_line_fn send_line,
-  void *ctx
-) {
-  const char *request_id = json_string(request, "requestId");
+cJSON *pet_p4_widget_inventory(const pet_p4_runtime_state_t *state, const char *request_id) {
   char active_widget_id[PET_P4_MINIAPP_WIDGET_ID_MAX] = {0};
   bool active = pet_p4_miniapp_active_id(active_widget_id, sizeof(active_widget_id));
   size_t installed_count = pet_p4_miniapp_catalog_count();
@@ -2693,7 +2687,7 @@ static bool send_widget_inventory(
     cJSON_Delete(payload);
     cJSON_Delete(items);
     cJSON_Delete(warnings);
-    return false;
+    return NULL;
   }
   cJSON_AddNumberToObject(payload, "schemaVersion", 1);
   cJSON_AddStringToObject(payload, "requestId", request_id);
@@ -2732,7 +2726,7 @@ static bool send_widget_inventory(
         cJSON_Delete(payload);
         cJSON_Delete(items);
         cJSON_Delete(warnings);
-        return false;
+        return NULL;
       }
       cJSON_AddStringToObject(item, "id", entry.widget_id);
       if (entry.title[0]) cJSON_AddStringToObject(item, "name", entry.title);
@@ -2768,6 +2762,14 @@ static bool send_widget_inventory(
   }
   cJSON_AddItemToObject(payload, "items", items);
   cJSON_AddItemToObject(payload, "warnings", warnings);
+  return payload;
+}
+
+static bool send_widget_inventory(const pet_p4_runtime_state_t *state, const cJSON *request,
+  pet_p4_send_line_fn send_line, void *ctx) {
+  const char *request_id = json_string(request, "requestId");
+  cJSON *payload = pet_p4_widget_inventory(state, request_id);
+  if (!payload) return false;
   send_topic_payload(send_line, ctx, "widget/inventory", payload);
   return request_id[0] && strlen(request_id) < 96;
 }

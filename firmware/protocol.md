@@ -2237,6 +2237,13 @@ Its observation does not authenticate a device, authorize a replay, or change
 the original exception handler, watchdog or reboot policy. Ordinary firmware
 does not link the observer or publish this optional object.
 
+WiFi6 v3 can add `h264Decode` to a retained native panic site with cause 5
+when the interrupted stack matches the active single-task decoder. The numeric
+fields are `streamCrc32` (CRC-32/ISO-HDLC of the original encoded stream),
+`streamBytes`, `streamOffset` (byte offset at the decoder call), `nextFrame`
+(zero-based next output ordinal), `width`, `height`, `trapValue` (MTVAL), and
+`a0`. This profile uses 208 RTC bytes for the native panic recorder.
+
 Private `PET_P4_RESET_PHASE_BENCHMARK=0` by default. When enabled, native boot
 measures exactly32 recorder enter/leave pairs, yielding between four-sample
 groups. Explicit `diagnostics/query` with `includeRecorderCost:true` may return
@@ -2521,6 +2528,39 @@ are bound to the same Wi-Fi boot and cannot target a successor USB session.
 No identities, pairing material, transcripts or PCM are added to logs.
 
 LAN status encoding/PC receive capacity is 576 bytes in this revision, reusing
-the existing 16 KiB transport scratch buffers. The current R284 status payload
+the existing 16 KiB transport scratch buffers. The current R285 status payload
 still fits an older PC's 512-byte receive bound; the larger limit allows future
 31-byte descriptor versions and maximal counters plus cJSON print slack.
+
+
+## Paired LAN desktop controls
+
+Wi-Fi 6 boards advertise `ops: true` in authenticated status. After wired
+authorization, mode 17 accepts the current 16-byte boot ID and a one-byte
+operation. Read input (1), read volume (3), read diagnostics (4), return home
+(5), read component inventory (6), and reset input (7) take no additional bytes.
+Write input (2) carries a bounded JSON bindings array. Remove component (8)
+carries JSON `componentId` and `preserveSave`. Fixed operations share the
+USB state and persistence implementations and are serialized with board work.
+USB retains priority. Replies are authenticated JSON or a single zero byte
+when the request cannot be admitted. Unconfirmed writes are never replayed.
+
+Component bundle mode 14 retains its existing install-new record (1).
+Replacement uses record 4 with the same prefix and widget ID, followed by the
+observed installed version. The board requires that version to match the
+currently installed copy and commits through the existing validated staging
+transaction. Older boards continue to support their original operations.
+
+### LCD scanout diagnostics
+
+Wi-Fi 6 firmware includes `runtime.lcdScanout` in USB and authenticated LAN
+diagnostics. `underruns` is a per-boot hardware count. After a fault,
+`lastTick` uses the FreeRTOS clock (`tickHz`), `lastPhase` identifies the
+render phase (0 between frames, 1 compose, 2 rotate, 3 compare, 4 submit),
+and `videoWorkerActive` identifies overlapping native video work. This is
+a hardware event snapshot. A missing count on older firmware is unknown.
+
+A new interrupt invalidates the previous LCD presentation reference. The
+renderer may resend an otherwise unchanged frame, limited to one such
+retry every 500 ms. The LCD clock and lane configuration are independent
+of this recovery.

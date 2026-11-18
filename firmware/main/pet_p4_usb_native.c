@@ -267,6 +267,9 @@ static void send_asset_ack(const char *transfer_id, const char *phase, const cha
   send_topic_payload("asset/ack", payload);
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static bool clear_slot_files(int slot) {
   pet_p4_renderer_set_asset_preparation_suspended(true);
   if (slot < 0 || slot > 1) return false;
@@ -334,6 +337,9 @@ static void native_retire(void){
   g_native_raw_limit=g_native_raw_bytes=0;g_native_transfer_connection=0;
   if(g_state)g_state->asset_transfer_active=false;
 }
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static void handle_file_begin(const uint8_t *payload,uint32_t len){
   cJSON *root=parse_payload_json(payload,len);
   const char *id=json_string(root,"transferId"),*path=json_string(root,"path"),*checksum=json_string(root,"checksum");
@@ -395,6 +401,9 @@ static void handle_file_data(const uint8_t *payload,uint32_t len){
   g_native_chunk_index++;g_received_size+=len;g_transfer_last_activity_ms=native_now_ms();
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static void handle_file_end(const uint8_t *payload,uint32_t len){
   cJSON *root=parse_payload_json(payload,len);
   const char *id=json_string(root,"transferId"),*path=json_string(root,"path");
@@ -450,6 +459,9 @@ static void native_commit_ack(native_commit_context_t *context,const char *id,
   if(native_commit_current(context))send_asset_ack(id,"commit",NULL,ok,error);
   native_commit_io_end(context);
 }
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static void handle_commit(const uint8_t *payload,uint32_t len){
   cJSON *root=parse_payload_json(payload,len);const char *id=json_string(root,"transferId");
   native_commit_context_t context={atomic_load_explicit(&g_connection_generation,memory_order_acquire)};
@@ -471,6 +483,9 @@ static void handle_commit(const uint8_t *payload,uint32_t len){
 done:cJSON_Delete(root);
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static bool handle_asset_abort_json(const uint8_t *payload,uint32_t len){
   cJSON *root=parse_payload_json(payload,len);
   if(!cJSON_IsObject(root)||strcmp(json_string(root,"topic"),"asset/abort")){cJSON_Delete(root);return false;}
@@ -527,6 +542,9 @@ static void handle_json_frame(const uint8_t *payload, uint32_t len) {
   free(line);
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static void handle_identity_ping(const uint8_t *payload, uint32_t len) {
   cJSON *request = parse_payload_json(payload, len);
   const char *nonce;

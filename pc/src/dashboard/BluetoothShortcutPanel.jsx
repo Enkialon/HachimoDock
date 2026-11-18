@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import Card from "../shell/Card.jsx";
 import Button from "../shell/Button.jsx";
@@ -58,6 +58,7 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
   const captured = useRef(null);
   const captureInvalid = useRef(false);
   const [config, setConfig] = useState(null);
+  const [readError, setReadError] = useState("");
   const [snapshot] = useState(() => readKeyboardSnapshot(board));
   const [slot, setSlot] = useState(0);
   const [hoveredControl, setHoveredControl] = useState("");
@@ -65,8 +66,8 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
   const [edit, setEdit] = useState(null);
   const [pending, setPending] = useState(false);
   const [notice, setNotice] = useState(null);
-  const canEdit = supported && Array.isArray(config?.keys);
-  const visibleKeys = canEdit ? config.keys : snapshot?.keys;
+  const canEdit = supported && Boolean(config) && !readError;
+  const visibleKeys = config?.keys ?? snapshot?.keys;
   const saved = config?.keys?.[slot] || 0;
   const chord = edit ?? saved;
   const dirty = chord !== saved;
@@ -74,6 +75,17 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
   const usage = chord & 255;
   const activeControl = controls.find(group => group.gestures.some(gesture => gesture.slot === slot))?.id;
   useExitProtection(pending ? "正在保存蓝牙快捷键" : dirty ? "蓝牙快捷键有未保存的修改" : "");
+
+  const requestConfig = useCallback(async (change = {}) => {
+    const state = wired
+      ? await invoke("usb_bluetooth_keyboard_config", { boardDeviceId: board, connectionId: connection, ...change })
+      : await invoke("lan_bluetooth_keyboard_config", { boardDeviceId: board, expectedBootId: connection, ...change });
+    if (state?.ok !== true || state.boardDeviceId !== board || typeof state.enabled !== "boolean" ||
+        !Array.isArray(state.keys)) {
+      throw new Error("设备未返回有效的蓝牙快捷键配置。");
+    }
+    return state;
+  }, [board, connection, wired]);
 
   useEffect(() => {
     if (!active || !supported || !board || !connection || pending) return;
@@ -83,12 +95,13 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
       if (reading) return;
       reading = true;
       try {
-        const state = wired
-          ? await invoke("usb_bluetooth_keyboard_config", { boardDeviceId: board, connectionId: connection })
-          : await invoke("lan_bluetooth_keyboard_config", { boardDeviceId: board, expectedBootId: connection });
-        if (!cancelled) setConfig(state);
+        const state = await requestConfig();
+        if (!cancelled) {
+          setConfig(state);
+          setReadError("");
+        }
       } catch (error) {
-        if (!cancelled) setConfig(current => current ?? { error: error?.message || String(error) });
+        if (!cancelled) setReadError(error?.message || String(error));
       } finally {
         reading = false;
       }
@@ -96,7 +109,7 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
     void read();
     const timer = setInterval(read, 2000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [active, board, connection, wired, supported, pending]);
+  }, [active, board, connection, supported, pending, requestConfig]);
 
   useEffect(() => {
     if (!active) setCapture(false);
@@ -166,19 +179,22 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
   }
 
   async function save(change) {
-    if (!supported || pending || !config?.keys ||
+    if (!canEdit || pending ||
         ("chord" in change && !isKeyboardChordSupported(change.chord, extended))) return;
     setPending(true);
     setNotice(null);
     try {
-      setConfig(wired
-        ? await invoke("usb_bluetooth_keyboard_config", { boardDeviceId: board, connectionId: connection, ...change })
-        : await invoke("lan_bluetooth_keyboard_config", { boardDeviceId: board, expectedBootId: connection, ...change }));
+      const state = await requestConfig(change);
+      if ("enabled" in change && state.enabled !== change.enabled) {
+        throw new Error("设备未确认蓝牙模式已更改。");
+      }
+      setConfig(state);
       if ("slot" in change) {
         setEdit(null);
         setNotice({ text: change.chord ? "快捷键已保存。" : "快捷键已清除。" });
       }
     } catch (error) {
+      if ("enabled" in change) setReadError("正在重新读取设备蓝牙模式…");
       setNotice({ error: true, text: error?.message || String(error) });
     } finally {
       setPending(false);
@@ -186,20 +202,19 @@ export default function BluetoothShortcutPanel({ usb, wifi, board, active = true
   }
 
   return <Card title="蓝牙快捷键" subtitle="把设备变成电脑的蓝牙快捷键盘。"
-    actions={<Switch label="蓝牙模式" checked={config?.enabled === true}
-      disabled={!supported || !config?.keys || pending}
-      onCheckedChange={enabled => void save({ enabled })} />}>
+    actions={canEdit ? <Switch label="蓝牙模式" checked={config.enabled} disabled={pending}
+      onCheckedChange={enabled => void save({ enabled })} /> : <span>蓝牙模式状态未确认</span>}>
     <p>开启蓝牙模式后，在电脑的蓝牙设置中配对并连接 HachimiDock。连接成功后，设备本身的按键功能暂停，实体按键和摇杆只向电脑发送这里配置的快捷键。</p>
     <p>等待连接、断开蓝牙或关闭蓝牙模式时，设备本身的按键功能会生效。初始配置中，1、2、3 键单击分别发送 Ctrl + C、Ctrl + V、Ctrl + A。</p>
-    {!canEdit && <p role={config?.error ? "alert" : "status"}>
+    {!canEdit && <p role="status">
       {!wired && !wifi ? "可离线查看快捷键。通过 USB 或已配对的 Wi-Fi 连接设备后即可修改。"
         : !supported ? "当前设备固件尚未开放独立的蓝牙键盘配置。"
-        : config?.error || "正在读取配置…"}
-      {snapshot && ` 当前显示上次读取的设备配置（${snapshot.board}）。`}
+        : readError || "正在读取配置…"}
+      {visibleKeys && ` 当前显示上次读取的设备配置（${config ? board : snapshot.board}）。`}
     </p>}
     <form className="api-settings__form" onSubmit={event => { event.preventDefault(); void save({ slot, chord }); }}>
       {canEdit && <>
-        <p role="status">{connectionLabel(config)}</p>
+        <p role="status">{pending ? "正在等待设备确认…" : connectionLabel(config)}</p>
         {config.passkey > 0 && <p>配对码 <strong>{String(config.passkey).padStart(6, "0")}</strong></p>}
         {config.enabled && !config.connected && !config.paired && !config.pairing && config.radioState >= 0 &&
           <Button disabled={pending} onClick={() => void save({ enabled: true })}>重新进入配对</Button>}

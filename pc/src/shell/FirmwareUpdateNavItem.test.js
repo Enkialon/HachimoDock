@@ -17,7 +17,8 @@ const source = readFileSync(join(here, "FirmwareUpdateNavItem.jsx"), "utf8");
 const app = readFileSync(join(here, "..", "App.jsx"), "utf8");
 
 test("firmware module sits directly below API configuration without a page route", () => {
-  assert.match(app, /title="其它设置"[\s\S]*?<FirmwareUpdateNavItem usb=\{usb\} \/>/);
+  assert.match(app, /title="其它设置"[\s\S]*?<FirmwareUpdateNavItem usb=\{usb\} wifi=\{wifi\} onOpenWirelessMaintenance=\{openWirelessMaintenance\} \/>/);
+  assert.match(source, /!usb\.connected && wifi\?\.wirelessOta && onOpenWirelessMaintenance/);
   assert.doesNotMatch(app, /view === "firmware"|setView\("firmware"\)/);
 });
 
@@ -34,6 +35,13 @@ test("firmware module exposes Update only for older devices and Up to date other
 test("a validated OTA closes a stale board-choice prompt", () => {
   assert.match(source, /requiresBoardChoice = currentProbe\?\.info === null && !awaitingBoardProbe && !currentCompletion/);
   assert.match(source, /connectionId: result\?\.connectionId/);
+});
+
+test("Wi-Fi shares the firmware comparison and suppresses the action when already current", () => {
+  assert.match(source, /firmwareUpdateDisposition\(wifi\.firmware, wifi\.bundledFirmwareVersion\)/);
+  assert.match(source, /wifiDisposition !== "latest"[\s\S]*?wifiDisposition === "update" \? "更新" : "无线维护"/);
+  assert.match(source, /wifiDisposition === "latest"[\s\S]*?已最新/);
+  assert.doesNotMatch(source, /Wi-Fi 升级/);
 });
 
 test("sidebar uses the current native version and handles already-latest as a refresh", () => {

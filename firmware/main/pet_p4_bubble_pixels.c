@@ -110,6 +110,11 @@ static uint64_t text_key(unsigned style, const char *text){
   uint64_t        h = hash_bytes(UINT64_C(14695981039346656037), SCHEMA);
   return hash_bytes((h ^ style) * UINT64_C(1099511628211), text);
 }
+/* Transfer parsing is sized separately from the framebuffer drawing path. */
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC optimize ("Oz")
+#endif
 static const char *string_value(const cJSON * j, const char *n){
   const           cJSON *x = cJSON_GetObjectItemCaseSensitive(j, n);
   return cJSON_IsString(x) && x->valuestring ? x->valuestring : "";
@@ -520,6 +525,9 @@ pet_bubble_pixels_handle_owned(const cJSON * p, const void *ctx, uint64_t now, c
   xSemaphoreGive(mutex);
   return ok;
 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC pop_options
+#endif
 uint32_t        pet_bubble_pixels_revision(void){
   return atomic_load(&revision);
 }

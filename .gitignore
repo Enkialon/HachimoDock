@@ -58,3 +58,7 @@ pc/public/terrier-clips/p4-ready/*
 
 # Shared dependency cache may be a symlink in integration worktrees.
 /firmware/managed_components
+
+# Verified OTA binaries staged from the matching release.
+/pc/src-tauri/firmware/esp32-p4/*.bin
+/pc/src-tauri/firmware/esp32-p4/.staging-*/

@@ -35,7 +35,7 @@ const bridgeRuntimePackage = join(
 );
 const generatedRuntime = join(tauriRoot, "generated-runtime");
 const bundledP4FirmwareDir = join(tauriRoot, "firmware", "esp32-p4");
-const p4ProjectCmake = join(repositoryRoot, "firmware", "CMakeLists.txt");
+const p4Profiles = readFileSync(join(repositoryRoot, "firmware", "platformio.ini"), "utf8");
 const auditedFfmpegBinarySha256 = {
   "macos-arm64": "e340c148c720888a528e7bd2e7867da3b4bea91d1f6e508c9526111257ee0468",
   "macos-x64": "8817b8186324bcfac4c18070ba7c1981cf05b1de2b722ed0514fa6dfce4e9bf0",
@@ -353,7 +353,7 @@ function readFirmwareBuildId(firmware, version) {
   return readNullTerminatedUtf8(firmware.subarray(offset, offset + 128));
 }
 
-function validateBundledP4Firmware(target, firmwareName, expectedMin, expectedMax) {
+function validateBundledP4Firmware(firmwareName, profile, expectedMin, expectedMax) {
   const bundledP4Firmware = join(bundledP4FirmwareDir, firmwareName);
   if (!existsSync(bundledP4Firmware)) {
     throw new Error(`缺少 PC 内置 P4 固件：${bundledP4Firmware}`);
@@ -373,9 +373,9 @@ function validateBundledP4Firmware(target, firmwareName, expectedMin, expectedMa
   }
   const version = readNullTerminatedUtf8(firmware.subarray(descriptorOffset + 16, descriptorOffset + 48));
   const projectName = readNullTerminatedUtf8(firmware.subarray(descriptorOffset + 48, descriptorOffset + 80));
-  const cmake = readFileSync(p4ProjectCmake, "utf8");
-  const sourceVersion = cmake.match(/set\(PROJECT_VER\s+"([^"]+)"\)/)?.[1] || "";
-  const expectedVersion = sourceVersion && `${sourceVersion}-${firmwareName.includes("-pico-") ? "pico" : "wifi6"}`;
+  const profileBody = p4Profiles.split(/^\[env:/m)
+    .find((section) => section.startsWith(`${profile}]`));
+  const expectedVersion = profileBody?.match(/^custom_p4_project_version\s*=\s*([\w.-]+)[ \t]*$/m)?.[1];
   if (projectName !== "pet_manager_p4_runtime") {
     throw new Error(`PC 内置固件 projectName 异常：${projectName || "(empty)"}`);
   }
@@ -420,10 +420,10 @@ const voiceRuntime = prepareVoiceRuntime({tauriRoot,target,arch:targetArch});
 if(voiceRuntime.enabled)console.log("Explicit legacy voice bundle requires --config src-tauri/tauri.voice-legacy.conf.json");
 const runtimeName = target === "windows" ? "node.exe" : "node";
 const targetRuntime = join(generatedRuntime, runtimeName);
-const p4Firmware = validateBundledP4Firmware(target, "firmware.bin", 1, 199);
-validateBundledP4Firmware(target, "firmware-v3.bin", 300, 399);
-validateBundledP4Firmware(target, "firmware-pico-v1.bin", 1, 199);
-validateBundledP4Firmware(target, "firmware-pico-v3.bin", 300, 399);
+const p4Firmware = validateBundledP4Firmware("firmware.bin", "esp32_p4_wifi6_system_settings_v1", 1, 199);
+validateBundledP4Firmware("firmware-v3.bin", "esp32_p4_wifi6_system_settings_v3", 300, 399);
+validateBundledP4Firmware("firmware-pico-v1.bin", "esp32_p4_pico_v1", 1, 199);
+validateBundledP4Firmware("firmware-pico-v3.bin", "esp32_p4_pico_v3", 300, 399);
 let sourceRuntime = process.env.PET_MANAGER_NODE_BIN
   ? resolve(process.env.PET_MANAGER_NODE_BIN)
   : process.execPath;

@@ -73,6 +73,35 @@ static pet_p4_send_line_fn g_send_line;
 static void *g_send_ctx;
 static portMUX_TYPE g_send_lock = portMUX_INITIALIZER_UNLOCKED;
 
+#define PET_USB_CAPTURE_TX_DEPTH 8
+typedef struct {
+  char *line;
+  pet_p4_send_line_fn send;
+  void *context;
+} pet_usb_capture_tx_frame_t;
+static QueueHandle_t g_usb_capture_tx_queue;
+static atomic_uint g_usb_capture_tx_pending;
+
+static void usb_capture_tx_task(void *context) {
+  (void)context;
+  pet_usb_capture_tx_frame_t frame;
+  while (xQueueReceive(g_usb_capture_tx_queue, &frame, portMAX_DELAY) == pdTRUE) {
+    frame.send(frame.line, frame.context);
+    cJSON_free(frame.line);
+    atomic_fetch_sub(&g_usb_capture_tx_pending, 1);
+  }
+  vTaskDelete(NULL);
+}
+
+static void usb_capture_tx_init(void) {
+  g_usb_capture_tx_queue = xQueueCreate(PET_USB_CAPTURE_TX_DEPTH, sizeof(pet_usb_capture_tx_frame_t));
+  if (g_usb_capture_tx_queue && xTaskCreatePinnedToCore(usb_capture_tx_task, "pet_usb_audio_tx",
+      4096, NULL, 17, NULL, 0) != pdPASS) {
+    vQueueDelete(g_usb_capture_tx_queue);
+    g_usb_capture_tx_queue = NULL;
+  }
+}
+
 void pet_p4_audio_set_transport(pet_p4_send_line_fn send_line, void *ctx) {
   if (!send_line) return;
   portENTER_CRITICAL(&g_send_lock);
@@ -298,6 +327,8 @@ static void add_conversation_metadata(cJSON *payload) {
   cJSON_AddNumberToObject(payload, "aecReferenceSamples", dsp.reference_samples);
   cJSON_AddNumberToObject(payload, "internalFreeBytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
   cJSON_AddNumberToObject(payload, "internalLargestBytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  cJSON_AddBoolToObject(payload, "captureTxAsync", g_usb_capture_tx_queue != NULL);
+  cJSON_AddNumberToObject(payload, "captureTxPending", atomic_load(&g_usb_capture_tx_pending));
   cJSON_AddNumberToObject(payload, "captureTxLastUs", atomic_load(&g_capture_tx_last_us));
   cJSON_AddNumberToObject(payload, "captureTxMaxUs", atomic_load(&g_capture_tx_max_us));
   if (g_audio_task) cJSON_AddNumberToObject(payload, "captureStackMinBytes", uxTaskGetStackHighWaterMark(g_audio_task));
@@ -375,13 +406,13 @@ static uint64_t fnv1a64_update(uint64_t checksum, const uint8_t *data, size_t le
   return checksum;
 }
 
-static void send_topic(const char *topic, cJSON *payload) {
+static bool send_topic_to_transport(const char *topic, cJSON *payload, bool live_capture) {
   cJSON *root = cJSON_CreateObject();
   char *line;
   if (!root || !payload) {
     cJSON_Delete(root);
     cJSON_Delete(payload);
-    return;
+    return false;
   }
   if (!cJSON_GetObjectItemCaseSensitive(payload, "boardDeviceId"))
     cJSON_AddStringToObject(payload, "boardDeviceId", g_board_device_id);
@@ -392,9 +423,24 @@ static void send_topic(const char *topic, cJSON *payload) {
   pet_p4_send_line_fn send_line = g_send_line;
   void *ctx = g_send_ctx;
   portEXIT_CRITICAL(&g_send_lock);
-  if (line && send_line) send_line(line, ctx);
+  const bool serialized = line && send_line;
+  bool sent = serialized;
+  if (serialized && live_capture && g_usb_capture_tx_queue) {
+    pet_usb_capture_tx_frame_t frame = {line, send_line, ctx};
+    atomic_fetch_add(&g_usb_capture_tx_pending, 1);
+    sent = xQueueSend(g_usb_capture_tx_queue, &frame, 0) == pdTRUE;
+    if (sent) line = NULL; // The transmitter owns the immutable line now.
+    else atomic_fetch_sub(&g_usb_capture_tx_pending, 1);
+  } else if (serialized) {
+    send_line(line, ctx);
+  }
   cJSON_free(line);
   cJSON_Delete(root);
+  return sent;
+}
+
+static void send_topic(const char *topic, cJSON *payload) {
+  (void)send_topic_to_transport(topic, payload, false);
 }
 
 void pet_p4_audio_diagnostic(const char *event, const char *session_id, size_t bytes, bool ok) {
@@ -414,6 +460,12 @@ void pet_p4_audio_diagnostic(const char *event, const char *session_id, size_t b
   cJSON_AddBoolToObject(payload, "ok", ok);
   add_conversation_metadata(payload);
   send_topic("audio/diagnostic", payload);
+}
+
+void pet_p4_audio_add_completion_counters(cJSON *payload) {
+  cJSON_AddNumberToObject(payload, "completionCueQueued", atomic_load(&g_completion_cue_queued));
+  cJSON_AddNumberToObject(payload, "completionCueAdmitted", atomic_load(&g_completion_cue_started));
+  cJSON_AddNumberToObject(payload, "completionCueSuppressed", atomic_load(&g_completion_cue_suppressed));
 }
 
 void pet_p4_audio_send_status(void) {
@@ -446,9 +498,7 @@ void pet_p4_audio_send_status(void) {
     (stream_buffered() * 1000ULL / (atomic_load(&g_music) ? 96000ULL : 32000ULL)));
   cJSON_AddNumberToObject(payload, "streamUnderruns", atomic_load(&g_stream_underruns));
   cJSON_AddNumberToObject(payload, "streamReceivedBytes", atomic_load(&g_stream_received_bytes));
-  cJSON_AddNumberToObject(payload, "completionCueQueued", atomic_load(&g_completion_cue_queued));
-  cJSON_AddNumberToObject(payload, "completionCueAdmitted", atomic_load(&g_completion_cue_started));
-  cJSON_AddNumberToObject(payload, "completionCueSuppressed", atomic_load(&g_completion_cue_suppressed));
+  pet_p4_audio_add_completion_counters(payload);
   send_topic("audio/status", payload);
 }
 
@@ -510,8 +560,7 @@ static bool send_audio_chunk(
    * queued PTT/previous conversation frame with the latest control session. */
   cJSON_AddStringToObject(payload, "conversationSessionId", conversation_session);
   if (processed) cJSON_AddBoolToObject(payload, "vadSpeech", speech);
-  send_topic("audio/chunk", payload);
-  return true;
+  return send_topic_to_transport("audio/chunk", payload, processed && conversation_session[0]);
 }
 
 static void send_audio_end(
@@ -1412,8 +1461,8 @@ static void audio_task(void *arg) {
       atomic_store(&g_capture_tx_last_us, tx_us);
       if (tx_us > atomic_load(&g_capture_tx_max_us)) atomic_store(&g_capture_tx_max_us, tx_us);
       if (!sent) {
-        reason = "encode_error";
-        send_audio_error(session_id, "base64_failed", "PCM frame encoding failed");
+        reason = "capture_tx_failed";
+        send_audio_error(session_id, "capture_tx_failed", "PCM frame could not be queued for USB");
         capture_worker_cancel(capture_work);
         break;
       }
@@ -1438,7 +1487,12 @@ static void audio_task(void *arg) {
     if (wifi_capture) mbedtls_platform_zeroize(pcm, sizeof(pcm));
     else
 #endif
-    send_audio_end(session_id, reason, chunks, total_bytes, stream_checksum);
+    {
+      // Do not let the final receipt overtake queued frames, or let the next
+      // capture borrow this session's transmitter.
+      while (atomic_load(&g_usb_capture_tx_pending)) vTaskDelay(1);
+      send_audio_end(session_id, reason, chunks, total_bytes, stream_checksum);
+    }
     capture_worker_done();
     pet_p4_audio_send_status();
   }
@@ -1501,6 +1555,7 @@ esp_err_t pet_p4_audio_init(
         // PCM deadlines must precede H.264 decode/pack (priorities 17/16).
         // Pin floating-point DSP away from the decoder's core-1 worker.
         && xTaskCreatePinnedToCore(audio_task, "pet_p4_audio", 8192, NULL, 18, &g_audio_task, 0) == pdPASS) {
+      usb_capture_tx_init();
       atomic_store_explicit(&g_enabled, true, memory_order_release);
       atomic_store_explicit(&g_ready, true, memory_order_release);
       initialized = true;

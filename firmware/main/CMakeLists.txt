@@ -159,6 +159,11 @@ idf_component_register(
     tinyusb
 )
 
+if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1" AND "$ENV{PET_P4_CHIP_FAMILY}" STREQUAL "v3")
+  idf_component_get_property(pet_h264_dir espressif__esp_h264 COMPONENT_DIR)
+  target_include_directories(${COMPONENT_LIB} PRIVATE "${pet_h264_dir}/sw/libs/tinyh264_inc")
+endif()
+
 # Shared, OTA-updatable status cues live in the application, not appearance slots.
 # Form declarations and OTA asset metadata are separate from the render and audio loops.
 set_source_files_properties("pet_p4_form_v2.c" "pet_p4_form_v3.c" "pet_p4_assets.c"
@@ -212,6 +217,7 @@ if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
     "pet_p4_app_store.c" "pet_p4_program_registry.c" "pet_p4_trusted_services.c"
     "pet_p4_input.c" "pet_p4_assets.c" "pet_p4_program_activation.c"
     "pet_p4_transport_audit.c" "pet_p4_collection_host.c" "pet_p4_component_events.c"
+    "pet_p4_view.c" "pet_p4_conversation.c" "pet_p4_stats.c" "pet_p4_spiffs_hint.c" "pet_p4_board_probe.c"
     APPEND PROPERTY COMPILE_OPTIONS "-Oz")
 endif()
 # The reviewed v4 report consumes six actual module reports. Append this after
@@ -227,13 +233,13 @@ foreach(art center_background.jpg center_thumbs.deflate)
   target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../assets/component-center/${art}" BINARY)
 endforeach()
 target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/pet_cn_16.deflate" BINARY)
-target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/pet_cn_16_rows.deflate" BINARY)
+target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/pet_cn_16_glyph_columns.deflate" BINARY)
 execute_process(
-  COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../tools/compress_font_rows.py" "--check"
-  RESULT_VARIABLE PET_FONT_ROWS_STATUS
+  COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../tools/compress_font_glyph_columns.py" "--check"
+  RESULT_VARIABLE PET_FONT_GLYPH_COLUMNS_STATUS
 )
-if(NOT PET_FONT_ROWS_STATUS EQUAL 0)
-  message(FATAL_ERROR "Lossless row-predicted font asset is stale")
+if(NOT PET_FONT_GLYPH_COLUMNS_STATUS EQUAL 0)
+  message(FATAL_ERROR "Lossless column-packed font asset is stale")
 endif()
 target_add_binary_data(${COMPONENT_LIB} "${CMAKE_CURRENT_LIST_DIR}/../assets/fonts/pet_cn_metrics.deflate" BINARY)
 # Both inputs exist; only the gate-selected metrics symbols may survive GC.
@@ -413,6 +419,36 @@ endif()
 set_property(TARGET ${pet_restart_lib} PROPERTY SOURCES "${pet_restart_replaced}")
 
 
+# Preserve a hardware underrun timestamp without relying on the console reader.
+if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
+  idf_component_get_property(pet_lcd_driver esp_lcd COMPONENT_LIB)
+  idf_component_get_property(pet_lcd_dir esp_lcd COMPONENT_DIR)
+  set(pet_lcd_source "${pet_lcd_dir}/dsi/esp_lcd_panel_dpi.c")
+  set(pet_lcd_generated "${CMAKE_CURRENT_BINARY_DIR}/pet_p4_pinned_panel_dpi.c")
+  set(pet_lcd_patch "${CMAKE_CURRENT_LIST_DIR}/../tools/patch_p4_lcd_underrun.py")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${pet_lcd_patch}" "${pet_lcd_source}")
+  execute_process(COMMAND "${PYTHON}" "${pet_lcd_patch}" "${pet_lcd_source}" "${pet_lcd_generated}"
+    COMMAND_ERROR_IS_FATAL ANY)
+  get_target_property(pet_lcd_sources ${pet_lcd_driver} SOURCES)
+  set(pet_lcd_replaced)
+  set(pet_lcd_count 0)
+  foreach(pet_lcd_entry IN LISTS pet_lcd_sources)
+    get_filename_component(pet_lcd_abs "${pet_lcd_entry}" REALPATH BASE_DIR "${pet_lcd_dir}")
+    if(pet_lcd_abs STREQUAL pet_lcd_source)
+      list(APPEND pet_lcd_replaced "${pet_lcd_generated}")
+      math(EXPR pet_lcd_count "${pet_lcd_count}+1")
+    else()
+      list(APPEND pet_lcd_replaced "${pet_lcd_entry}")
+    endif()
+  endforeach()
+  if(NOT pet_lcd_count EQUAL 1)
+    message(FATAL_ERROR "ESP32-P4 LCD target must contain exactly one pinned DPI driver")
+  endif()
+  # The SDK file includes mipi_dsi_priv.h from its own directory.
+  target_include_directories(${pet_lcd_driver} PRIVATE "${pet_lcd_dir}/dsi")
+  set_property(TARGET ${pet_lcd_driver} PROPERTY SOURCES "${pet_lcd_replaced}")
+endif()
+
 # Keep time-sensitive media and drawing paths on the validated performance profile.
 set_property(SOURCE "pet_p4_audio.c" "pet_p4_audio_frontend.c" "pet_p4_component_media.c"
   "pet_p4_audio_patch.c" "pet_p4_lcd.c" "pet_p4_font_bitmap.c"
@@ -425,6 +461,12 @@ foreach(ble_size_component bt espressif__esp_hosted)
   idf_component_get_property(ble_size_lib ${ble_size_component} COMPONENT_LIB)
   target_compile_options(${ble_size_lib} PRIVATE "-Oz")
 endforeach()
+# The generated protobuf message layouts are unchanged. Only their identical
+# constant field metadata may share storage; leave application objects alone.
+idf_component_get_property(hosted_rpc_lib espressif__esp_hosted COMPONENT_LIB)
+idf_component_get_property(hosted_rpc_dir espressif__esp_hosted COMPONENT_DIR)
+set_property(SOURCE "${hosted_rpc_dir}/common/proto/esp_hosted_rpc.pb-c.c"
+  TARGET_DIRECTORY ${hosted_rpc_lib} APPEND PROPERTY COMPILE_OPTIONS "-fmerge-all-constants")
 endif()
 
 set_property(SOURCE "ble_budget_probe.c" "pet_p4_protocol.c" "pet_p4_component_ext.c"

@@ -70,7 +70,7 @@ test("generation result acknowledgement also removes its persistent toast", () =
 test("Agent discovery leaves the UI thread without permanently caching missing executables", () => {
   const backend = readSource("src-tauri/src/lib.rs");
   assert.match(backend, /async fn detect_local_agents\(/);
-  assert.match(backend, /spawn_blocking\(detect_local_agents_inner\)/);
+  assert.match(backend, /spawn_blocking\(move \|\| detect_local_agents_inner\(devin_cloud_enabled\)\)/);
   assert.doesNotMatch(backend, /static (?:FULL_SHELL_PATH|NPM_GLOBAL_BIN): OnceLock/);
 });
 
@@ -480,7 +480,7 @@ test("app shell routes device, pet album, component center, API settings, detail
   assert.match(app, /<AppearanceGallery/);
   assert.match(app, /<CustomAvatarWizard/);
   assert.match(app, /<AppearanceDetail/);
-  assert.match(app, /<ComponentCenter active=\{view === "components"\} \/>/);
+  assert.match(app, /<ComponentCenter active=\{view === "components"\} onOpenWirelessMaintenance=\{openWirelessMaintenance\} \/>/);
   assert.match(app, /<ApiSettings/);
   assert.doesNotMatch(app, /CommunityImportHelp/);
 });
@@ -499,10 +499,10 @@ test("bound dashboard keeps its controller mounted but drops visual content off-
   assert.match(dashboard, /editingPersona && <div hidden=\{!active\}><PersonaVoiceModal/);
 });
 
-test("appearance detail receives the current board binding for exact native USB sync", () => {
+test("appearance detail enables native sync only for a verified USB board", () => {
   const source = readSource("src/App.jsx");
 
-  assert.match(source, /<AppearanceDetail[\s\S]*boardDeviceId=\{binding\?\.boardDeviceId \|\| ""\}/);
+  assert.match(source, /<AppearanceDetail[\s\S]*boardDeviceId=\{usb\.connected && \(!binding\?\.boardDeviceId \|\| binding\.boardDeviceId === usb\.boardDeviceId\)\s*\? usb\.boardDeviceId : ""\}/);
 });
 
 test("desktop sidebar stays viewport-bound instead of stretching with page height", () => {

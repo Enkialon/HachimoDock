@@ -14,11 +14,11 @@ The installed app is named **HachimiDock**. Developer documentation may also cal
 
 | Component | Version | Download |
 | --- | --- | --- |
-| Windows x64 | **0.1.237** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_Windows-x64-setup.exe) |
-| macOS (Apple silicon) | **0.1.237** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_macOS-arm64.dmg) |
-| Device firmware | **0.7.103-p4-r284 / R284** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) |
+| Windows x64 | **0.1.241** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_Windows-x64-setup.exe) |
+| macOS (Apple silicon) | **0.1.241** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_macOS-arm64.dmg) |
+| Device firmware | **0.7.104-p4-r287 / R287** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241) |
 
-See the [0.1.237 release notes](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237). Both installers include R284 OTA firmware for WiFi6 and Pico boards with v1 and v3 chips. Wi-Fi button and conversation-state delivery requires both the updated client and firmware. After Wi-Fi pairing, the device can disconnect from the computer's USB data connection; it still needs power, and desktop-assisted features still require the client to run. Pico firmware does not include Wi-Fi or Bluetooth. Verify downloads against the SHA-256 shown on the release page.
+See the [0.1.241 release notes](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241). Both installers include R287 OTA firmware for WiFi6 and Pico boards with v1 and v3 chips. Wi-Fi button and conversation-state delivery requires both the updated client and firmware. After Wi-Fi pairing, the device can disconnect from the computer's USB data connection; it still needs power, and desktop-assisted features still require the client to run. Pico firmware does not include Wi-Fi or Bluetooth. Verify downloads against the SHA-256 shown on the release page.
 
 Complete flashing kits are for first installation or factory recovery and erase settings, appearances and components. Match both board model and chip revision; WiFi6 and Pico, and v1 and v3, are not interchangeable. For routine upgrades, use the built-in OTA updater.
 
@@ -26,12 +26,12 @@ Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package 
 
 ### Complete flashing kits
 
-| Board | Chip revision | R284 factory kit |
+| Board | Chip revision | R287 factory kit |
 | --- | --- | --- |
-| WiFi6 | v1 | [Download WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_wifi6-v1_FULL-FACTORY.zip) |
-| WiFi6 | v3 | [Download WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_wifi6-v3_FULL-FACTORY.zip) |
-| Pico | v1 | [Download Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_pico-v1_FULL-FACTORY.zip) |
-| Pico | v3 | [Download Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_pico-v3_FULL-FACTORY.zip) |
+| WiFi6 | v1 | [Download WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v1_FULL-FACTORY.zip) |
+| WiFi6 | v3 | [Download WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v3_FULL-FACTORY.zip) |
+| Pico | v1 | [Download Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v1_FULL-FACTORY.zip) |
+| Pico | v3 | [Download Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v3_FULL-FACTORY.zip) |
 
 ## What you can do
 
@@ -133,7 +133,7 @@ The paired hardware uses ESP32-P4, 32 MiB Flash, 32 MiB PSRAM and a 480×640 MIP
 
 ### Source and release provenance
 
-The public `main` branch provides the cleaned 0.1.237 / R284 source, including publication cleanup and safety fixes. It is not a reproducible build-source snapshot for the published installers. The `v0.1.237` release tag remains on its original public baseline; this source update does not move it or change its automatic Source code archives. The binary build identifier and public tag target are recorded separately in [release metadata](latest-release.json).
+The `main` branch and `v0.1.241` tag provide the public 0.1.241 / R287 source. The [release metadata](latest-release.json) lists SHA-256 digests for installers and firmware.
 
 Resources are stored in ordinary Git; Git LFS is not required. Preserve dependency locks and choose the correct target configuration. Published binaries retain their original build contents even when `main` changes.
 

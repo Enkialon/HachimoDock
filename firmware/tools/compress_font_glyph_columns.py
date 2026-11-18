@@ -1,4 +1,4 @@
-"""Lossless row prediction of the original resident A1 fallback bitmap.
+"""Lossless column packing of the original resident A1 fallback bitmap.
 
 Only the native32 startup parent uses this asset: its validated full metrics are
 already available before bitmap decode. Other build profiles retain the original
@@ -21,11 +21,18 @@ def transform(raw, reverse=False):
     for offset, width, height in rows:
         offset, width, height = int(offset), int(width), int(height)
         bits = width * height
-        assert offset + (bits + 7) // 8 <= len(raw)
-        for bit in (range(width, bits) if reverse else range(bits - 1, width - 1, -1)):
-            prior = bit - width
-            value = (out[offset + prior // 8] >> (7 - prior % 8)) & 1
-            out[offset + bit // 8] ^= value << (7 - bit % 8)
+        size = (bits + 7) // 8
+        assert size <= 34 and offset + size <= len(raw)
+        if not size:
+            continue
+        glyph = f"{int.from_bytes(raw[offset:offset + size], 'big'):0{size * 8}b}"
+        if reverse:
+            pixels = ''.join(glyph[column * height + row]
+                             for row in range(height) for column in range(width))
+        else:
+            pixels = ''.join(glyph[column:bits:width] for column in range(width))
+        # The tail bits are part of the original bitmap, including padding.
+        out[offset:offset + size] = int(pixels + glyph[bits:], 2).to_bytes(size, 'big')
     return bytes(out)
 
 
@@ -34,26 +41,26 @@ def main():
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
     raw = bitmap_bytes()
-    predicted = transform(raw)
-    assert transform(predicted, reverse=True) == raw
-    asset = ROOT / 'assets/fonts/pet_cn_16_rows.deflate'
+    columns = transform(raw)
+    assert transform(columns, reverse=True) == raw
+    asset = ROOT / 'assets/fonts/pet_cn_16_glyph_columns.deflate'
     if args.check:
         packed = asset.read_bytes()
     else:
         from zopfli.zlib import compress
-        packed = compress(predicted, numiterations=15)
-    assert zlib.decompress(packed) == predicted
+        packed = compress(columns, numiterations=15)
+    assert zlib.decompress(packed) == columns
     fnv = 2166136261
     for byte in raw:
         fnv = ((fnv ^ byte) * 16777619) & 0xffffffff
-    header = ('/* Generated lossless predictor; canonical MiSans data remains unchanged. */\n'
+    header = ('/* Generated lossless glyph columns; canonical MiSans data remains unchanged. */\n'
               '#pragma once\n'
-              f'#define PET_FONT_ROWS_PACKED_BYTES {len(packed)}U\n'
-              f'#define PET_FONT_ROWS_ADLER UINT32_C(0x{zlib.adler32(predicted):08x})\n'
-              f'#define PET_FONT_ROWS_RESTORED_FNV UINT32_C(0x{fnv:08x})\n')
-    target = ROOT / 'main/pet_p4_font_rows_size.h'
+              f'#define PET_FONT_GLYPH_COLUMNS_PACKED_BYTES {len(packed)}U\n'
+              f'#define PET_FONT_GLYPH_COLUMNS_ADLER UINT32_C(0x{zlib.adler32(columns):08x})\n'
+              f'#define PET_FONT_GLYPH_COLUMNS_RESTORED_FNV UINT32_C(0x{fnv:08x})\n')
+    target = ROOT / 'main/pet_p4_font_glyph_columns_size.h'
     if args.check:
-        assert target.read_text() == header, 'Stale row-predicted font asset'
+        assert target.read_text() == header, 'Stale column-packed font asset'
     else:
         asset.write_bytes(packed)
         target.write_text(header)

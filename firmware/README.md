@@ -1,6 +1,6 @@
 # HachimoDock ESP32-P4 固件
 
-当前源码版本 **0.7.103-p4-r284 / R284**，配套桌面端 **0.1.237**。公开 `main` 包含发布清理及安全修正，并非已发布二进制的可复现源码快照；[0.1.237 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) 标签保持原公开基线不变。构建或主机测试不等同于实机与声学验收。
+当前源码版本 **0.7.104-p4-r287 / R287**，配套桌面端 **0.1.241**。完整烧录包见 [0.1.241 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241)。
 
 本目录是 HachimoDock 当前使用的 ESP32-P4 固件源码，与 [PC 客户端](../pc/) 配合使用：PC 负责 Agent 状态监听、语音识别服务对接、素材预处理与传输；设备负责 USB 通信、受支持板型的 Wi-Fi／蓝牙、按键与摇杆输入、屏幕渲染、形象播放及组件运行。
 

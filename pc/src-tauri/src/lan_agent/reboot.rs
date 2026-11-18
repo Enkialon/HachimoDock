@@ -121,6 +121,8 @@ mod tests {
             component_delivery: false,
             component_bundle: false,
             input_double_press: false,
+            system_settings: None,
+            panel_control: false,
             reboot_supported: true,
             control_trusted: true,
             wireless_ota: false,

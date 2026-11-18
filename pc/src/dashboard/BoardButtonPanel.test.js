@@ -69,7 +69,7 @@ test("Button configuration header is one compact toolbar instead of a duplicated
   const dashboard = readFileSync(join(here, "..", "DeviceDashboard.jsx"), "utf8");
   assert.match(source, /<h2>按钮配置<\/h2>/);
   assert.match(source, /\{controlGroups\.length\} 个控件/);
-  assert.match(source, /voiceConfigDirty \? "待同步" : .*"待核对" : "已同步"/);
+  assert.match(source, /voiceConfigDirty \? "待同步" : confirmed \? "已同步" : "待核对"/);
   assert.doesNotMatch(dashboard, /<Card title="按钮配置"/);
   assert.match(css, /\.board-button-panel__toolbar\s*{[\s\S]*min-height:\s*38px[\s\S]*padding:\s*0 0 var\(--space-2\)/);
   assert.match(css, /\.board-button-panel__voice-toggle\s*{[\s\S]*min-height:\s*34px[\s\S]*padding:\s*3px 6px/);
@@ -158,7 +158,7 @@ test("Every gesture can reveal its own bounded Code Agent prompt directly below 
 test("The sync action uses the shared Button with stable loading semantics", () => {
   assert.match(source, /import Button from "\.\.\/shell\/Button"/);
   assert.match(source, /variant="primary"/);
-  assert.match(source, /loading=\{voiceConfigOtaState\?\.pending\}/);
+  assert.match(source, /loading=\{syncPending\}/);
   assert.match(source, /loadingLabel="正在同步…"/);
 });
 

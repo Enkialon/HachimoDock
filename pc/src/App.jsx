@@ -1,6 +1,6 @@
 /**
  * [Input] Consume DeviceSetup.jsx and DeviceDashboard.jsx.
- * [Output] Always-accessible desktop navigation with a keyboard configuration page, retryable USB setup, retained API drafts, paired LAN Agent sessions and explicitly active component observers. Accessibility consent is requested by native Agent operations, not app launch.
+ * [Output] Desktop navigation for keyboard configuration, USB setup, authenticated Wi-Fi maintenance, Agent sessions and active component observers. Accessibility consent is requested by native Agent operations.
  * [Pos] component node in pc/src
  * Generation notifications distinguish reference-image rejection with retained partial results from full success.
  * [Sync] If this file changes, update this header and `pc/src/.folder.md`.
@@ -247,6 +247,11 @@ function AppInner({
   const [componentsVisited, setComponentsVisited] = useState(view === "components");
   useEffect(() => { if (view === "components") setComponentsVisited(true); }, [view]);
   const [apiVisited, setApiVisited] = useState(view === "api");
+  const [wirelessMaintenanceRequest, setWirelessMaintenanceRequest] = useState(0);
+  const openWirelessMaintenance = useCallback(() => {
+    setWirelessMaintenanceRequest(request => request + 1);
+    setView("settings");
+  }, [setView]);
   useEffect(() => { if (view === "api") setApiVisited(true); }, [view]);
 
   const handleSetupCompleteWithRefresh = useCallback(async () => {
@@ -355,7 +360,7 @@ function AppInner({
             <button type="button" className={`sidebar-nav__item ${activeTab === "settings" ? "is-active" : ""}`} onClick={() => setView("settings")} title="其它设置">
               <Settings size={16} /><span className="sidebar-nav-label">其它设置</span>
             </button>
-            <FirmwareUpdateNavItem usb={usb} />
+            <FirmwareUpdateNavItem usb={usb} wifi={wifi} onOpenWirelessMaintenance={openWirelessMaintenance} />
           </nav>
           {!!activity.length && <details className="app-activity"><summary>{activity.length} 项进行中或未保存</summary>
             <ul>{activity.map(item => <li key={item}>{item}</li>)}</ul>
@@ -421,7 +426,9 @@ function AppInner({
                 <div hidden={view !== "detail"}>
                   <AppearanceDetail
                     appearanceId={detailAppearanceId}
-                    boardDeviceId={binding?.boardDeviceId || ""}
+                    boardDeviceId={usb.connected && (!binding?.boardDeviceId || binding.boardDeviceId === usb.boardDeviceId)
+                      ? usb.boardDeviceId : ""}
+                    wifiConnected={Boolean(wifi)}
                     onBack={handleDetailBack}
                     onOpenApiSettings={handleOpenApiSettings}
                   />
@@ -429,7 +436,7 @@ function AppInner({
             )}
             {(componentsVisited || view === "components") && (
               <div hidden={view !== "components"}>
-                <ComponentCenterBoundary><ComponentCenter active={view === "components"} /></ComponentCenterBoundary>
+                <ComponentCenterBoundary><ComponentCenter active={view === "components"} onOpenWirelessMaintenance={openWirelessMaintenance} /></ComponentCenterBoundary>
               </div>
             )}
             {(apiVisited || view === "api") && (
@@ -438,7 +445,8 @@ function AppInner({
               </div>
             )}
             {view === "home" && <SmartHome />}
-            <div hidden={view !== "settings"}><DeviceSettings usb={usb} active={view === "settings"} /></div>
+            <div hidden={view !== "settings"}><DeviceSettings usb={usb} wifi={wifi} active={view === "settings"}
+              wirelessMaintenanceRequest={wirelessMaintenanceRequest} /></div>
             </Suspense>
           </main>
         </section>

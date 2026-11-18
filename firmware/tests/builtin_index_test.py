@@ -64,8 +64,7 @@ static void *tracked_malloc(size_t n) {
   h->bytes=n;live+=n;if(live>peak)peak=live;++allocations;return h+1;
 }
 static void tracked_free(void *p) {
-  if(!p) { return; }
-  allocation_t *h=(allocation_t*)p-1;
+  if(!p)return;allocation_t *h=(allocation_t*)p-1;
   assert(live>=h->bytes);live-=h->bytes;free(h);
 }
 int main(int argc,char **argv) {

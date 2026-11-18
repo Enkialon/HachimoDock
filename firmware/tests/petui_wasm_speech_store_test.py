@@ -39,7 +39,7 @@ def test_wasm_speech_sidecar_owns_storage_and_live_generation(tmp_path):
         crypto = subprocess.check_output(["pkg-config", "--cflags", "--libs", "libcrypto"], text=True).split()
     executable = tmp_path / "speech-store"
     subprocess.run(
-        ["cc", "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations",
+        ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-Wno-deprecated-declarations",
          "-Wno-unused-variable", "-fsanitize=address,undefined", "-DPET_P4_WASM_AUDIO=1",
          "-I", str(tmp_path), "-I", str(firmware / "main"), "-I", str(firmware / "tests/vendor/cjson"),
          str(firmware / "tests/petui_wasm_speech_store_test.c"),

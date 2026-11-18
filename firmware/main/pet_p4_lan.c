@@ -46,6 +46,8 @@
 #define LAN_STATUS_MAX 576
 #define LAN_KEYBOARD_REQUEST_MAX 64
 #define LAN_KEYBOARD_REPLY_MAX 512
+#define LAN_PANEL_REQUEST_MAX 8192
+#define LAN_PANEL_REPLY_MAX (LAN_MAX_BODY - 2)
 #define LAN_LEASE_MS 10000
 #define LAN_IO_US 1800000
 #define LAN_KEY_SIZE 16
@@ -85,6 +87,7 @@ static bool volume_available(void) {
 }
 
 #include "pet_p4_lan_trust.inc"
+#include "pet_p4_lan_panel.inc"
 #include "pet_p4_lan_component.inc"
 
 static void refresh_volume(void) {
@@ -359,6 +362,7 @@ static bool send_sealed_response(int fd, mbedtls_gcm_context *gcm, const uint8_t
 #include "pet_p4_lan_realtime.inc"
 #include "pet_p4_lan_component_wire.inc"
 
+__attribute__((optimize("Oz")))
 static bool send_device_status(int fd, mbedtls_gcm_context *gcm, const uint8_t header[3],
                                uint8_t *cipher, uint8_t *plain, int64_t deadline) {
   const esp_app_desc_t *app = esp_app_get_description();
@@ -389,6 +393,7 @@ static bool send_device_status(int fd, mbedtls_gcm_context *gcm, const uint8_t h
                           atomic_load(&rtc_wire_last_suspended_power_save)) &&
     cJSON_AddBoolToObject(status, "componentBundle", true) &&
     cJSON_AddBoolToObject(status, "inputDoublePress", true) &&
+    cJSON_AddBoolToObject(status, "ops", true) &&
     cJSON_AddBoolToObject(status, "controlTrusted", atomic_load(&control_trusted) && !atomic_load(&forget_pending)) &&
     cJSON_AddNumberToObject(status, "httpsSuccesses", link.successes) &&
     cJSON_AddNumberToObject(status, "httpsFailures", link.failures);
@@ -428,6 +433,7 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
       break;
     case PET_LAN_CONTROL_COMPONENT: if (size < 24 || size > LAN_COMPONENT_MAX) return; break;
     case PET_LAN_CONTROL_KEYBOARD: if (size < 18 || size > 16 + LAN_KEYBOARD_REQUEST_MAX) return; break;
+    case PET_LAN_CONTROL_PANEL: if (size < 17 || size > LAN_PANEL_REQUEST_MAX) return; break;
     default: return;
   }
   if (!socket_io(fd, cipher, size + LAN_TAG_SIZE, false, deadline)) return;
@@ -544,6 +550,26 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
     size_t length = 1;
     if (reply && cJSON_PrintPreallocated(reply, (char *)plain, LAN_KEYBOARD_REPLY_MAX, false))
       length = strlen((char *)plain);
+    else plain[0] = 0;
+    cJSON_Delete(request);
+    cJSON_Delete(reply);
+    send_sealed_response(fd, &gcm, header, cipher, plain, length, esp_timer_get_time() + LAN_IO_US);
+  } else if (ok && mode == PET_LAN_CONTROL_PANEL) {
+    const unsigned action = plain[16];
+    cJSON *request = NULL, *reply = NULL;
+    if ((action == PET_LAN_PANEL_WRITE_INPUT || action == PET_LAN_PANEL_REMOVE_COMPONENT) && size > 17 &&
+        pet_json_source_text_limit_bytes(plain + 17, size - 17, 4)) {
+      plain[size] = 0;
+      request = cJSON_ParseWithLengthOpts((const char *)plain + 17, size - 17 + 1, NULL, true);
+    }
+    const bool valid = action == PET_LAN_PANEL_WRITE_INPUT ? lan_panel_valid_input(request)
+      : action == PET_LAN_PANEL_REMOVE_COMPONENT ? lan_panel_remove_valid(request)
+      : size == 17 && action >= PET_LAN_PANEL_READ_INPUT && action <= PET_LAN_PANEL_RESET_INPUT;
+    if (!wired && valid) control_deliver(fd, mode, plain, size, request_generation, request, &reply);
+    mbedtls_platform_zeroize(plain, size);
+    size_t length = 1;
+    if (reply && cJSON_PrintPreallocated(reply, (char *)plain, LAN_PANEL_REPLY_MAX, false))
+      length = strlen((const char *)plain);
     else plain[0] = 0;
     cJSON_Delete(request);
     cJSON_Delete(reply);

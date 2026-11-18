@@ -2,10 +2,11 @@ use super::{
     exchange_connection, exchange_response_with_timeout, query_status, read_before,
     read_with_recovery, Peer, IO_TIMEOUT,
 };
-use crate::usb_serial::UsbSerialManager;
+use crate::usb_serial::{ComponentCenterTitle, UsbSerialManager};
 use ring::aead;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     io::Write,
     net::TcpStream,
     path::Path,
@@ -27,16 +28,40 @@ pub(crate) struct ComponentPreview {
 
 struct Package {
     preview: ComponentPreview,
-    bytes: Vec<u8>,
+    stage: tempfile::TempDir,
+    version_hash: String,
+    name: String,
 }
 
 impl Package {
     fn read(path: &Path) -> Result<Self, String> {
-        let bytes = crate::clawpkg::read_clawpkg_source_file(
-            path,
-            crate::clawpkg::CLAWPKG_MAX_ARCHIVE_BYTES as u64,
-        )?;
-        let verified = crate::clawpkg::validate_clawpkg_bytes(&bytes)?;
+        let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let package = stage.path().join("package");
+        let metadata = std::fs::symlink_metadata(path).map_err(|e| e.to_string())?;
+        let archive_digest = if metadata.is_dir() {
+            // The shared package reader bounds allocations and rejects unsafe paths.
+            let files = crate::clawpkg::collect_clawpkg_directory_files(path)?;
+            for directory in ["assets", "runtime"] {
+                if path.join(directory).is_dir() {
+                    std::fs::create_dir_all(package.join(directory)).map_err(|e| e.to_string())?;
+                }
+            }
+            for (name, bytes) in files {
+                let file = package.join(name);
+                std::fs::create_dir_all(file.parent().ok_or("无效组件路径")?).map_err(|e| e.to_string())?;
+                std::fs::write(file, bytes).map_err(|e| e.to_string())?;
+            }
+            None
+        } else {
+            let bytes = crate::clawpkg::read_clawpkg_source_file(
+                path, crate::clawpkg::CLAWPKG_MAX_ARCHIVE_BYTES as u64,
+            )?;
+            let archive = stage.path().join("verified.hachiapp");
+            std::fs::write(&archive, &bytes).map_err(|e| e.to_string())?;
+            crate::component_library::extract_zip_safe(&archive, &package)?;
+            Some(format!("{:x}", Sha256::digest(&bytes)))
+        };
+        let verified = crate::clawpkg::validate_clawpkg_at_path(&package)?;
         if !verified.ok {
             return Err(verified.errors.join("、"));
         }
@@ -48,27 +73,29 @@ impl Package {
         if !valid_id(&id, 47) {
             return Err("无线安装要求组件 ID 为 1–47 位小写 ASCII 字符。".into());
         }
-        let digest = format!("{:x}", Sha256::digest(&bytes));
+        let version_hash = crate::component_library::package_content_hash(&package)?;
+        let digest = archive_digest.unwrap_or_else(|| version_hash.clone());
         Ok(Self {
             preview: ComponentPreview { id, digest },
-            bytes,
+            stage,
+            version_hash,
+            name: manifest.name,
         })
     }
 
-    fn prepare(&self) -> Result<Vec<(String, Vec<u8>)>, String> {
-        // Extract the inspected archive snapshot in a private staging directory.
-        // USB's package compiler generates exactly the native files from it.
-        let stage = tempfile::tempdir().map_err(|e| e.to_string())?;
-        let archive = stage.path().join("verified.hachiapp");
-        let package = stage.path().join("package");
-        std::fs::write(&archive, &self.bytes).map_err(|e| e.to_string())?;
-        crate::component_library::extract_zip_safe(&archive, &package)?;
+    fn prepare(
+        &self,
+        binding_overrides: &HashMap<String, String>,
+        center_title: Option<&ComponentCenterTitle>,
+    ) -> Result<Vec<(String, Vec<u8>)>, String> {
+        // USB and Wi-Fi use the same native package compiler.
+        let package = self.stage.path().join("package");
         let mut files = crate::usb_serial::UsbSerialManager::prepare_widget_delivery(
             &self.preview.id,
             &package,
-            &Default::default(),
-            None,
-            None,
+            binding_overrides,
+            center_title,
+            center_title.map(|_| serde_json::json!({"widgetCenterTitle": "rle4-v1"})).as_ref(),
         )?;
         files.retain(|(_, bytes)| !bytes.is_empty());
         files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -119,7 +146,7 @@ fn valid_wire_path(path: &str) -> bool {
         })
 }
 
-fn valid_id(id: &str, max: usize) -> bool {
+pub(super) fn valid_id(id: &str, max: usize) -> bool {
     let mut bytes = id.bytes();
     id.len() <= max
         && bytes.next().is_some_and(|b| b.is_ascii_lowercase())
@@ -243,9 +270,17 @@ fn install_bundle(
     boot: &str,
     id: &str,
     files: &[(String, Vec<u8>)],
+    expected_installed_version: Option<&str>,
     require_lan: impl Fn() -> Result<(), String>,
 ) -> Result<(), String> {
-    let begin = offer(id, files)?;
+    let mut begin = offer(id, files)?;
+    if let Some(version) = expected_installed_version {
+        if version.is_empty() || version.len() > 63 || version.as_bytes().contains(&0) {
+            return Err("无法确认当前设备组件的版本。".into());
+        }
+        begin[0] = 4;
+        begin.extend_from_slice(version.as_bytes());
+    }
     require_lan()?;
     let (stream, key, ack) = super::retry_uncommitted_offer(|| {
         require_lan()
@@ -294,18 +329,30 @@ pub(crate) async fn lan_component_install(
     path: String,
     id: String,
     digest: String,
+    expected_board_device_id: String,
+    expected_boot_id: String,
+    expected_installed_version: Option<String>,
+    expected_version_hash: Option<String>,
+    binding_overrides: Option<HashMap<String, String>>,
+    center_title: Option<ComponentCenterTitle>,
     usb_manager: tauri::State<'_, UsbSerialManager>,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let usb = usb_manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let require_lan = || super::require_no_usb(&usb);
         require_lan()?;
         let package = Package::read(Path::new(&path))?;
-        if package.preview.id != id || package.preview.digest != digest {
+        if package.preview.id != id || package.preview.digest != digest
+            || expected_version_hash.as_ref().is_some_and(|expected| expected != &package.version_hash)
+        {
             return Err("组件内容在预览后变化，请重新选择文件。".into());
         }
-        let files = package.prepare()?;
         let (peer, status) = read_with_recovery(query_status, "设备当前不可达，安装请求未发送。")?;
+        if status.board_device_id != expected_board_device_id || status.boot_id != expected_boot_id {
+            return Err("设备身份已变化，请重新确认组件同步目标。".into());
+        }
+        let center_title = center_title.as_ref().filter(|_| status.panel_control && status.component_bundle);
+        let files = package.prepare(&binding_overrides.unwrap_or_default(), center_title)?;
         if !status.input_double_press {
             if let Some((_, bytes)) = files.iter().find(|(path, _)| path == "buttons.json") {
                 let buttons: Vec<serde_json::Value> = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
@@ -323,8 +370,13 @@ pub(crate) async fn lan_component_install(
         if boot.len() != 16 || !boot.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("无法确认目标设备的本次启动身份。".into());
         }
+        let result = serde_json::json!({"ok": true, "manifest": {"name": package.name}});
+        if expected_installed_version.is_some() && (!status.component_bundle || !status.panel_control) {
+            return Err("当前固件未开放 Wi-Fi 组件更新。".into());
+        }
         if status.component_bundle {
-            return install_bundle(&peer, boot, &id, &files, require_lan);
+            install_bundle(&peer, boot, &id, &files, expected_installed_version.as_deref(), require_lan)?;
+            return Ok(result);
         }
         let body = legacy_body(&id, boot, &files)?;
         require_lan()?;
@@ -337,7 +389,7 @@ pub(crate) async fn lan_component_install(
         )
         .as_deref()
         {
-            Ok([1]) => Ok(()),
+            Ok([1]) => Ok(result),
             Ok([0]) => Err("设备拒绝旧版无线组件安装。".into()),
             _ => Err("安装结果未确认。请查看设备组件列表，再决定是否重试。".into()),
         }
@@ -358,7 +410,7 @@ mod tests {
             .expect("set HACHIMO_LAN_HIL_PACKAGE to the exact .hachiapp file to install");
         let package = Package::read(Path::new(&path)).expect("validate the selected archive");
         let files = package
-            .prepare()
+            .prepare(&HashMap::new(), None)
             .expect("prepare device payload via USB's package compiler");
         let (peer, status) =
             read_with_recovery(query_status, "authenticate live status over Wi-Fi")
@@ -389,7 +441,7 @@ mod tests {
         }
         // The explicitly selected HIL test exercises LAN, independent of the
         // desktop command's transport selection.
-        install_bundle(&peer, &status.boot_id, &package.preview.id, &files, || {
+        install_bundle(&peer, &status.boot_id, &package.preview.id, &files, None, || {
             Ok(())
         })
         .expect("mode 14 must return an authenticated commit success");
@@ -570,7 +622,7 @@ mod tests {
                 Ok(())
             }
         };
-        let failure = install_bundle(&peer, boot, "demo", &files, require_lan).unwrap_err();
+        let failure = install_bundle(&peer, boot, "demo", &files, None, require_lan).unwrap_err();
         if usb_connects {
             assert_eq!(failure, "USB connected");
         } else {

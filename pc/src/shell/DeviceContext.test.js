@@ -16,6 +16,7 @@ import {
   deriveDeviceReachability,
   normalizeUsbStatusPayload,
   pairedWifiTarget,
+  pairedWifiTargetsEqual,
   resolveUsbRuntime,
   usbStatusSnapshotsEqual,
 } from "./DeviceContext.pure.js";
@@ -109,7 +110,8 @@ test("provider polls USB status but does not auto-connect inside the polling eff
 
 test("provider obtains Wi-Fi reachability from the authenticated paired status", () => {
   assert.match(source, /invoke\("lan_device_status"\)/);
-  assert.match(source, /usb\.connected \? null : pairedWifiTarget\(wifiStatus\)/);
+  assert.match(source, /usb\.connected \? null : wifiStatus/);
+  assert.match(source, /target = pairedWifiTarget\(await invoke\("lan_device_status"\)\)/);
   assert.match(source, /activeBoardDeviceId = onlineBoardDeviceId \|\| binding\?\.boardDeviceId/);
   assert.match(source, /deriveDeviceReachability\(\{ usb, wifi \}\)/);
   assert.match(source, /if \(usb.connected\) return applyDesktopPet\(agentId, appearance, options\)/);
@@ -210,11 +212,41 @@ test("P4 reachability prefers USB and uses authenticated Wi-Fi when USB disconne
   assert.equal(pairedWifiTarget({ ...status, wifiConnected: false }), null);
   assert.equal(pairedWifiTarget({ ...status, bootId: "" }), null);
   const wifi = pairedWifiTarget(status);
-  assert.deepEqual(wifi, { boardDeviceId: status.boardDeviceId, bootId: status.bootId });
+  const wifiCapabilities = { trustedVolume: true, controlTrusted: true, wirelessOta: true, componentDelivery: true, panelControl: true };
+  assert.deepEqual(wifi, { boardDeviceId: status.boardDeviceId, bootId: status.bootId,
+    address: "", firmware: "", bundledFirmwareVersion: "", wifiConnected: true,
+    clockSynchronized: false, rebootSupported: false, wirelessRealtime: false,
+    trustedVolume: false, controlTrusted: false, wirelessOta: false, componentDelivery: false,
+    inputDoublePress: false, systemSettings: false, panelControl: false });
+  assert.deepEqual(pairedWifiTarget({ ...status, ...wifiCapabilities }), { ...wifi, ...wifiCapabilities });
   assert.deepEqual(deriveDeviceReachability({ usb, wifi }), connected);
   assert.deepEqual(deriveDeviceReachability({ usb: { connected: false }, wifi }), {
     deviceOnline: true, onlineBoardDeviceId: status.boardDeviceId,
   });
+});
+
+test("Wi-Fi status reconciliation preserves version and recovery information", () => {
+  const status = { boardDeviceId: "p4-123456789abc", bootId: "0123456789abcdef", wifiConnected: true,
+    address: "192.168.1.12", firmware: "0.7.103-p4-r285-wifi6", bundledFirmwareVersion: "0.7.103-p4-r286-wifi6" };
+  const old = pairedWifiTarget(status);
+  assert.equal(old.address, status.address);
+  assert.equal(old.firmware, status.firmware);
+  assert.equal(old.bundledFirmwareVersion, status.bundledFirmwareVersion);
+  assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status })), true);
+  assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, firmware: status.bundledFirmwareVersion })), false);
+  assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, address: "192.168.1.13" })), false);
+  assert.equal(pairedWifiTargetsEqual(old, null), false);
+});
+
+test("authenticated Wi-Fi keeps double-press capability and recognizes released WiFi6 system settings", () => {
+  const status = { boardDeviceId: "p4-123456789abc", bootId: "0123456789abcdef", wifiConnected: true,
+    firmware: "0.7.103-p4-r284-wifi6", inputDoublePress: true };
+  assert.equal(pairedWifiTarget(status).inputDoublePress, true);
+  assert.equal(pairedWifiTarget(status).systemSettings, true);
+  assert.equal(pairedWifiTarget({ ...status, systemSettings: false }).systemSettings, false);
+  assert.equal(pairedWifiTarget({ ...status, firmware: "0.7.103-p4-r284-pico" }).systemSettings, false);
+  assert.equal(pairedWifiTarget({ ...status, firmware: "0.7.103-p4-r284" }).systemSettings, false);
+  assert.equal(pairedWifiTarget({ ...status, wifiConnected: false }), null);
 });
 
 test("provider hydrates followed channels locally without network availability reconciliation", () => {

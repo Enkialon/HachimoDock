@@ -1447,6 +1447,39 @@ select:focus-visible {
 }
 
 .api-settings__form--speech { grid-template-columns: minmax(240px, 1fr) auto; }
+.api-settings__form--devin { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.api-settings__devin-enable,
+.api-settings__devin-actions { grid-column: 1 / -1; }
+.api-settings__devin-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.modal-card.devin-config-dialog {
+  width: min(560px, calc(100% - var(--space-6) * 2));
+  margin: auto;
+  padding: 0;
+  color: var(--text);
+}
+.devin-config-dialog::backdrop {
+  background: var(--backdrop);
+  backdrop-filter: blur(3px);
+}
+.devin-config-dialog__body {
+  display: grid;
+  gap: var(--space-3);
+}
+.devin-config-dialog__body p {
+  margin: 0;
+}
+.devin-config-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  border-top: 1px solid var(--line);
+  padding: var(--space-3) var(--space-5);
+}
 
 .api-settings__secret-input {
   padding: 0 11px;
@@ -1546,6 +1579,10 @@ select:focus-visible {
 
 .api-settings__provider-result.is-error {
   color: var(--danger);
+}
+
+@media (max-width: 640px) {
+  .api-settings__form--devin { grid-template-columns: 1fr; }
 }
 
 .generation-api-status {

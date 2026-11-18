@@ -1959,7 +1959,13 @@ static esp_err_t init_uart(void) {
     0
   );
   if (err == ESP_ERR_INVALID_STATE) return ESP_OK;
-  return err;
+  if (err != ESP_OK) return err;
+  // At 4 Mbaud the default 120-byte trigger leaves only 20 us before
+  // a 128-byte FIFO overflows. Service sustained bursts earlier so LCD and
+  // audio interrupts can coexist with PC-to-device playback.
+  if (PET_P4_UART_BAUD >= 2000000)
+    return uart_set_rx_full_threshold(PET_P4_UART_NUM, 32);
+  return ESP_OK;
 }
 
 static void usb_rx_task(void *arg) {

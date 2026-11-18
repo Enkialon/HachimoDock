@@ -67,7 +67,7 @@ function FirmwareBoardDialog({ onCancel, onConfirm }) {
   );
 }
 
-export default function FirmwareUpdateNavItem({ usb = {} }) {
+export default function FirmwareUpdateNavItem({ usb = {}, wifi, onOpenWirelessMaintenance }) {
   const { push } = useToast();
   const [probe, setProbe] = useState(null);
   const [probeRefresh, setProbeRefresh] = useState(0);
@@ -136,6 +136,9 @@ export default function FirmwareUpdateNavItem({ usb = {} }) {
   const disposition = connectedP4
     ? firmwareUpdateDisposition(currentVersion, bundledFirmware?.version || currentCompletion?.version)
     : "unknown";
+  const wifiDisposition = !usb.connected && wifi
+    ? firmwareUpdateDisposition(wifi.firmware, wifi.bundledFirmwareVersion)
+    : "unknown";
 
   const startUpdate = useCallback(async (confirmedBoardModel) => {
     if (pending || (requiresBoardChoice
@@ -186,10 +189,17 @@ export default function FirmwareUpdateNavItem({ usb = {} }) {
       aria-label="固件升级"
       title={bundledFirmware?.version
         ? `${boardLabel} · 设备 ${currentVersion || "未知"} · 内置 ${bundledFirmware.version}`
-        : "固件升级"}
+        : !usb.connected && wifi?.bundledFirmwareVersion
+          ? `WiFi6 · 设备 ${wifi.firmware || "未知"} · 内置 ${wifi.bundledFirmwareVersion}`
+          : "固件升级"}
     >
       {pending ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
       <span className="sidebar-nav-label">固件升级</span>
+      {!usb.connected && wifi?.wirelessOta && onOpenWirelessMaintenance && !pending && wifiDisposition !== "latest" && (
+        <button type="button" className="sidebar-firmware-update__action" onClick={onOpenWirelessMaintenance}>
+          {wifiDisposition === "update" ? "更新" : "无线维护"}
+        </button>
+      )}
       {boardLabel && <span className="sidebar-firmware-update__board">{boardLabel}</span>}
       {connectedP4 && !pending && !boardLabel && !requiresBoardChoice && disposition !== "latest" && (
         <span className="sidebar-firmware-update__latest" role="status">
@@ -212,7 +222,7 @@ export default function FirmwareUpdateNavItem({ usb = {} }) {
       {boardDialogOpen && (
         <FirmwareBoardDialog onCancel={() => setChoosingBoard(null)} onConfirm={startUpdate} />
       )}
-      {!pending && disposition === "latest" && (
+      {!pending && (disposition === "latest" || wifiDisposition === "latest") && (
         <span className="sidebar-firmware-update__latest">已最新</span>
       )}
     </div>

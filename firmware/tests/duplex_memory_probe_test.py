@@ -109,7 +109,7 @@ def test_stop_requires_capture_conversation_and_playback_false():
 
 @pytest.mark.parametrize('topic,payload', [
     ('audio/status', dict(boardDeviceId='wrong')),
-    ('audio/status', dict(boardDeviceId='test-board', aecReason='timeout')),
+    ('audio/status', dict(boardDeviceId='test-board', conversationSessionId='test-session', aecReason='timeout')),
     ('audio/error', {}), ('protocol/error', {}), ('protocol/ack', dict(ok=False)),
     ('audio/diagnostic', dict(conversationSessionId='test-session', ok=False)),
     ('audio/chunk', dict(conversationSessionId='test-session', seq=True)),
@@ -117,6 +117,18 @@ def test_stop_requires_capture_conversation_and_playback_false():
 def test_faults_fail_closed(topic, payload):
     with pytest.raises(RuntimeError):
         evidence().consume(message(topic, **payload))
+
+
+def test_preparation_does_not_attribute_a_retired_aec_fault_to_new_capture():
+    e = evidence()
+    active = dict(boardDeviceId='test-board', active=True, conversation=True,
+                  aecReason='reference_overflow')
+    e.consume(message('audio/status', **active, conversationSessionId='old-session'))
+    e.consume(message('audio/status', **active, conversationSessionId='test-session',
+                      audioAecPreparing=True))
+    with pytest.raises(RuntimeError, match='AEC fault'):
+        e.consume(message('audio/status', **active, conversationSessionId='test-session',
+                          audioAecPreparing=False))
 
 
 def valid_evidence():
@@ -131,6 +143,14 @@ def valid_evidence():
 
 def test_verify_accepts_complete_numeric_evidence():
     valid_evidence().verify()
+
+
+def test_verify_rejects_malformed_audio_even_without_sequence_gap():
+    e = valid_evidence()
+    e.observe_line(b'{"topic":"audio/chunk"', ValueError())
+    assert e.report['sequenceGaps'] == 0
+    with pytest.raises(RuntimeError, match='Malformed audio JSON'):
+        e.verify()
 
 
 def test_pcm_checksum_checks_real_bytes_without_retaining_them():

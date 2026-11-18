@@ -51,6 +51,7 @@ import {
   deriveDeviceReachability,
   normalizeUsbStatusPayload,
   pairedWifiTarget,
+  pairedWifiTargetsEqual,
   usbStatusSnapshotsEqual,
 } from "./DeviceContext.pure.js";
 
@@ -90,8 +91,7 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
 
   const [usb, setUsb] = useState({ connected: false, portName: "", boardDeviceId: "" });
   const [wifiStatus, setWifiStatus] = useState(null);
-  const wifi = useMemo(() => usb.connected ? null : pairedWifiTarget(wifiStatus),
-    [usb.connected, wifiStatus]);
+  const wifi = usb.connected ? null : wifiStatus;
   const { deviceOnline, onlineBoardDeviceId } = useMemo(
     () => deriveDeviceReachability({ usb, wifi }),
     [usb, wifi],
@@ -236,18 +236,11 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
       let target = null;
       try {
         if (await readLanAgentPairing()) {
-          const status = await invoke("lan_device_status");
-          if (pairedWifiTarget(status)) {
-            target = { boardDeviceId: status.boardDeviceId, bootId: status.bootId, wifiConnected: true,
-              wirelessRealtime: status.wirelessRealtime === true, controlTrusted: status.controlTrusted === true };
-          }
+          target = pairedWifiTarget(await invoke("lan_device_status"));
         }
       } catch { /* a saved pairing alone does not prove reachability */ }
       if (!disposed && startedAt === revision) {
-        setWifiStatus(previous => previous?.boardDeviceId === target?.boardDeviceId
-          && previous?.bootId === target?.bootId
-          && previous?.wirelessRealtime === target?.wirelessRealtime
-          && previous?.controlTrusted === target?.controlTrusted ? previous : target);
+        setWifiStatus(previous => pairedWifiTargetsEqual(previous, target) ? previous : target);
       }
       inFlight = false;
       if (refreshPending) {

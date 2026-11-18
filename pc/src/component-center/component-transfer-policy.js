@@ -6,7 +6,7 @@ export async function syncAudioPreflight(request, boardDeviceId) {
   return audio;
 }
 export function deviceDeletePolicy({clearSave=false,transport,capabilities={}}) {
-  if(!clearSave&&(transport!=='usb'||capabilities.widgetDeletePreserveSave!==true))
+  if(!clearSave&&transport!=='wifi'&&(transport!=='usb'||capabilities.widgetDeletePreserveSave!==true))
     throw new Error('当前设备或连接不支持保留存档卸载；未删除。请升级固件，或明确勾选清除设备存档。');
   return {preserveSave:!clearSave,clearDeviceSaveConfirmed:clearSave};
 }

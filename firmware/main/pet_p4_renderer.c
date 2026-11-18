@@ -24,6 +24,10 @@
 #include "pet_p4_task_policy.h"
 #include "pet_p4_prefetch_lifetime.h"
 #include "pet_p4_h264_packed.h"
+#include "pet_p4_native_panic.h"
+#if PET_P4_H264_PANIC_TRACE
+#include "esp_rom_crc.h"
+#endif
 #ifndef PET_P4_H264_PREFETCH
 #define PET_P4_H264_PREFETCH 0
 #endif
@@ -43,6 +47,9 @@
 #include "esp_check.h"
 #include "esp_h264_dec.h"
 #include "esp_h264_dec_sw.h"
+#if PET_P4_H264_SERIAL_DECODE
+#include "h264bsd_decoder.h"
+#endif
 #include "esp_heap_caps.h"
 /* Routine renderer success/trace logs are DEBUG only. Both production targets
  * compile at INFO (maximum INFO), so frames and frame-tail metrics never wait
@@ -77,11 +84,16 @@
 #include "pet_p4_audio.h"
 #include "pet_p4_instrument_core.h"
 #include "pet_p4_behavior.h"
+#include "pet_p4_conversation.h"
 #include "pet_p4_raw_assets.h"
 #include "pet_p4_resources_device.h"
 
 #define PET_P4_ASSET_WIDTH 640
 static bool g_last_native_valid;
+#if PET_P4_SYSTEM_WIFI
+static uint32_t g_lcd_underruns_at_last_submit;
+static uint64_t g_lcd_next_retry_ms;
+#endif
 static uint32_t g_lcd_submitted, g_lcd_skipped;
 static portMUX_TYPE g_metrics_lock = portMUX_INITIALIZER_UNLOCKED;
 static pet_p4_render_metrics_t g_metrics;
@@ -177,7 +189,7 @@ _Static_assert(CONFIG_ESP_H264_DUAL_TASK_CORE == 1,
 #define PET_P4_SESSION_CACHE_SENTINEL 0x0001U
 #define PET_P4_SESSION_CACHE_MAX_RUNS 4U
 
-#ifdef CONFIG_ESP_H264_DUAL_TASK
+#if CONFIG_ESP_H264_DUAL_TASK && !PET_P4_H264_SERIAL_DECODE
 #define PET_P4_H264_DECODER_MODE "software-dual"
 #else
 #define PET_P4_H264_DECODER_MODE "software-single"
@@ -306,6 +318,9 @@ static size_t g_h264_stream_offset;
 static uint8_t *g_h264_work_stream;
 static size_t g_h264_work_capacity;
 static size_t g_h264_work_size;
+#if PET_P4_H264_PANIC_TRACE
+static uint32_t g_h264_stream_crc32;
+#endif
 static int g_h264_decoded_frame = -1;
 static uint8_t *g_h264_output;
 static uint32_t g_h264_output_size;
@@ -1250,6 +1265,8 @@ typedef struct {
   int width;
   int height;
   pet_p4_asset_codec_t codec;
+  bool play_once;
+  uint64_t selection_ms;
 } pet_p4_asset_selection_t;
 
 typedef struct {
@@ -2310,12 +2327,13 @@ static bool select_asset(
   const pet_p4_asset_entry_t *entry;
   int index;
   if (!state || !out) return false;
-  index = pet_p4_behavior_select(
+  index = pet_p4_behavior_select_video(
     &g_behavior,
     &state->asset_catalog,
     pet_p4_state_effective_lifecycle(state, now_ms),
     state->asset_revision,
-    now_ms
+    now_ms,
+    !pet_p4_conversation_active(state) && !pet_p4_audio_ptt_video_ready()
   );
   if (index < 0 || index >= state->asset_catalog.count) return false;
   entry = &state->asset_catalog.entries[index];
@@ -2330,6 +2348,8 @@ static bool select_asset(
   out->duration_ms = entry->duration_ms;
   out->width = entry->width;
   out->height = entry->height;
+  out->play_once = g_behavior.play_video_once;
+  out->selection_ms = g_behavior.selected_since_ms;
   for (int i = 0; i < entry->frames && i < PET_P4_MAX_MJPEG_FRAMES; i += 1) {
     out->frame_sizes[i] = entry->frame_sizes[i];
   }
@@ -2468,6 +2488,32 @@ static void scale_asset_frame_to_display(int src_w, int src_h, int src_stride) {
   }
 }
 
+#if PET_P4_H264_SERIAL_DECODE
+extern h264bsd_hd_t __real_h264bsdAlloc(h264bsd_cfg_t *config);
+h264bsd_hd_t __wrap_h264bsdAlloc(h264bsd_cfg_t *config) {
+  if (!config) return __real_h264bsdAlloc(NULL);
+  /* The allocator consumes the config synchronously. Zero disables the
+   * deblock helper and its bounded shutdown wait before decoder storage is freed. */
+  h264bsd_cfg_t serial = *config;
+  serial.dualTaskEnable = 0;
+  return __real_h264bsdAlloc(&serial);
+}
+#endif
+
+#if PET_P4_H264_HOR_LUMA_EDGE_FALLBACK
+/* tinyh264 1.5.0 already uses this four-column filter for mixed strengths.
+ * Apply the same strength to all four groups of a uniform luma edge. This
+ * keeps the filter math while bypassing the faulting hardware-loop routine. */
+extern void espFilterHorLumaEdge(uint8_t *pixels, uint32_t *alpha, uint32_t *beta,
+                                uint32_t tc0, uint32_t stride);
+void IRAM_ATTR __wrap_espFilterHorLuma_bS123(uint8_t *pixels, uint32_t *alpha, uint32_t *beta,
+                                           uint32_t tc0, uint32_t stride) {
+  for (unsigned column = 0; column < 16; column += 4) {
+    espFilterHorLumaEdge(pixels + column, alpha, beta, tc0, stride);
+  }
+}
+#endif
+
 static void reset_h264_decoder(void) {
   if (g_h264_decoder) {
     if (g_h264_decoder_open) {
@@ -2599,6 +2645,9 @@ static bool start_h264_decoder_role(const char *fs_path,const uint8_t *stream,si
       memcpy(g_h264_work_stream+offset,stream+offset,length);offset+=length;
     }
   }else memcpy(g_h264_work_stream, stream, stream_size);
+#if PET_P4_H264_PANIC_TRACE
+  g_h264_stream_crc32 = esp_rom_crc32_le(0, g_h264_work_stream, stream_size);
+#endif
   g_h264_work_size = stream_size;
   pet_p4_render_trace_add(&trace->copy_us,
     elapsed_us_clamped(copy_started_us, esp_timer_get_time()));
@@ -2652,7 +2701,21 @@ static bool decode_next_h264_frame_role(
       vTaskPrioritySet(NULL, PET_P4_H264_PRIMARY_TASK_PRIORITY);
     }
     int64_t decode_started_us = esp_timer_get_time();
+#if PET_P4_H264_PANIC_TRACE
+    const pet_native_panic_h264_t decode = {
+      .stream_crc32 = g_h264_stream_crc32,
+      .stream_bytes = g_h264_work_size,
+      .stream_offset = g_h264_stream_offset,
+      .next_frame = g_h264_decoded_frame + 1,
+      .width = width,
+      .height = height,
+    };
+    pet_native_panic_h264_begin(&decode);
+#endif
     esp_h264_err_t err = esp_h264_dec_process(g_h264_decoder, &input, &output);
+#if PET_P4_H264_PANIC_TRACE
+    pet_native_panic_h264_end();
+#endif
     pet_p4_render_trace_add(decode_us,elapsed_us_clamped(decode_started_us,esp_timer_get_time()));
     if (boosted) {
       vTaskPrioritySet(NULL, ESP_TASK_MAIN_PRIO);
@@ -3013,9 +3076,8 @@ static bool render_h264_asset_frame(
   const pet_p4_asset_selection_t *asset,
   const char *fs_path,
   const pet_p4_asset_cache_entry_t *stream,
-  unsigned long long cycle_elapsed_ms
+  int target_frame
 ) {
-  int target_frame;
   int i420_stride;
   int i420_storage_h;
   const uint8_t *packed_yuv420 = NULL;
@@ -3026,11 +3088,6 @@ static bool render_h264_asset_frame(
   /* Immutable cache entries are validated once by the low-priority preparer.
    * validate_us remains render-thread wall time (zero), never worker CPU time. */
   if (!stream->single_slice_valid) return false;
-  target_frame = (int) (
-    (cycle_elapsed_ms * (unsigned long long) asset->frames)
-    / (unsigned long long) asset->duration_ms
-  );
-  if (target_frame >= asset->frames) target_frame = asset->frames - 1;
   g_render_trace.restart_reason |= pet_p4_render_restart_reason(
     g_h264_decoder != NULL, strcmp(g_h264_fs_path, fs_path) == 0,
     target_frame < g_h264_decoded_frame
@@ -3161,9 +3218,12 @@ static pet_p4_asset_cache_entry_t *conversation_animation_cached(unsigned int re
   return NULL;
 }
 #endif
-static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pet_p4_view_model_t *view, unsigned long long now_ms) {
+static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pet_p4_view_model_t *view,
+                                   unsigned long long now_ms, int *presented_frame,
+                                   bool *prefetched_tail) {
   char fs_path[80];
   pet_p4_asset_selection_t asset;
+  bool track_selected_asset = true;
   portENTER_CRITICAL(&g_asset_prepare_mux);
   uint64_t request_epoch = g_asset_prepare_cancel_epoch;
   uint64_t storage_epoch = g_asset_prepare_storage_epoch;
@@ -3195,7 +3255,7 @@ static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pe
     elapsed_us_clamped(resolve_started_us, esp_timer_get_time()));
   g_render_trace.stream_size = asset.stream_bytes;
   if (asset.codec == PET_P4_ASSET_CODEC_H264) {
-#ifdef CONFIG_ESP_H264_DUAL_TASK
+#if CONFIG_ESP_H264_DUAL_TASK && !PET_P4_H264_SERIAL_DECODE
     g_render_trace.backend = PET_RENDER_BACKEND_H264_DUAL;
 #else
     g_render_trace.backend = PET_RENDER_BACKEND_H264_SINGLE;
@@ -3235,6 +3295,8 @@ static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pe
     stream=conversation_animation_cached(state->asset_revision,source_slot,request_epoch,storage_epoch);
     if(stream){
       asset=g_conversation_animation.asset;
+      asset.play_once=false;
+      track_selected_asset=false;
       snprintf(fs_path,sizeof(fs_path),"%s",g_conversation_animation.fs_path);
       g_asset_cache_pending=false;g_render_trace.cache_hit=PET_RENDER_CACHE_HIT;
       g_render_trace.stream_size=asset.stream_bytes;
@@ -3264,15 +3326,20 @@ static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pe
     playback_duration_ms = ((unsigned long long) asset.frames * 1000ULL) / (unsigned long long) asset.fps;
   }
   if (playback_duration_ms == 0) playback_duration_ms = PET_P4_RENDER_INTERVAL_MS * (unsigned long long) asset.frames;
-  unsigned long long playback_elapsed_ms = now_ms >= g_behavior.selected_since_ms
-    ? now_ms - g_behavior.selected_since_ms : 0;
-  unsigned long long cycle_elapsed_ms = playback_elapsed_ms % playback_duration_ms;
   g_last_decode_us = 0;
   if (asset.codec == PET_P4_ASSET_CODEC_H264) {
 #if PET_P4_H264_PREFETCH
     bool rendered=render_h264_asset_frame_async(&asset,fs_path,stream,playback_duration_ms);
+    int frame = g_h264_presented_frame;
 #else
-    bool rendered = render_h264_asset_frame(&asset, fs_path, stream, cycle_elapsed_ms);
+    (void)prefetched_tail;
+    int target_frame = pet_p4_behavior_video_target_frame(&g_behavior, asset.frames, playback_duration_ms, now_ms);
+    if (!track_selected_asset) {
+      const uint64_t elapsed = now_ms >= asset.selection_ms ? now_ms - asset.selection_ms : 0;
+      target_frame = (int)((elapsed % playback_duration_ms) * (uint64_t)asset.frames / playback_duration_ms);
+    }
+    bool rendered = render_h264_asset_frame(&asset, fs_path, stream, target_frame);
+    int frame = g_h264_decoded_frame;
 #endif
     if (!rendered) {
       if(g_asset_cache_pending)return false; /* native work is not an asset error */
@@ -3296,6 +3363,10 @@ static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pe
       g_logged_asset = true;
     }
     note_asset_decode_success();
+    if (track_selected_asset) *presented_frame = frame;
+#if PET_P4_H264_PREFETCH
+    *prefetched_tail = frame == asset.frames - 1;
+#endif
 #if PET_P4_CONVERSATION_VIDEO
     if(state){
       g_conversation_animation.asset=asset;
@@ -3317,10 +3388,7 @@ static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pe
     reset_h264_decoder_measured();
   }
 #endif
-  int frame_index = (int) (
-    (cycle_elapsed_ms * (unsigned long long) asset.frames) / playback_duration_ms
-  );
-  if (frame_index >= asset.frames) frame_index = asset.frames - 1;
+  int frame_index = pet_p4_behavior_video_target_frame(&g_behavior, asset.frames, playback_duration_ms, now_ms);
   size_t offset = 0;
   for (int i = 0; i < frame_index; i += 1) offset += asset.frame_sizes[i];
   uint32_t frame_size = asset.frame_sizes[frame_index];
@@ -3412,6 +3480,7 @@ static bool render_asset_pet_frame(const pet_p4_runtime_state_t *state, const pe
     g_logged_asset = true;
   }
   note_asset_decode_success();
+  *presented_frame = frame_index;
   return true;
 }
 
@@ -7542,7 +7611,14 @@ esp_err_t pet_p4_renderer_render(
   const unsigned previous_native_index=g_native_framebuffer_index;
   g_app_logical_same=false;
 #endif
+#if PET_P4_SYSTEM_WIFI
+  const uint32_t underruns = pet_p4_lcd_underrun_count();
+  const bool retry_scanout = underruns != g_lcd_underruns_at_last_submit && now_ms >= g_lcd_next_retry_ms;
+  const bool previous_valid = g_last_native_valid && !retry_scanout;
+  pet_p4_lcd_render_phase(PET_LCD_COMPOSE);
+#else
   const bool previous_valid = g_last_native_valid;
+#endif
   g_last_native_valid = false; /* rotation/draw failures must force a refresh */
   g_native_framebuffer_index =
     (g_native_framebuffer_index + 1U) % PET_P4_NATIVE_OUTPUT_BUFFER_COUNT;
@@ -7550,6 +7626,8 @@ esp_err_t pet_p4_renderer_render(
   int64_t render_started_us = esp_timer_get_time();
   int64_t overlay_started_us = render_started_us;
   uint32_t asset_us = 0;
+  int presented_video_frame = -1;
+  bool prefetched_tail = false;
   g_last_decode_us = 0;
   g_last_h264_pack_us = 0;
   g_last_h264_convert_us = 0;
@@ -7637,7 +7715,8 @@ esp_err_t pet_p4_renderer_render(
     bool realtime = view && view->realtime_conversation;
     bool show_session_queue = !realtime && state && state->session_queue_count > 0;
     int64_t asset_started_us = esp_timer_get_time();
-    bool drew_asset = component_media_idle&&render_asset_pet_frame(state, view, now_ms);
+    bool drew_asset = component_media_idle
+      && render_asset_pet_frame(state, view, now_ms, &presented_video_frame, &prefetched_tail);
     if(drew_asset)g_main_appearance_ready=true;
     if(!component_media_idle)g_asset_cache_pending=true;
     /* A queued prepare is not a missing/bad asset. Keep the last logical pixels
@@ -7696,6 +7775,9 @@ esp_err_t pet_p4_renderer_render(
   if (!dedicated_page) draw_boot_diagnostic(now_ms);
 #endif
   draw_approval_overlay(state, now_ms);
+#if PET_P4_SYSTEM_WIFI
+  pet_p4_lcd_render_phase(PET_LCD_ROTATE);
+#endif
   int64_t rotate_started_us = esp_timer_get_time();
   g_render_trace.common_overlay_us = elapsed_us_clamped(common_overlay_started_us, rotate_started_us);
   uint32_t overlay_us = elapsed_us_clamped(overlay_started_us, rotate_started_us);
@@ -7720,9 +7802,15 @@ esp_err_t pet_p4_renderer_render(
 #if PET_P4_H264_WORKER_PACK
       h264_frame_offer_end(false);
 #endif
+#if PET_P4_SYSTEM_WIFI
+      pet_p4_lcd_render_phase(PET_LCD_BETWEEN_FRAMES);
+#endif
       return rotate_err;
     }
   }
+#if PET_P4_SYSTEM_WIFI
+  pet_p4_lcd_render_phase(PET_LCD_COMPARE);
+#endif
   int64_t lcd_started_us = esp_timer_get_time();
   uint32_t rotate_us = elapsed_us_clamped(rotate_started_us, lcd_started_us);
 #if PET_P4_RENDER_LCD_SPLIT_PROBE
@@ -7734,6 +7822,10 @@ esp_err_t pet_p4_renderer_render(
 #endif
     pet_p4_frame_unchanged(g_native_framebuffer, previous_native,
     (size_t) BSP_LCD_H_RES * BSP_LCD_V_RES * sizeof(uint16_t), previous_valid);
+#if PET_P4_SYSTEM_WIFI
+  if (retry_scanout) g_lcd_next_retry_ms = now_ms + 500;
+  if (!unchanged) pet_p4_lcd_render_phase(PET_LCD_SUBMIT);
+#endif
 #if PET_P4_RENDER_LCD_SPLIT_PROBE
   g_last_compare_valid=true;g_last_compare_us=pet_lcd_elapsed(lcd_started_us,esp_timer_get_time(),&g_last_compare_valid);
   esp_err_t lcd_err=unchanged?ESP_OK:pet_p4_lcd_draw_rgb565_observed(0,0,BSP_LCD_H_RES,BSP_LCD_V_RES,g_native_framebuffer,&g_last_lcd_observation);
@@ -7747,6 +7839,10 @@ esp_err_t pet_p4_renderer_render(
   );
 #endif
   g_last_native_valid = lcd_err == ESP_OK;
+#if PET_P4_SYSTEM_WIFI
+  if (!unchanged && g_last_native_valid) g_lcd_underruns_at_last_submit = underruns;
+  pet_p4_lcd_render_phase(PET_LCD_BETWEEN_FRAMES);
+#endif
 #if PET_P4_APP_RETAIN_LOGICAL
   pet_logical_retention_finish(&g_app_final_retention,g_app_common_plan,
     lcd_err==ESP_OK&&g_app_final_eligible&&!approval_visible&&!strcmp(page,"app"));
@@ -7754,6 +7850,12 @@ esp_err_t pet_p4_renderer_render(
   if (unchanged) g_lcd_skipped++;
   else if (lcd_err == ESP_OK) g_lcd_submitted++;
   int64_t render_ended_us = esp_timer_get_time();
+  if (lcd_err == ESP_OK && presented_video_frame >= 0) {
+    pet_p4_behavior_presented_video_frame(&g_behavior, presented_video_frame, (uint64_t)render_ended_us / 1000);
+  }
+#if PET_P4_H264_PREFETCH
+  if (lcd_err == ESP_OK && prefetched_tail) g_h264_tail_confirmed = true;
+#endif
   g_render_trace.end_us = (uint64_t)render_ended_us;
   g_previous_render_ended_us=render_ended_us;
   ppa_trace_frame_snapshot(&g_render_trace.ppa);

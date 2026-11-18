@@ -97,7 +97,7 @@ int main(int argc,char**argv){
 def asm_assets(tmp_path):
  section='.section __TEXT,__const' if sys.platform=='darwin' else '.section .rodata'
  text=''
- for short in ['pet_cn_16','pet_cn_16_rows','pet_cn_metrics','pet_cn_metrics_columns']:
+ for short in ['pet_cn_16','pet_cn_16_glyph_columns','pet_cn_metrics','pet_cn_metrics_columns']:
   text+=section+'\n.globl _binary_'+short+'_deflate_start\n.globl _binary_'+short+'_deflate_end\n_binary_'+short+'_deflate_start:\n.incbin "'+str(ROOT/'assets/fonts'/(short+'.deflate'))+'"\n_binary_'+short+'_deflate_end:\n'
  p=tmp_path/'assets.S';p.write_text(text);return p
 
@@ -115,11 +115,11 @@ def test_actual_integrated_startup_order_shared_inflater_and_failure_latches(tmp
  for stage,kind in [(0,0),(2,4),*((s,k) for s in [1,2,3] for k in range(4))]:
   subprocess.run([str(exe),str(stage),str(kind),*(str(tmp_path/n) for n in ['bitmap.bin','native32.bin','metrics.bin'])],check=True,timeout=10)
 
-def test_row_prediction_preserves_every_original_bitmap_byte():
- subprocess.run([sys.executable,str(ROOT/'tools/compress_font_rows.py'),'--check'],check=True)
+def test_glyph_column_packing_preserves_every_original_bitmap_byte():
+ subprocess.run([sys.executable,str(ROOT/'tools/compress_font_glyph_columns.py'),'--check'],check=True)
  original=(ROOT/'assets/fonts/pet_cn_16.deflate').stat().st_size
- predicted=(ROOT/'assets/fonts/pet_cn_16_rows.deflate').stat().st_size
- assert original-predicted>=7000
+ packed=(ROOT/'assets/fonts/pet_cn_16_glyph_columns.deflate').stat().st_size
+ assert original-packed>=7000
 
 
 def test_default_off_module_empty_and_invalid_parent_refuses_compile(tmp_path):

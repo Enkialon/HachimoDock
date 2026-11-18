@@ -723,12 +723,14 @@ pub(super) fn prepare_mimo_text_target(still_current: impl Fn() -> bool) -> Resu
     if !mimo_voice_target::use_desktop(!running.is_empty() || installed, cli.is_some()).map_err(mimo_error)? {
         return cli.ok_or_else(|| mimo_error("mimo_target_unavailable"));
     }
-    if running.is_empty() {
+    let reopen = || -> Result<(), String> {
         check()?;
         let status = crate::command_for_host("open").args(["-b", mimo_voice_target::DESKTOP_BUNDLE_ID]).status()
             .map_err(|_| mimo_error("activation_failed"))?;
-        if !status.success() { return Err(mimo_error("activation_failed")); }
-    }
+        if status.success() { Ok(()) } else { Err(mimo_error("activation_failed")) }
+    };
+    let launched = running.is_empty();
+    if launched { reopen()?; }
     let deadline = Instant::now() + AGENT_LAUNCH_WINDOW_TIMEOUT;
     let application = loop {
         check()?;
@@ -741,11 +743,20 @@ pub(super) fn prepare_mimo_text_target(still_current: impl Fn() -> bool) -> Resu
     let pid = application.processIdentifier();
     let app = AXUIElement::application(pid);
     let _ = app.set_messaging_timeout(1.5);
-    // Background Electron may expose no AX windows before activation.
+    // Reopen through LaunchServices so Electron restores its window after
+    // closing to the tray. Raising the running AX process alone cannot do so.
     check()?;
+    if !launched && (!application.isActive()
+        || !matches!(app.windows(), Ok(windows) if windows.iter().next().is_some())) {
+        reopen()?;
+    }
     if !application.isActive() {
         let _ = application.unhide();
-        let _ = application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+        let requested = application.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows);
+        // A hardware press does not give the companion app AppKit activation
+        // authority. Request AX frontmost on the exact verified MiMo PID too.
+        let ax_requested = app.set_frontmost(CFBoolean::true_value()).is_ok();
+        if !requested && !ax_requested { return Err(mimo_error("activation_failed")); }
     }
     let activation_deadline = Instant::now() + AGENT_FRONTMOST_TIMEOUT;
     while !application.isActive() {
@@ -754,8 +765,16 @@ pub(super) fn prepare_mimo_text_target(still_current: impl Fn() -> bool) -> Resu
         thread::sleep(ACCESSIBILITY_TREE_RETRY_DELAY);
     }
     let _ = enable_agent_accessibility(&app);
-    if !wait_for_agent_windows(&app) { return Err(mimo_error("window_missing")); }
-    let windows = app.windows().map_err(|_| mimo_error("window_missing"))?;
+    let window_deadline = Instant::now() + AGENT_LAUNCH_WINDOW_TIMEOUT;
+    let windows = loop {
+        check()?;
+        if !application.isActive() { return Err(mimo_error("focus_changed")); }
+        if let Ok(windows) = app.windows() {
+            if windows.iter().next().is_some() { break windows; }
+        }
+        if Instant::now() >= window_deadline { return Err(mimo_error("window_missing")); }
+        thread::sleep(ACCESSIBILITY_TREE_RETRY_DELAY);
+    };
     if windows.iter().any(|window| task_window_is_blocked(&window)) { return Err(mimo_error("modal_open")); }
     let candidates = windows.iter().filter(|window| {
         let role = ax_string_attribute(window, "AXSubrole");
@@ -767,8 +786,7 @@ pub(super) fn prepare_mimo_text_target(still_current: impl Fn() -> bool) -> Resu
         [] => return Err(mimo_error("window_missing")),
         _ => return Err(mimo_error("window_ambiguous")),
     };
-    // One activation request only. Once active, any focus change aborts rather
-    // than repeatedly dragging the user back to MiMo.
+    // Once active, any focus change aborts this request.
     check()?;
     if !application.isActive() { return Err(mimo_error("focus_changed")); }
     let _ = window.window.set_attribute(&AXAttribute::new(&CFString::new("AXMinimized")), CFBoolean::false_value().into_CFType());

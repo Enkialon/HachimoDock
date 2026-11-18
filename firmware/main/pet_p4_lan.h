@@ -8,8 +8,20 @@
 typedef enum {
   PET_LAN_CONTROL_COMPONENT = 9,
   PET_LAN_CONTROL_REBOOT = 10,
-  PET_LAN_CONTROL_KEYBOARD = 15
+  PET_LAN_CONTROL_KEYBOARD = 15,
+  PET_LAN_CONTROL_PANEL = 17
 } pet_lan_control_op_t;
+
+typedef enum {
+  PET_LAN_PANEL_READ_INPUT = 1,
+  PET_LAN_PANEL_WRITE_INPUT = 2,
+  PET_LAN_PANEL_READ_VOLUME = 3,
+  PET_LAN_PANEL_READ_DIAGNOSTICS = 4,
+  PET_LAN_PANEL_RETURN_HOME = 5,
+  PET_LAN_PANEL_READ_COMPONENTS = 6,
+  PET_LAN_PANEL_RESET_INPUT = 7,
+  PET_LAN_PANEL_REMOVE_COMPONENT = 8,
+} pet_lan_panel_op_t;
 cJSON *pet_p4_keyboard_config(const cJSON *request, const char *board);
 
 typedef struct {

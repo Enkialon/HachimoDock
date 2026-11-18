@@ -48,7 +48,7 @@ for (const previousAction of ['disabled','agent_prompt','voice_ptt','realtime_ch
  assert.equal(visible(row,previousAction),true);assert.equal(visible(row,row.defaultAction),false);
  assert.equal(visible({...row,id:'p4_sw2_long'},previousAction),false);
  assert.match(panel,/默认动作：打开系统设置/);
- assert.match(panel,/disabled=\{!systemSettingsSupported \|\| voiceConfigOtaState\?\.pending\}/);
+ assert.match(panel,/disabled=\{!systemSettingsSupported \|\| syncPending\}/);
  assert.match(panel,/onClick=\{\(\) => onButtonActionChange\(row, row.defaultAction\)\}/);
 });
 

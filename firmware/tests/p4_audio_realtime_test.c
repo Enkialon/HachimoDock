@@ -425,10 +425,11 @@ static void send_audio_end(const char *session,const char *reason,uint32_t chunk
   (void)hash;assert(capture_ends<2&&!strcmp(session,capture_sessions[capture_ends]));
   if(capture_ends==0){
     assert(chunks==0&&bytes==0&&atomic_load(&g_capture_requested)&&g_capture_pending.serial);
-    assert(!strcmp(reason,capture_fault==2?"timeout":capture_fault==3?"encode_error":"released"));
+    assert(!strcmp(reason,capture_fault==2?"timeout":capture_fault==3?"capture_tx_failed":"released"));
   }else assert(chunks==1&&bytes==PET_P4_AUDIO_FRAME_BYTES&&!atomic_load(&g_capture_requested));
   capture_ends++;
 }
+static atomic_uint g_usb_capture_tx_pending;
 #include "production_capture_task.inc"
 static void *run_actual_capture(void *unused){audio_task(unused);return NULL;}
 static void actual_capture_stop_start_sessions(void){

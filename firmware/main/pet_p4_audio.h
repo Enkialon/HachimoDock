@@ -139,6 +139,7 @@ void pet_p4_audio_process(
  * Unlike lifecycle cues this is event-driven and may repeat for another request. */
 esp_err_t pet_p4_audio_play_event_cue(const char *family);
 void pet_p4_audio_send_status(void);
+void pet_p4_audio_add_completion_counters(cJSON *payload);
 /* Cold master-volume persistence gate. No hardware/flash work here. */
 bool pet_p4_audio_master_idle(void);
 

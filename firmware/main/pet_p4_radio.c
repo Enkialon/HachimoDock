@@ -164,6 +164,9 @@ static int read_line(radio_stream_t *s, size_t limit) {
   return -1;
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static bool connect_stream(radio_stream_t *s, const radio_job_t *job) {
   /* TLS uses the system UTC clock set by SNTP. No credentials or redirects. */
   s->failure = PET_RADIO_CLOCK_UNAVAILABLE;
@@ -209,6 +212,9 @@ static bool connect_stream(radio_stream_t *s, const radio_job_t *job) {
   return sent == len;
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static bool read_headers(radio_stream_t *s, bool live_stream, pet_radio_error_t *error) {
   int n = read_line(s, sizeof(s->line) - 2);
   if (n < 0 || !pet_radio_http_ok_status(s->line)) return false;
@@ -405,6 +411,9 @@ static pet_radio_error_t decode_wav(radio_stream_t *s) {
   return !read_body(s, header, 1) && s->body_complete ? PET_RADIO_COMPLETE : PET_RADIO_SOURCE_FAILED;
 }
 
+#if PET_P4_SYSTEM_WIFI && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 static bool wait_for_wifi(uint32_t generation) {
   const int64_t deadline = now_ms() + RADIO_WIFI_RECOVERY_MS;
   do {

@@ -141,6 +141,13 @@ class Evidence:
         with self.lock:
             self._consume(message)
 
+    def _current_aec_fault(self, payload):
+        # Preparing a new DSP timeline can still report the retired timeline's
+        # diagnostic until the capture worker finishes recreating its handles.
+        return (payload.get('conversationSessionId') == self.session
+                and payload.get('audioAecPreparing') is not True
+                and payload.get('aecReason') not in (None, 'none'))
+
     def _consume(self, message):
         if not isinstance(message, dict) or not isinstance(message.get('payload'), dict):
             return
@@ -170,7 +177,7 @@ class Evidence:
                                          if type(p.get(k)) in (bool, int, float)})
             self.report['stopped'] = all(p.get(k) is False for k in
                                         ('active', 'conversation', 'playbackActive'))
-            if p.get('aecReason') not in (None, 'none'):
+            if self._current_aec_fault(p):
                 raise RuntimeError('AEC fault reported')
             if p.get('active') is True:
                 ready = p.get('audioAec') is True and p.get('audioAecPreparing') is False
@@ -191,7 +198,7 @@ class Evidence:
         elif topic == 'protocol/ack' and p.get('ok') is False:
             raise ProbeFault('device_protocol_rejected')
         elif topic == 'audio/diagnostic' and p.get('conversationSessionId') == self.session:
-            if p.get('aecReason') not in (None, 'none') or p.get('ok') is False:
+            if self._current_aec_fault(p) or p.get('ok') is False:
                 raise ProbeFault('device_audio_diagnostic_failed')
 
     def verify(self):
@@ -205,6 +212,8 @@ class Evidence:
         if (r['frames'] < (r['durationSeconds'] - 5) * 45
                 or r['sequenceGaps'] or r['rawFrames']):
             raise RuntimeError('Capture coverage or continuity failed')
+        if r['receive']['malformedAudioLines']:
+            raise RuntimeError('Malformed audio JSON line received')
         if r['integrityChecked'] != r['frames'] or r['integrityFailures']:
             raise RuntimeError('Capture integrity incomplete or failed')
         ready_at = next((i for i, s in enumerate(r['audio'])

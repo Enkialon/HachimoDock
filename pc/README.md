@@ -1,6 +1,6 @@
 # PC 客户端 / Desktop client
 
-当前源码版本 **0.1.237**，配套固件 **0.7.103-p4-r284 / R284**。公开 `main` 包含发布清理及安全修正，不是已发布安装包的可复现源码快照；[0.1.237 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) 标签仍指向原公开基线，未因源码更新移动。公开构建不提供服务 Key，运行时凭据由用户在 API 配置中保存。
+当前源码版本 **0.1.241**，配套固件 **0.7.104-p4-r287 / R287**。如需使用第三方服务，请在应用内配置自己的凭据。
 
 Pet Manager 用于连接设备、管理形象和组件，以及将 Agent 状态与语音输入同步到桌面小屏。支持 macOS arm64 与 Windows x64。
 
@@ -86,7 +86,7 @@ npm run prepare:desktop
 npm run dev
 ```
 
-完整构建前，按 [四板固件构建说明](../firmware/BUILD.md#配套桌面资源) 准备 WiFi6/Pico、v1/v3 四份经过核验的 OTA 应用镜像及资源。不能用空文件或其他版本镜像绕过检查。
+从仓库根目录运行 `python pc/scripts/stage-release-firmware.py`，获取并校验与本版本匹配的四份 OTA 镜像。自行编译固件时，请按 [四板固件构建说明](../firmware/BUILD.md#配套桌面资源) 检查板型、版本和镜像。
 
 完整构建 / Build installers:
 

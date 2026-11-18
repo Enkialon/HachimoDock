@@ -21,6 +21,9 @@ for (const file of new Set(paths)) {
   if (!testFixture && /(?:^|\/)(?:node_modules|dist|target|generated-runtime|\.runtime-cache|\.vite|\.pio|managed_components|legacy|\.claude|\.codex)(?:\/|$)/.test(file)
       || /(?:\.internal-build-|bundle-secrets\.env|\.p8$|\.p12$|\.pfx$|\.pem$|\.key$|\.kdbx$|\.sqlite(?:3)?(?:-wal|-shm)?$|toolchains\.local\.json$|\.log$|\.dmg$|\.exe$|\.msi$|\.jsonl$)/i.test(file)
       || /(?:^|\/)\.env(?:\.|$)/.test(file) && !file.endsWith('.env.example')) problems.push(`${file}: forbidden publication input`);
+  if (/^pc\/src-tauri\/firmware\/esp32-p4\/.*\.bin$/i.test(file)) {
+    problems.push(`${file}: generated application image must be staged from a release`);
+  }
   const absolute = resolve(root, file);
   if (lstatSync(absolute).isSymbolicLink()) { problems.push(`${file}: symlink requires review`); continue; }
   const bytes = readFileSync(absolute);

@@ -1,6 +1,6 @@
 /**
  * [Input] useDeviceContext for appearances/agentAppearanceMap/agentOptions/currentDisplay/verified USB status/cancellable appearanceSync/refreshAppearances/applyDesktopPet/saveAgentAppearance; useToast for notices.
- * [Output] Agent matrix with USB-priority follow switching, Wi-Fi follow without appearance transfer, and cancellable USB appearance sync.
+ * [Output] Agent matrix with USB-priority follow switching, Wi-Fi follow without appearance transfer, cancellable USB appearance sync, and Devin cloud configuration.
  * [Pos] component node in pc/src/dashboard
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md`.
  */
@@ -33,6 +33,7 @@ import { resolveDashboardPreviewMedia } from "../lib/appearance-preview.js";
 import { useDeviceContext } from "../shell/DeviceContext.jsx";
 import Button from "../shell/Button.jsx";
 import { useToast } from "../shell/ToastStack.jsx";
+import DevinConfigurationButton from "./DevinConfigurationButton.jsx";
 
 const AGENT_ICONS = {
   "claude-code": Code,
@@ -40,6 +41,7 @@ const AGENT_ICONS = {
   openclaw: Zap,
   mimocode: Braces,
   workbuddy: Code,
+  devin: Code,
   "deepseek-harness": Braces,
 };
 
@@ -354,6 +356,7 @@ export default function ChannelMatrixCard() {
                       >
                         <ChevronDown size={14} /> 更换形象
                       </button>
+                      {agent.id === "devin" && <DevinConfigurationButton disabled={!isDetected} />}
                       {agent.id === "deepseek-harness" && (
                         <label className="channel-row__approval-timeout">
                           <span>超时时间</span>

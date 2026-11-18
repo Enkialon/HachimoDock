@@ -107,6 +107,8 @@ export default function BoardButtonPanel({
   voiceConfigDirty,
   voiceConfigOtaState,
   usbConnected,
+  wifiConnected = false,
+  wifiSyncAvailable = false,
   systemSettingsSupported = false,
   doublePressSupported = false,
   voiceKeySupported = false,
@@ -121,6 +123,13 @@ export default function BoardButtonPanel({
   const isP4Runtime = String(runtime || "").toLowerCase() === "esp-p4";
   const controlGroups = groupControlRows(controlRows, isP4Runtime);
   const help = buildUsageHelp(controlRows, buttonActions, voiceConfig?.enabled, voiceConfigDirty);
+  const syncAvailable = usbConnected || wifiSyncAvailable;
+  const syncPending = syncAvailable && voiceConfigOtaState?.pending;
+  const confirmed = syncAvailable && !syncPending && voiceConfigOtaState?.tone === "success";
+  const syncHint = wifiConnected && !wifiSyncAvailable
+    ? (voiceConfigDirty ? "修改已保存在电脑上。" : "当前显示电脑保存的按键配置。") + "普通按键配置需要通过 USB 同步。"
+    : voiceConfigOtaState?.message;
+  const syncTone = wifiConnected && !wifiSyncAvailable ? "warning" : voiceConfigOtaState?.tone || "info";
 
   if (controlRows.length === 0) {
     return (
@@ -171,7 +180,7 @@ export default function BoardButtonPanel({
           <h2>按钮配置</h2>
           <strong>{controlGroups.length} 个控件 <i /> {controlRows.length} 个手势</strong>
           <span className={`board-button-panel__sync-label${voiceConfigDirty ? " is-dirty" : ""}`}>
-            {voiceConfigDirty ? "待同步" : voiceConfigOtaState?.tone === "warning" ? "待核对" : "已同步"}
+            {voiceConfigDirty ? "待同步" : confirmed ? "已同步" : "待核对"}
           </span>
         </div>
         <div className="board-button-panel__toolbar-actions">
@@ -180,10 +189,10 @@ export default function BoardButtonPanel({
             size="medium"
             className={`voice-config-apply-btn${voiceConfigDirty ? " is-dirty" : ""}`}
             onClick={onApplyVoiceConfig}
-            loading={voiceConfigOtaState?.pending}
+            loading={syncPending}
             loadingLabel="正在同步…"
-            disabled={voiceConfigOtaState?.pending || !usbConnected}
-            title={usbConnected ? "通过 USB 将当前映射同步到设备" : "需要 USB 连接设备后同步"}
+            disabled={syncPending || !syncAvailable}
+            title={syncAvailable ? "将当前映射同步到设备" : "当前连接无法同步普通按键"}
           >
             <UploadCloud size={14} />
             同步到设备
@@ -191,13 +200,13 @@ export default function BoardButtonPanel({
         </div>
       </div>
 
-      {voiceConfigOtaState?.message && (
+      {syncHint && (
         <div
-          className={`board-button-panel__hint board-button-panel__hint--${voiceConfigOtaState.tone || "info"}`}
+          className={`board-button-panel__hint board-button-panel__hint--${syncTone}`}
           role="status"
           aria-live="polite"
         >
-          {voiceConfigOtaState.message}
+          {syncHint}
         </div>
       )}
 
@@ -363,9 +372,9 @@ export default function BoardButtonPanel({
                           <div className="board-button-control-field__prompt">
                             <small>默认动作：打开系统设置</small>
                             <Button variant="ghost" size="small"
-                              disabled={!systemSettingsSupported || voiceConfigOtaState?.pending}
+                              disabled={!systemSettingsSupported || syncPending}
                               title={systemSettingsSupported
-                                ? "只修改 SW3 长按，点击同步到设备后生效"
+                                ? "只修改 SW3 长按，同步到设备后生效"
                                 : "需要设备固件支持系统设置"}
                               onClick={() => onButtonActionChange(row, row.defaultAction)}>
                               恢复默认：打开系统设置

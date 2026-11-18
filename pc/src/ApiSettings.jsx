@@ -1,6 +1,6 @@
 /**
  * [Input] Shared avatar provider configs including persisted video parameters, native Volcengine ASR credential commands, and optional return navigation.
- * [Output] Kling API-key and model settings, independent LLM/ASR reads, honest credential-save errors and retained navigation drafts and Wi-Fi 6 Agent pairing; saved ASR changes are broadcast with save vs. test results distinguished.
+ * [Output] Model and provider settings, independent LLM/ASR reads, retained navigation drafts, and separate credential save and test results.
  * [Pos] top-level page node in pc/src
  * [Sync] If this file changes, update this header and `pc/src/.folder.md`.
  */
@@ -401,8 +401,6 @@ export default function ApiSettings({ onBack, configReadError = "", active = tru
           API Key 请勿分享给他人
         </div>
       </section>
-
-
 
       <Card
         title="语音识别与合成"

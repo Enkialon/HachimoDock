@@ -1,6 +1,6 @@
 # 固件构建与烧录 / Firmware build and flashing
 
-当前源码版本 **0.7.103-p4-r284 / R284**，配套桌面端 **0.1.237**。公开 `main` 包含发布清理及安全修正，并非已发布安装包的可复现源码快照。[0.1.237 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) 标签仍指向原公开基线，不随此次源码更新移动。设备功能见 [固件说明](README.md)，字段契约见 [protocol.md](protocol.md)。
+当前源码版本 **0.7.104-p4-r287 / R287**，配套桌面端 **0.1.241**。设备功能见 [固件说明](README.md)，字段契约见 [protocol.md](protocol.md)。
 
 ## 选择构建目标
 
@@ -17,7 +17,7 @@
 
 ## 获取与构建
 
-只想使用设备，无需编译：下载 [0.1.237 / R284 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237)，按板型和芯片选择。包内工具要求 Python **3.10+**，使用 **esptool 5.4.0**。首次安装或恢复出厂才使用完整烧录；日常升级优先使用客户端 OTA。
+只想使用设备，无需编译：下载 [0.1.241 / R287 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241)，按板型和芯片选择。包内工具要求 Python **3.10+**，使用 **esptool 5.4.0**。首次安装或恢复出厂才使用完整烧录；日常升级优先使用客户端 OTA。
 
 自行构建需要 Git、Python 3.10+、PlatformIO Core **6.1.19**、Node.js 22、pytest 和 Pillow。Core 6.1.18 不支持当前 v3 平台。资源使用普通 Git，不依赖 Git LFS。建议使用独立 Python 环境。
 
@@ -43,7 +43,7 @@ python -m platformio run -e esp32_p4_pico_v3
 
 每个环境的应用输出为 `firmware/.pio/build/<环境名>/firmware.bin`。将四份经过核验的应用镜像按上表分别放入 `pc/src-tauri/firmware/esp32-p4/`，再准备桌面资源。四份镜像必须来自同一份已审核源码，板型、芯片修订范围、版本、构建标识和 SHA-256 均需核对；不要把完整 factory 镜像作为 OTA 输入，也不要沿用旧版本文件。
 
-公开源码不承诺自带已构建的四板镜像。桌面打包前必须完成其资源准备和校验。出厂形象与 **27 个组件**由 [factory-config.json](factory-config.json) 指定，不能用某台设备的用户数据或当前安装列表代替。
+使用发布版 OTA 时，在仓库根目录运行 `python pc/scripts/stage-release-firmware.py`，脚本会下载完整烧录包并校验哈希后提取对应的应用镜像。出厂形象与 **27 个组件**由 [factory-config.json](factory-config.json) 指定，不能用某台设备的用户数据或当前安装列表代替。
 
 ## 完整出厂镜像
 

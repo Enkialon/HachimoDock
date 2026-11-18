@@ -26,6 +26,7 @@ static struct {
   uint8_t result;
   bool publication_started;
   bundle_job_t *bundle;
+  unsigned panel_action;
   const cJSON *keyboard_request;
   cJSON **keyboard_reply;
 } delivery;
@@ -98,15 +99,32 @@ static uint32_t bundle_u32(const uint8_t *p) {
   return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
 }
 
+__attribute__((optimize("Oz"), noinline))
 static bool bundle_begin(bundle_job_t *job, char *error, size_t error_size) {
   const uint8_t *p = job->record;
-  if (job->manifest || job->size < 40 || p[1] != job->size - 39 ||
+  if (job->manifest || job->size < 40 || !p[1] || p[1] > job->size - 39 ||
       p[1] >= PET_P4_MINIAPP_WIDGET_ID_MAX || !p[2] || p[2] > 128) return false;
+  const size_t version_size = job->size - 39 - p[1];
+  const bool replace = p[0] == 4;
+  if (replace ? !version_size || version_size > 63 : version_size != 0) return false;
   char id[PET_P4_MINIAPP_WIDGET_ID_MAX], transfer[36], digest[65];
-  if (memchr(p + 39, 0, p[1])) return false;
+  if (memchr(p + 39, 0, job->size - 39)) return false;
   memcpy(id, p + 39, p[1]);
   id[p[1]] = 0;
-  if (!pet_p4_miniapp_lan_new_id(id) ||
+  if (replace) {
+    if (!pet_p4_miniapp_lan_install_idle() || pet_p4_miniapp_catalog_recovery_blocked()) return false;
+    bool matched = false;
+    const size_t count = pet_p4_miniapp_catalog_count();
+    for (size_t i = 0; i < count; i++) {
+      pet_p4_miniapp_catalog_entry_t entry;
+      if (pet_p4_miniapp_catalog_get(i, &entry) && !strcmp(entry.widget_id, id)) {
+        const char *version = entry.package_metadata.version;
+        matched = strlen(version) == version_size && !memcmp(version, p + 39 + p[1], version_size);
+        break;
+      }
+    }
+    if (!matched) return false;
+  } else if (!pet_p4_miniapp_lan_new_id(id) ||
       pet_p4_miniapp_catalog_count() >= pet_p4_miniapp_catalog_capacity()) return false;
   snprintf(transfer, sizeof(transfer), "lan-%08lx%08lx", (unsigned long)esp_random(), (unsigned long)esp_random());
   trust_hex(digest, p + 7, 32);
@@ -133,7 +151,7 @@ static bool bundle_step(bundle_job_t *job, bool admitted) {
   if (!admitted || !component_socket_live(NULL)) return false;
   char error[160] = {0};
   const uint8_t *p = job->record;
-  if (p[0] == 1) return bundle_begin(job, error, sizeof(error));
+  if (p[0] == 1 || p[0] == 4) return bundle_begin(job, error, sizeof(error));
   if (!job->manifest) return false;
   if (p[0] == 3 && job->size == 1)
     return pet_p4_miniapp_lan_commit(job->manifest, component_publish, NULL, error, sizeof(error));
@@ -173,6 +191,11 @@ void pet_p4_lan_control_run(pet_p4_runtime_state_t *state, uint32_t token, bool 
   } else if (delivery.operation == PET_LAN_CONTROL_KEYBOARD) {
     if (admitted && !atomic_load(&usb_client_active) && component_socket_live(NULL)) {
       *delivery.keyboard_reply = pet_p4_keyboard_config(delivery.keyboard_request, state->board_device_id);
+      installed = *delivery.keyboard_reply != NULL;
+    }
+  } else if (delivery.operation == PET_LAN_CONTROL_PANEL) {
+    if (!atomic_load(&usb_client_active) && component_socket_live(NULL)) {
+      *delivery.keyboard_reply = lan_panel_run(delivery.panel_action, delivery.keyboard_request, state, admitted);
       installed = *delivery.keyboard_reply != NULL;
     }
   } else if (admitted && delivery.operation == PET_LAN_CONTROL_REBOOT) {
@@ -304,6 +327,7 @@ static uint8_t control_deliver(int fd, unsigned operation, uint8_t *body, size_t
     return 0;
   }
   delivery.operation = operation;
+  delivery.panel_action = operation == PET_LAN_CONTROL_PANEL ? body[16] : 0;
   delivery.fd = fd;
   delivery.bundle = NULL;
   delivery.keyboard_request = keyboard_request;

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {webcrypto} from 'node:crypto';
 import {deviceDeletePolicy} from './component-transfer-policy.js';
+import {activeComponentTargetKey} from '../lib/active-component-store.js';
+import {wifiDeviceControl} from '../lib/wifi-device-control.js';
 const source=name=>readFileSync(new URL(name,import.meta.url),'utf8');
 test('UI confirmations stay inside app and publication sources retain custom variants',()=>{
   const community=source('CommunityCenter.jsx'),center=source('../ComponentCenter.jsx');
@@ -121,16 +123,18 @@ test('transport cancellation, retries and target changes are guarded before send
 
 // Execute the real deletion handler with an in-memory native boundary. No GUI,
 // device, library mutation or user configuration is involved.
-function deletionHarness({clearSave=true,mode='device-only',reply={ok:true},busy=false,capabilities={widgetDeletePreserveSave:true}}={}){
+function deletionHarness({clearSave=true,mode='device-only',reply={ok:true},busy=false,capabilities={widgetDeletePreserveSave:true},target={transport:'usb',boardDeviceId:'fixture-board'},currentTarget=target}={}){
   const center=source('../ComponentCenter.jsx');
   const handler=center.slice(center.indexOf('  async function confirmComponentAction('),center.indexOf('  function resolveControlOption('));
+  const scope=center.slice(center.indexOf('function inventoryTargetKey('),center.indexOf('function readSessionDeviceInventory('));
+  const inventoryTargetKey=new Function('activeComponentTargetKey',`${scope};return inventoryTargetKey;`)(activeComponentTargetKey);
   const calls=[],prompts=[],errors=[];
   const env={
-    pendingComponentAction:{component:{id:'test-component',path:'/fixture/component'},target:{transport:'usb',boardDeviceId:'fixture-board'},installedOnDevice:true,isLocal:true},
+    pendingComponentAction:{component:{id:'test-component',path:'/fixture/component'},target,installedOnDevice:true,isLocal:true},
     componentActionPending:busy,clearDeviceSave:clearSave,
     setClearSaveConfirmationMode:value=>prompts.push(value),
     setComponentActionPending:()=>{},setComponentActionError:value=>errors.push(value),
-    deviceDeletePolicy,usb:{capabilities},
+    deviceDeletePolicy,usb:{capabilities},wifiDeviceControl,inventoryTargetKey,targetRef:{current:currentTarget},
     invoke:async(command,input)=>{calls.push({command,input});return reply;},
     clearActiveComponentState:()=>{},setDeviceInventory:()=>{},setLocalComponents:()=>{},
     previewComponent:null,setPreviewComponent:()=>{},refreshComponentLibrary:async()=>{},
@@ -182,4 +186,20 @@ test('ordinary deletion preserves saves and pending or invalid actions cannot su
   }
   const unsupported=deletionHarness({clearSave:false,capabilities:{}});await unsupported.confirm('device-only');
   assert.deepEqual(unsupported.calls,[]);assert.match(unsupported.errors.at(-1),/未删除/);
+});
+
+
+test('wireless removal preserves saves and refuses a different boot before issuing a command', async () => {
+  const target = { transport: 'wifi', boardDeviceId: 'fixture-board', bootId: '0123456789abcdef',
+    controlTrusted: true, panelControl: true };
+  const connected = deletionHarness({ clearSave: false, target });
+  await connected.confirm('device-only');
+  assert.deepEqual(connected.calls, [{ command: 'lan_panel_control', input: {
+    operation: 'removeComponent', boardDeviceId: target.boardDeviceId, expectedBootId: target.bootId,
+    removal: { componentId: 'test-component', preserveSave: true, clearDeviceSaveConfirmed: false },
+  } }]);
+  const restarted = deletionHarness({ clearSave: false, target, currentTarget: { ...target, bootId: 'fedcba9876543210' } });
+  await restarted.confirm('device-only');
+  assert.equal(restarted.calls.length, 0);
+  assert.match(restarted.errors.at(-1), /设备或连接已变化/);
 });

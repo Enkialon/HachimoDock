@@ -60,6 +60,15 @@ test("ChannelMatrixCard destructures multiple fields from useDeviceContext", () 
   assert.match(source, /refresh/);
 });
 
+test("Devin configuration sits after the appearance control and requires detection", () => {
+  assert.match(source, /更换形象\s*<\/button>\s*\{agent\.id === "devin" && <DevinConfigurationButton disabled=\{!isDetected\} \/>\}/);
+  const config = readFileSync(join(here, "DevinConfigurationButton.jsx"), "utf8");
+  assert.match(config, /disabled=\{disabled\}/);
+  assert.match(config, /invoke\("devin_cloud_get_config"\)/);
+  assert.match(config, /invoke\("devin_cloud_save_config"/);
+  assert.match(config, /invoke\("devin_cloud_test"\)/);
+});
+
 test("ChannelMatrixCard applies is-active class to the active channel row", () => {
   assert.match(source, /is-active/);
   assert.match(source, /isFollowed/);

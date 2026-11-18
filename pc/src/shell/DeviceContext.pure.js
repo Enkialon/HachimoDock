@@ -107,7 +107,32 @@ export function usbStatusSnapshotsEqual(left, right) {
 export function pairedWifiTarget(status) {
   if (status?.wifiConnected !== true || !/^p4-[0-9a-f]{12}$/.test(status.boardDeviceId || "") ||
     !/^[0-9a-f]{16}$/.test(status.bootId || "")) return null;
-  return { boardDeviceId: status.boardDeviceId, bootId: status.bootId };
+  // Released WiFi6 builds such as R284 identify the dedicated system-settings
+  // firmware by version, but predate an explicit flag in their LAN status.
+  const wifi6SettingsFirmware = /^\d+\.\d+\.\d+-p4-r\d+-wifi6$/.test(status.firmware || "");
+  return {
+    boardDeviceId: status.boardDeviceId,
+    bootId: status.bootId,
+    address: status.address || "",
+    firmware: status.firmware || "",
+    bundledFirmwareVersion: status.bundledFirmwareVersion || "",
+    wifiConnected: true,
+    clockSynchronized: status.clockSynchronized === true,
+    rebootSupported: status.rebootSupported === true,
+    trustedVolume: status.trustedVolume === true,
+    controlTrusted: status.controlTrusted === true,
+    wirelessOta: status.wirelessOta === true,
+    wirelessRealtime: status.wirelessRealtime === true,
+    componentDelivery: status.componentDelivery === true,
+    inputDoublePress: status.inputDoublePress === true,
+    systemSettings: status.systemSettings === true || (status.systemSettings == null && wifi6SettingsFirmware),
+    panelControl: status.panelControl === true,
+  };
+}
+
+export function pairedWifiTargetsEqual(left, right) {
+  if (left === right) return true;
+  return Boolean(left && right && Object.entries(right).every(([key, value]) => left[key] === value));
 }
 
 export function deriveDeviceReachability({ usb, wifi }) {

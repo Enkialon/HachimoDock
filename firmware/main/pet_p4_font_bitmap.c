@@ -95,35 +95,44 @@ static bool prepare_metrics(void){
 /* app_main calls before audio/tasks/render. Failure is latched: never retry
  * a decode over a live glyph buffer. No font or decoder pointer leaves C. */
 #if PET_FONT_NATIVE_32
-#include "pet_p4_font_rows_size.h"
-extern const unsigned char font_rows_packed[] asm("_binary_pet_cn_16_rows_deflate_start");
-extern const unsigned char font_rows_packed_end[] asm("_binary_pet_cn_16_rows_deflate_end");
-static bool restore_bitmap_rows(void){
+#include "pet_p4_font_glyph_columns_size.h"
+extern const unsigned char font_glyph_columns_packed[] asm("_binary_pet_cn_16_glyph_columns_deflate_start");
+extern const unsigned char font_glyph_columns_packed_end[] asm("_binary_pet_cn_16_glyph_columns_deflate_end");
+static bool restore_bitmap_glyphs(void){
   /* Metrics are validated before this boot-only pass. Bound them again before
    * every access; preserve padding bits and verify the entire canonical output. */
   for(size_t id=0;id<PET_FONT_METRIC_RECORDS;id++){
     const lv_font_fmt_txt_glyph_dsc_t *g=&pet_font_metrics[id];
-    size_t offset=g->bitmap_index,width=g->box_w,bits=width*g->box_h;
-    if(offset>sizeof(pet_font_bitmap)||(bits+7)/8>sizeof(pet_font_bitmap)-offset)return false;
-    for(size_t bit=width;bit<bits;bit++){
-      size_t prior=bit-width;
-      unsigned value=(pet_font_bitmap[offset+prior/8]>>(7-prior%8))&1;
-      pet_font_bitmap[offset+bit/8]^=(uint8_t)(value<<(7-bit%8));
+    const size_t offset = g->bitmap_index, width = g->box_w, height = g->box_h;
+    const size_t size = (width * height + 7) / 8;
+    uint8_t columns[34];  /* Maximum packed glyph size in the canonical A1 font. */
+    if (offset > sizeof(pet_font_bitmap) || size > sizeof(pet_font_bitmap) - offset
+        || size > sizeof(columns)) return false;
+    if (!size) continue;
+    uint8_t *glyph = pet_font_bitmap + offset;
+    memcpy(columns, glyph, size);
+    size_t destination = 0;
+    for (size_t row = 0; row < height; row++) {
+      for (size_t source = row; source < width * height; source += height, destination++) {
+        const unsigned value = (columns[source / 8] >> (7 - source % 8)) & 1U;
+        const unsigned shift = 7 - destination % 8;
+        glyph[destination / 8] = (glyph[destination / 8] & ~(1U << shift)) | (value << shift);
+      }
     }
   }
   uint32_t hash=UINT32_C(2166136261);
   for(size_t i=0;i<sizeof(pet_font_bitmap);i++)hash=(hash^pet_font_bitmap[i])*UINT32_C(16777619);
-  return hash==PET_FONT_ROWS_RESTORED_FNV;
+  return hash==PET_FONT_GLYPH_COLUMNS_RESTORED_FNV;
 }
 static bool prepare_bitmap_after_columns(void){
-  size_t consumed=(size_t)(font_rows_packed_end-font_rows_packed),decoded=sizeof(pet_font_bitmap);
-  if(consumed!=PET_FONT_ROWS_PACKED_BYTES)return false;
+  size_t consumed=(size_t)(font_glyph_columns_packed_end-font_glyph_columns_packed),decoded=sizeof(pet_font_bitmap);
+  if(consumed!=PET_FONT_GLYPH_COLUMNS_PACKED_BYTES)return false;
   tinfl_init(&inflater);
-  tinfl_status status=tinfl_decompress(&inflater,font_rows_packed,&consumed,pet_font_bitmap,
+  tinfl_status status=tinfl_decompress(&inflater,font_glyph_columns_packed,&consumed,pet_font_bitmap,
     pet_font_bitmap,&decoded,TINFL_FLAG_PARSE_ZLIB_HEADER|TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-  bool bitmap_ok=status==TINFL_STATUS_DONE&&consumed==PET_FONT_ROWS_PACKED_BYTES
-    &&decoded==sizeof(pet_font_bitmap)&&tinfl_get_adler32(&inflater)==PET_FONT_ROWS_ADLER
-    &&restore_bitmap_rows();
+  bool bitmap_ok=status==TINFL_STATUS_DONE&&consumed==PET_FONT_GLYPH_COLUMNS_PACKED_BYTES
+    &&decoded==sizeof(pet_font_bitmap)&&tinfl_get_adler32(&inflater)==PET_FONT_GLYPH_COLUMNS_ADLER
+    &&restore_bitmap_glyphs();
   return bitmap_ok;
 }
 #endif

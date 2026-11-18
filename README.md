@@ -43,11 +43,11 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 
 | 项目 | 版本 | 下载 |
 | --- | --- | --- |
-| Windows x64 | **0.1.237** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_Windows-x64-setup.exe) |
-| macOS Apple silicon | **0.1.237** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_macOS-arm64.dmg) |
-| 配套设备固件 | **0.7.103-p4-r284 / R284** | [WiFi6 / Pico 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) |
+| Windows x64 | **0.1.241** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_Windows-x64-setup.exe) |
+| macOS Apple silicon | **0.1.241** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_macOS-arm64.dmg) |
+| 配套设备固件 | **0.7.104-p4-r287 / R287** | [WiFi6 / Pico 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241) |
 
-更新说明见 [0.1.237 发布页](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237)。客户端内置 WiFi6 与 Pico 的 v1、v3 四种 R284 OTA 固件；Wi-Fi 按键与对话状态同步需要同时更新客户端和固件。Wi-Fi 配对后可脱离电脑 USB 数据连接，设备仍需供电，电脑协同功能仍需管理端运行；Pico 固件不包含 Wi-Fi／蓝牙。下载后可核对 Release 页面显示的 SHA-256。
+更新说明见 [0.1.241 发布页](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241)。客户端内置 WiFi6 与 Pico 的 v1、v3 四种 R287 OTA 固件；Wi-Fi 按键与对话状态同步需要同时更新客户端和固件。Wi-Fi 配对后可脱离电脑 USB 数据连接，设备仍需供电，电脑协同功能仍需管理端运行；Pico 固件不包含 Wi-Fi／蓝牙。下载后可核对 Release 页面显示的 SHA-256。
 
 完整烧录包用于新设备或恢复出厂，会清除设置、形象和组件；请同时核对板型和芯片修订版，WiFi6 与 Pico、v1 与 v3 不可混刷。日常升级优先使用客户端内置 OTA。
 
@@ -55,12 +55,12 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 
 ### 按板型和芯片修订版下载完整烧录包
 
-| 板型 | 芯片修订版 | R284 完整烧录包 |
+| 板型 | 芯片修订版 | R287 完整烧录包 |
 | --- | --- | --- |
-| WiFi6 | v1 | [下载 WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_wifi6-v1_FULL-FACTORY.zip) |
-| WiFi6 | v3 | [下载 WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_wifi6-v3_FULL-FACTORY.zip) |
-| Pico | v1 | [下载 Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_pico-v1_FULL-FACTORY.zip) |
-| Pico | v3 | [下载 Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_pico-v3_FULL-FACTORY.zip) |
+| WiFi6 | v1 | [下载 WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v1_FULL-FACTORY.zip) |
+| WiFi6 | v3 | [下载 WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v3_FULL-FACTORY.zip) |
+| Pico | v1 | [下载 Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v1_FULL-FACTORY.zip) |
+| Pico | v3 | [下载 Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v3_FULL-FACTORY.zip) |
 
 ## 你可以用它做什么
 
@@ -136,7 +136,7 @@ macOS 安装受阻时，先检查下载来源和校验值，再按系统“隐�
 
 ### 新设备或恢复出厂
 
-[v0.1.237 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) 提供 WiFi6 和 Pico 原底板的完整烧录包，两种板型各有 v1、v3 版本。包内包含 Bootloader、应用固件、形象、组件及双平台烧录工具。请同时核对板型和实际芯片修订版；微雪 ESP32-P4-WIFI6-M 的 M 不代表芯片版本。同一芯片的固件由 Windows/macOS 共用。完整镜像会覆盖设备现有数据。
+[v0.1.241 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241) 提供 WiFi6 和 Pico 原底板的完整烧录包，两种板型各有 v1、v3 版本。包内包含 Bootloader、应用固件、形象、组件及双平台烧录工具。请同时核对板型和实际芯片修订版；微雪 ESP32-P4-WIFI6-M 的 M 不代表芯片版本。同一芯片的固件由 Windows/macOS 共用。完整镜像会覆盖设备现有数据。
 
 **v1 与 v3 烧录包不可互刷，具体版本可以咨询客服进行确认。** 包内脚本需要 Python 3.10+，自动安装 esptool **5.4.0**。屏幕连接 **DSI**，不是 CSI；请断电后插拔排线。详细版本和步骤见 [固件构建与烧录指南](firmware/BUILD.md)。
 
@@ -200,7 +200,7 @@ macOS 安装受阻时，先检查下载来源和校验值，再按系统“隐�
 
 ### 源码与发布对应关系
 
-公开 `main` 提供 0.1.237 / R284 的整理后源码，包含公开发布清理及安全修正，并非已发布安装包的可复现构建快照。`v0.1.237` Release 标签仍指向原公开基线，未因本次源码更新而移动；标签下自动生成的 Source code 归档也保持原基线。安装包构建标识与公开标签目标分别见 [发布元数据](latest-release.json)。
+`main` 和 `v0.1.241` 标签提供 0.1.241 / R287 的公开源码。安装包和固件的 SHA-256 见 [发布元数据](latest-release.json)。
 
 资源保存在普通 Git 中，克隆不依赖 Git LFS。构建以锁定依赖和目标平台配置为准；不同发布包的源码对应关系以各 Release 说明为准。自行编译请查阅下列构建文档，并按实际板型选择配置。
 

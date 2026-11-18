@@ -9,10 +9,10 @@ import WorkflowConfirm from './WorkflowConfirm.jsx';
 const request=(action,fields={})=>invoke('community_request',{input:{action,...fields}});
 // Development uses a same-origin reverse proxy, never an arbitrary URL parameter.
 const origin=import.meta.env.DEV?location.origin:COMMUNITY_ORIGIN;
-export default function CommunityWeb({view='discover',localItems,inventory,usbInstallTargetKey,onImported,onOpenLocal}){
+export default function CommunityWeb({view='discover',localItems,inventory,deviceInstallTargetKey,onImported,onOpenLocal}){
   const frame=useRef(null),current=useRef(null),confirmation=useRef(null),[confirm,setConfirm]=useState(null);
   const [ready,setReady]=useState(false),[failed,setFailed]=useState(false),[revision,setRevision]=useState(0),[dirty,setDirty]=useState(false),[busy,setBusy]=useState(false);
-  current.current={localItems,inventory,usbInstallTargetKey,onImported,onOpenLocal};
+  current.current={localItems,inventory,deviceInstallTargetKey,onImported,onOpenLocal};
   useExitProtection(busy?'社区下载或提交尚未完成':dirty?'社区评论或昵称尚未保存':'');
   useEffect(()=>{
     let alive=true,initialized=false,activeWrites=0;const channel=crypto.randomUUID(),inflight=new Set(),done=new Set();
@@ -28,7 +28,7 @@ export default function CommunityWeb({view='discover',localItems,inventory,usbIn
       if(action==='configure'){const item=current.current.localItems.find(x=>x.id===fields.id&&!x.isDeviceOnly);if(!item)throw Error('请先下载组件');current.current.onOpenLocal(item);return {ok:true};}
       if(action==='download'){
         const work=await request('detail',fields),state=await status(fields.id);if(state.blocked)throw Error(state.downloadLabel);
-        const targetKey=current.current.usbInstallTargetKey;
+        const targetKey=current.current.deviceInstallTargetKey;
         const choice=await new Promise(resolve=>{confirmation.current=resolve;setConfirm({work,targetKey});});confirmation.current=null;setConfirm(null);
         if(!choice||!alive)throw Error('已取消下载，未修改本机或设备');
         const result=await request('download',{...fields,expectedContentHash:work.contentHash});

@@ -10,14 +10,16 @@ pub(crate) struct Capability {
     pub base_url: String,
 
     pub token: String,
+    pub epoch: String,
 }
 
 pub(crate) fn load(role: &str) -> Result<Capability, String> {
+    let name = if role == "hook" { "hook.json" } else { "client.json" };
     let file = std::env::var_os("HACHIMODOCK_BRIDGE_CAPABILITY_DIR")
-        .map(|p| PathBuf::from(p).join("client.json"))
+        .map(|p| PathBuf::from(p).join(name))
         .or_else(|| {
             std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-                .map(|h| PathBuf::from(h).join(".claw-pet").join("bridge-runtime").join("client.json"))
+                .map(|h| PathBuf::from(h).join(".claw-pet").join("bridge-runtime").join(name))
         })
         .ok_or("bridge capability unavailable")?;
     let dir = file.parent().ok_or("bridge capability unavailable")?;
@@ -78,7 +80,7 @@ pub(crate) fn load(role: &str) -> Result<Capability, String> {
             .read_to_string(&mut raw)
             .map_err(|_| "bridge unpaired")?;
         let v: Value = serde_json::from_str(&raw).map_err(|_| "invalid bridge capability")?;
-        let port_key = if role == "control" { "hookPort" } else if role == "read" { "busPort" } else { return Err("invalid bridge role".into()); };
+        let port_key = if matches!(role, "control" | "hook") { "hookPort" } else if role == "read" { "busPort" } else { return Err("invalid bridge role".into()); };
         let port = v[port_key].as_u64().filter(|p| *p > 0 && *p <= 65535).ok_or("bridge endpoint unavailable")?;
         if v["version"] != 1 { return Err("invalid bridge descriptor".into()); }
         let epoch = v["epoch"].as_str().ok_or("invalid bridge epoch")?;
@@ -94,8 +96,13 @@ pub(crate) fn load(role: &str) -> Result<Capability, String> {
         Ok(Capability {
             base_url: format!("http://127.0.0.1:{port}"),
             token: token.into(),
+            epoch: epoch.into(),
         })
     }
+}
+
+pub(crate) fn load_hook() -> Result<Capability, String> {
+    load("hook")
 }
 
 // Renderer accepts only these local routes; it never receives a credential or

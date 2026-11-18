@@ -505,7 +505,7 @@ export default function CommunityCenter({
   onOpenLocal,
   onCreate,
   onImported,
-  usbInstallTargetKey,
+  deviceInstallTargetKey,
   refreshKey,
   children,
 }) {
@@ -580,7 +580,7 @@ export default function CommunityCenter({
           </Button>
         </div>
       )}
-      {["discover","favorites"].includes(tab) && <CommunityWeb key={tab} view={tab} localItems={localItems} inventory={inventory} usbInstallTargetKey={usbInstallTargetKey} onImported={onImported} onOpenLocal={onOpenLocal}/>}
+      {["discover","favorites"].includes(tab) && <CommunityWeb key={tab} view={tab} localItems={localItems} inventory={inventory} deviceInstallTargetKey={deviceInstallTargetKey} onImported={onImported} onOpenLocal={onOpenLocal}/>}
       {tab === "local" && (
         <section role="tabpanel" aria-label="我的组件">
           <div className="community-section-title">

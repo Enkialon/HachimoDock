@@ -878,7 +878,7 @@ test("board button config sends twelve visible gestures as sixteen internal bind
   // helper, reused by both the manual OTA button and the component-center install.
   assert.match(source, /export async function dispatchBoardButtonConfig/);
   assert.match(source, /invoke\("button_config_signal"/);
-  assert.match(source, /bindings: buildBoardButtonConfigBindings\(buttonActions, buttonValues, runtime, voiceEnabled\)/);
+  assert.match(source, /const bindings = buildBoardButtonConfigBindings\(buttonActions, buttonValues, runtime, voiceEnabled\)/);
   assert.match(source, /const ack = await dispatchBoardButtonConfig\(/);
   assert.match(source, /voiceEnabled: requestedRuntimeVoiceEnabled/);
   assert.match(source, /按钮配置已写入，正在准备设备麦克风识别通道/);
@@ -1082,7 +1082,8 @@ test("dashboard freezes the P4 target board when diagnostics or firmware modal o
   assert.ok(firmwareModal, "expected FirmwareUpdateModal");
   assert.ok(diagnosticsModal, "expected DeviceDiagnosticsModal");
   assert.match(source, /setFirmwareTargetBoardDeviceId\(usb\.boardDeviceId \|\| ""\)/);
-  assert.match(source, /setDiagnosticsTargetBoardDeviceId\(usb\.boardDeviceId \|\| ""\)/);
+  assert.match(source, /setDiagnosticsTargetBoardDeviceId\(wifiControlReady \? wifi\.boardDeviceId : usb\.boardDeviceId \|\| ""\)/);
+  assert.match(diagnosticsModal[0], /wifiTarget=\{diagnosticsWifiTarget\}/);
   assert.match(firmwareModal[0], /expectedBoardDeviceId=\{firmwareTargetBoardDeviceId\}/);
   assert.match(diagnosticsModal[0], /expectedBoardDeviceId=\{diagnosticsTargetBoardDeviceId\}/);
   assert.match(diagnosticsModal[0], /usb\.boardDeviceId === diagnosticsTargetBoardDeviceId\s*\? usb\.capabilities : null/);

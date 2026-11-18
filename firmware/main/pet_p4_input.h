@@ -55,6 +55,7 @@ bool pet_p4_input_send_config_state(
   pet_p4_send_line_fn send_line,
   void *ctx
 );
+cJSON *pet_p4_input_config_state(const cJSON *request, const char *board_device_id);
 unsigned int pet_p4_input_dropped_events(void);
 /* Read-only completed observation; no ADC read or input event. Unavailable
  * publication returns zeroed ready=false, never a mixed partially updated row. */

@@ -237,9 +237,12 @@ export default function VoiceAssistantPanel({
     && state.voiceRuntime?.targetKey === state.voiceRuntimeTargetKey;
   const listening = runtimeCurrent && state.audioBridgeEnabled;
   const voiceRunning = runtimeCurrent && state.voiceRuntime?.running === true;
+  const runtimeWaitHint = state.wifiConnected
+    ? "设备已通过 Wi-Fi 连接。Agent 按键语音输入需要 USB。"
+    : "正在等待设备握手确认";
   let audioBlockingReason = null;
   if (!runtimeCurrent || state.voiceRuntime?.mode === "waiting_device") {
-    audioBlockingReason = "正在等待设备握手确认";
+    audioBlockingReason = runtimeWaitHint;
   } else if (!state.selectedAgentId) {
     audioBlockingReason = "请先在「当前展示」里选择一个渠道";
   } else if (platformWarning) {
@@ -272,7 +275,7 @@ export default function VoiceAssistantPanel({
     || showAccessibilityGuidance;
   const formattedAudioBridgeMessage = runtimeCurrent ? formatVoiceUserMessage(state.audioBridgeMessage) : "";
   const listenHint = !runtimeCurrent || state.voiceRuntime?.mode === "waiting_device"
-    ? "正在等待设备握手确认"
+    ? runtimeWaitHint
     : listening
     ? "设备麦克风监听中，等待已配置按键触发"
     : state.audioBridgePending

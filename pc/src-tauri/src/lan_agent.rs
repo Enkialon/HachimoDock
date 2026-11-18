@@ -46,6 +46,8 @@ const VOLUME_REQUEST: u8 = 11;
 const VOLUME_RESULT: u8 = 8;
 const KEYBOARD_CONFIG: u8 = 15;
 const KEYBOARD_CONFIG_REPLY_MAX: usize = 512;
+const PANEL_CONTROL: u8 = 17;
+const PANEL_REQUEST_MAX: usize = 8192;
 const PAIR_PIN: u8 = 3;
 const PAIR_TIMEOUT: Duration = Duration::from_secs(10);
 const SRP_BYTES: usize = 384;
@@ -252,6 +254,11 @@ pub(crate) struct LanDeviceStatus {
     component_bundle: bool,
     #[serde(default)]
     input_double_press: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    system_settings: Option<bool>,
+    // Keep this on the old desktop's 512-byte status wire budget.
+    #[serde(default, rename(deserialize = "ops"))]
+    panel_control: bool,
     #[serde(default)]
     reboot_supported: bool,
     #[serde(default)]
@@ -288,11 +295,24 @@ fn query_status(peer: &Peer) -> io::Result<LanDeviceStatus> {
 }
 
 #[tauri::command]
-pub(crate) async fn lan_device_status() -> Result<LanDeviceStatus, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+pub(crate) async fn lan_device_status(app: tauri::AppHandle) -> Result<PairedLanStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         read_with_recovery(query_status, "无法读取 Wi-Fi 设备状态，请确认设备在线且固件支持无线状态查询。")
-            .map(|(_, status)| status)
+            .map(|(peer, device)| PairedLanStatus {
+                address: peer.address.ip().to_string(),
+                bundled_firmware_version: ota::bundled_wifi6_version(&app),
+                device,
+            })
     }).await.map_err(|_| "Wi-Fi 设备状态查询任务未完成。")?
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairedLanStatus {
+    address: String,
+    bundled_firmware_version: Option<&'static str>,
+    #[serde(flatten)]
+    device: LanDeviceStatus,
 }
 
 #[tauri::command]
@@ -336,6 +356,92 @@ pub(crate) async fn lan_bluetooth_keyboard_config(
         }
         Ok(reply)
     }).await.map_err(|_| "Wi-Fi 蓝牙配置任务未完成。")?
+}
+
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum LanPanelOperation {
+    ReadInput = 1,
+    WriteInput = 2,
+    ReadVolume = 3,
+    ReadDiagnostics = 4,
+    ReturnHome = 5,
+    ReadComponents = 6,
+    ResetInput = 7,
+    RemoveComponent = 8,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LanComponentRemoval {
+    component_id: String,
+    preserve_save: bool,
+    clear_device_save_confirmed: bool,
+}
+
+#[tauri::command]
+pub(crate) async fn lan_panel_control(
+    usb_manager: tauri::State<'_, crate::usb_serial::UsbSerialManager>,
+    board_device_id: String,
+    expected_boot_id: String,
+    operation: LanPanelOperation,
+    bindings: Option<Vec<crate::ButtonConfigBinding>>,
+    removal: Option<LanComponentRemoval>,
+) -> Result<Value, String> {
+    if expected_boot_id.len() != 16 || !expected_boot_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("无法确认设备的启动身份，请重新连接。".into());
+    }
+    let mut body = expected_boot_id.clone().into_bytes();
+    body.push(operation as u8);
+    match (operation, bindings, removal) {
+        (LanPanelOperation::WriteInput, Some(bindings), None) if (1..=19).contains(&bindings.len()) => {
+            let rows = crate::normalize_button_config_bindings(bindings, true)?;
+            body.extend_from_slice(json!({"bindings": rows}).to_string().as_bytes());
+        }
+        (LanPanelOperation::RemoveComponent, None, Some(removal))
+            if component::valid_id(&removal.component_id, 47)
+                && removal.preserve_save != removal.clear_device_save_confirmed =>
+        {
+            body.extend_from_slice(json!({
+                "componentId": removal.component_id,
+                "preserveSave": removal.preserve_save,
+            }).to_string().as_bytes());
+        }
+        (LanPanelOperation::WriteInput | LanPanelOperation::RemoveComponent, _, _)
+        | (_, Some(_), _) | (_, _, Some(_)) => return Err("设备操作参数无效。".into()),
+        (_, None, None) => {}
+    }
+    if body.len() > PANEL_REQUEST_MAX {
+        return Err("设备操作内容超过长度限制。".into());
+    }
+    let usb = usb_manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        require_no_usb(&usb)?;
+        let (peer, status) = read_with_recovery(query_status, "无法读取 Wi-Fi 设备状态。")?;
+        if !status.wifi_connected || status.board_device_id != board_device_id || status.boot_id != expected_boot_id {
+            return Err("Wi-Fi 设备身份已变化，请重新读取状态。".into());
+        }
+        if !status.panel_control {
+            return Err("当前设备固件暂不支持这项无线操作。".into());
+        }
+        if !status.control_trusted {
+            return Err("当前设备尚未授权 Wi-Fi 控制。".into());
+        }
+        require_no_usb(&usb)?;
+        let bytes = exchange_response_with_timeout(&peer, PANEL_CONTROL, &body,
+            Some(MAX_BODY - 2), Duration::from_secs(10)).map_err(|_| "设备未返回确认，请重新读取当前状态。")?;
+        if bytes == [0] {
+            return Err("设备未接受无线请求，请检查连接和设备状态。".into());
+        }
+        let response: Value = serde_json::from_slice(&bytes).map_err(|_| "设备返回无效数据。")?;
+        if response["boardDeviceId"].as_str() != Some(board_device_id.as_str()) {
+            return Err("设备回报身份与当前连接不一致。".into());
+        }
+        if response["ok"].as_bool() != Some(true) {
+            return Err(response["message"].as_str().unwrap_or("设备拒绝这项无线操作。").into());
+        }
+        Ok(response)
+    }).await.map_err(|_| "无线设备操作任务未完成。")?
 }
 
 #[derive(serde::Serialize, PartialEq, Debug)]

@@ -8,12 +8,14 @@
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md`.
  */
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { AlertTriangle, LoaderCircle, Power, RefreshCw, RotateCcw, X } from "lucide-react";
+import { wifiDeviceControl } from "../lib/wifi-device-control.js";
 
 function formatBytes(value) {
-  const bytes = Number(value) || 0;
+  if (!Number.isFinite(value)) return "—";
+  const bytes = value;
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
@@ -28,6 +30,8 @@ function formatDuration(value) {
   if (minutes) return `${minutes} 分 ${rest} 秒`;
   return `${rest} 秒`;
 }
+
+const LCD_PHASE_LABELS = ["帧间", "画面合成", "旋转", "帧比较", "提交到 LCD"];
 
 const RESET_LABELS = {
   power_on: "上电启动",
@@ -58,6 +62,7 @@ export default function DeviceDiagnosticsModal({
   onClose,
   onInputConfigReset,
   expectedBoardDeviceId,
+  wifiTarget,
   wasmCapabilities,
 }) {
   const [report, setReport] = useState(null);
@@ -66,18 +71,22 @@ export default function DeviceDiagnosticsModal({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [confirmAction, setConfirmAction] = useState("");
+  const readSequence = useRef(0);
 
   const loadDiagnostics = useCallback(async () => {
+    const sequence = ++readSequence.current;
     setPending(true);
     setError("");
     try {
-      setReport(await invoke("usb_get_diagnostics", { expectedBoardDeviceId }));
+      const response = wifiTarget ? await wifiDeviceControl(invoke, wifiTarget, "readDiagnostics")
+        : await invoke("usb_get_diagnostics", { expectedBoardDeviceId });
+      if (sequence === readSequence.current) setReport(response);
     } catch (loadError) {
-      setError(typeof loadError === "string" ? loadError : String(loadError));
+      if (sequence === readSequence.current) setError(typeof loadError === "string" ? loadError : String(loadError));
     } finally {
-      setPending(false);
+      if (sequence === readSequence.current) setPending(false);
     }
-  }, [expectedBoardDeviceId]);
+  }, [expectedBoardDeviceId, wifiTarget]);
 
   useEffect(() => {
     if (!open) return;
@@ -87,6 +96,7 @@ export default function DeviceDiagnosticsModal({
     setNotice("");
     setConfirmAction("");
     loadDiagnostics();
+    return () => { ++readSequence.current; };
   }, [loadDiagnostics, open]);
 
   const resetInputs = async () => {
@@ -98,10 +108,11 @@ export default function DeviceDiagnosticsModal({
     setError("");
     setNotice("");
     try {
-      const result = await invoke("usb_reset_input_config", { expectedBoardDeviceId });
+      const result = wifiTarget ? await wifiDeviceControl(invoke, wifiTarget, "resetInput")
+        : await invoke("usb_reset_input_config", { expectedBoardDeviceId });
       setNotice(result?.message || "按键和摇杆已恢复默认映射，形象素材未改动。");
       setConfirmAction("");
-      await onInputConfigReset?.();
+      await onInputConfigReset?.(wifiTarget ? result : undefined);
       await loadDiagnostics();
     } catch (resetError) {
       setError(typeof resetError === "string" ? resetError : String(resetError));
@@ -118,8 +129,13 @@ export default function DeviceDiagnosticsModal({
     setAction("reboot");
     setError("");
     try {
-      const result = await invoke("usb_reboot_device", { expectedBoardDeviceId });
-      setNotice(result?.message || "设备正在重启，USB 会短暂断开。");
+      if (wifiTarget) {
+        const result = await invoke("lan_reboot", { expectedBootId: wifiTarget.bootId });
+        setNotice(result.observed ? "已确认设备重新上线。请重新打开诊断读取新状态。" : "重启状态尚未确认。");
+      } else {
+        const result = await invoke("usb_reboot_device", { expectedBoardDeviceId });
+        setNotice(result?.message || "设备正在重启，USB 会短暂断开。");
+      }
       setConfirmAction("");
     } catch (rebootError) {
       setError(typeof rebootError === "string" ? rebootError : String(rebootError));
@@ -139,7 +155,12 @@ export default function DeviceDiagnosticsModal({
   };
   const memory = report?.memory || {};
   const storage = report?.storage || {};
+  const audio = report?.audio;
+  const scanout = runtime.lcdScanout;
   const desktopBuild = report?.desktopBuild || {};
+  const panicSites = report?.previousNativePanic?.available === true
+    ? (report.previousNativePanic.sites || []).filter(site => Number.isInteger(site.pc))
+    : [];
   const resetReason = RESET_LABELS[report?.lastResetReason] || report?.lastResetReason || "未知";
   const storageUsage = storage.totalBytes
     ? `${formatBytes(storage.usedBytes)} / ${formatBytes(storage.totalBytes)}`
@@ -186,6 +207,14 @@ export default function DeviceDiagnosticsModal({
               <Metric label="PC 构建" value={desktopBuild.buildId || "未知"} />
               <Metric label="协议 Schema（设备 / PC）" value={`${runtime.protocolSchema || "?"} / ${desktopBuild.protocolSchema || "?"}`} />
               <Metric label="启动 / 故障复位" value={`${report.bootCount || 0} / ${report.faultResetCount || 0}`} tone={report.lastResetWasFault ? "warning" : ""} />
+              {Number.isInteger(scanout?.underruns) && <Metric label="LCD 供数不足（本次开机）"
+                value={scanout.underruns === 0 ? "0 次" : `${scanout.underruns} 次 · ${LCD_PHASE_LABELS[scanout.lastPhase] || "未知阶段"}${scanout.videoWorkerActive ? " · 视频解码或打包进行中" : ""}`}
+                tone={scanout.underruns > 0 ? "warning" : ""} />}
+              {panicSites.length > 0 && <Metric label="上次异常位置"
+                value={panicSites.map(site => `CPU ${site.core} · 0x${site.pc.toString(16)}`).join(" / ")} tone="warning" />}
+              {audio && <Metric label="完成提示音（入队 / 获准播放 / 抑制）"
+                value={`${audio.completionCueQueued ?? "?"} / ${audio.completionCueAdmitted ?? "?"} / ${audio.completionCueSuppressed ?? "?"}`} />}
+              {audio && <Metric label="扬声器状态" value={audio.musicActive ? "媒体播放" : audio.conversationActive ? "实时对话" : audio.playbackActive ? "播放中" : audio.playbackReady ? "空闲" : "未就绪"} />}
               <Metric label="页面 / Agent" value={`${runtime.screenPage || "未知"} / ${runtime.agentState || "idle"}`} />
               <Metric label="WASM 运行时 · widgetWasm" value={wasmCapability("widgetWasm")} />
               <Metric label="WASM 原生画布 · widgetWasmCanvas" value={wasmCapability("widgetWasmCanvas")} />

@@ -123,7 +123,7 @@ function singleStateProgressFromPipeline(progress, fallbackFamily) {
   return { label: "生成中", percent: 24, message, tone: "running" };
 }
 
-export default function AppearanceDetail({ appearanceId, boardDeviceId = "", onBack, onOpenApiSettings }) {
+export default function AppearanceDetail({ appearanceId, boardDeviceId = "", wifiConnected = false, onBack, onOpenApiSettings }) {
   const [record, setRecord] = useState(null);
   const [error, setError] = useState("");
   const [activeFamily, setActiveFamily] = useState("");
@@ -541,6 +541,7 @@ export default function AppearanceDetail({ appearanceId, boardDeviceId = "", onB
       setSingleStateMessage("当前不是桌面客户端运行环境，无法替换到板端。");
       return;
     }
+    if (!boardDeviceId) return;
 
     setSingleStateStatus("syncing");
     setSingleStateMessage("正在通过素材 OTA 通道替换到板端…");
@@ -844,7 +845,8 @@ export default function AppearanceDetail({ appearanceId, boardDeviceId = "", onB
                       className="btn-primary"
                       type="button"
                       onClick={handleSyncSingleStateToDevice}
-                      disabled={singleStateBusy}
+                      disabled={singleStateBusy || !boardDeviceId}
+                      title={!boardDeviceId ? "替换板端素材需要 USB" : undefined}
                     >
                       {singleStateStatus === "syncing" ? <Loader size={14} className="spin" /> : <UploadCloud size={14} />}
                       替换到板端
@@ -859,7 +861,7 @@ export default function AppearanceDetail({ appearanceId, boardDeviceId = "", onB
               </div>
             </section>
           )}
-          <GlobalAudioCuesPanel boardDeviceId={boardDeviceId} currentFamily={activeFamily}/>
+          <GlobalAudioCuesPanel boardDeviceId={boardDeviceId} currentFamily={activeFamily} wifiConnected={wifiConnected}/>
 
           {activeRecord?.ok && (
             <section className="detail-side-section detail-side-section--regenerate">
@@ -889,7 +891,8 @@ export default function AppearanceDetail({ appearanceId, boardDeviceId = "", onB
                       className="btn-primary"
                       type="button"
                       onClick={handleSyncSingleStateToDevice}
-                      disabled={singleStateBusy}
+                      disabled={singleStateBusy || !boardDeviceId}
+                      title={!boardDeviceId ? "替换板端素材需要 USB" : undefined}
                     >
                       {singleStateStatus === "syncing" ? <Loader size={14} className="spin" /> : <UploadCloud size={14} />}
                       替换到板端
@@ -1103,7 +1106,8 @@ export default function AppearanceDetail({ appearanceId, boardDeviceId = "", onB
                 <Button
                   variant="primary"
                   onClick={handleSyncSingleStateToDevice}
-                  disabled={!canSyncSingleState || singleStateBusy}
+                  disabled={!canSyncSingleState || singleStateBusy || !boardDeviceId}
+                  title={!boardDeviceId ? "替换板端素材需要 USB" : undefined}
                 >
                   <UploadCloud size={14} />
                   替换到板端

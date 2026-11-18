@@ -60,6 +60,7 @@ import {
   removeActiveComponentForTarget,
   writeActiveComponentForTarget,
 } from "./lib/active-component-store.js";
+import { wifiDeviceControl, wifiDeviceControlReady } from "./lib/wifi-device-control.js";
 import PageShell from "./shell/PageShell.jsx";
 import PageOnboardingModal, {
   usePageOnboarding,
@@ -118,13 +119,6 @@ const SESSION_DEVICE_INVENTORY_REQUESTS = new Map();
 const CONTROL_HELP = Object.fromEntries(
   COMPONENT_CONTROL_OPTIONS.map((option) => [option.label, option.help]),
 );
-
-function gameInstallBlockedReason(_component, _usb) {
-  // Optional device capability/ready snapshots do not prohibit installation.
-  // Package validity, target scope, capacity and actual native transfer errors
-  // remain authoritative. Installation never asserts optional features can run.
-  return "";
-}
 
 function localInstallBlockedReason(component) {
   if (component?.valid !== false) return legacyAudioInstallBlockedReason(component);
@@ -216,6 +210,7 @@ function componentTargetLabel(target) {
   if (target?.transport === "usb") {
     return `USB · ${target.boardDeviceId || "未识别设备"}`;
   }
+  if (target?.transport === "wifi") return `Wi-Fi · ${target.boardDeviceId}`;
   if (target?.transport === "ssh") {
     return `SSH · ${target.sshHost || "未设置主机"}`;
   }
@@ -297,14 +292,19 @@ function inventoryFailure(error, target) {
   };
 }
 
+function inventoryTargetKey(target) {
+  const identity = activeComponentTargetKey(target);
+  return target?.transport === "wifi" && identity ? `wifi:${identity}:${target.bootId}` : identity;
+}
+
 function readSessionDeviceInventory(target) {
-  const targetKey = activeComponentTargetKey(target);
+  const targetKey = inventoryTargetKey(target);
   const cached = targetKey ? SESSION_DEVICE_INVENTORY_CACHE.get(targetKey) : null;
   return cached && Date.now() - cached.checkedAt < 15000 ? cached : null;
 }
 
 function writeSessionDeviceInventory(target, inventory) {
-  const targetKey = activeComponentTargetKey(target);
+  const targetKey = inventoryTargetKey(target);
   if (targetKey && inventory) {
     SESSION_DEVICE_INVENTORY_CACHE.set(targetKey, {...inventory,checkedAt:Date.now()});
   }
@@ -312,19 +312,26 @@ function writeSessionDeviceInventory(target, inventory) {
 }
 
 function requestSessionDeviceInventory(target) {
-  const targetKey = activeComponentTargetKey(target);
+  const targetKey = inventoryTargetKey(target);
   if (!targetKey) return Promise.resolve(EMPTY_DEVICE_INVENTORY);
   const existingRequest = SESSION_DEVICE_INVENTORY_REQUESTS.get(targetKey);
   if (existingRequest) return existingRequest;
 
-  const request = invoke("list_device_widgets", {
+  const request = (target.transport === "wifi"
+    ? wifiDeviceControl(invoke, target, "readComponents").then((reply) => {
+        if (reply.complete !== true || reply.recoveryBlocked) {
+          throw new Error("设备组件清单不可用，请等待设备恢复。");
+        }
+        return { ...reply, transport: "wifi", freshness: "live" };
+      })
+    : invoke("list_device_widgets", {
     input: {
       transport: target.transport,
       boardDeviceId: target.boardDeviceId || "",
       sshHost: target.sshHost || "",
     },
-  }).then((result) => {
-    const inventory=normalizeDeviceInventory(result);
+  })).then((result) => {
+    const inventory={...normalizeDeviceInventory(result), scope:targetKey};
     return SESSION_DEVICE_INVENTORY_REQUESTS.get(targetKey)===request?writeSessionDeviceInventory(target,inventory):inventory;
   }).catch((error) => {
     console.warn("[ComponentCenter] list_device_widgets failed", error);
@@ -389,24 +396,34 @@ function matchesLibraryPath(component, clawpkgPath) {
     || pathContainsComponentId(clawpkgPath, component.id);
 }
 
-export default function ComponentCenter({ active = true }) {
+export default function ComponentCenter({ active = true, onOpenWirelessMaintenance }) {
   const { push } = useToast();
   const onboarding = usePageOnboarding(ONBOARDING_PAGE_IDS.COMPONENT_CENTER);
   const {
     usb,
+    wifi,
     currentComponent: deviceCurrentComponent,
   } = useDeviceContext();
   const configuredSshHost = readConfiguredComponentSshHost();
+  const wirelessInventoryReady = wifiDeviceControlReady(wifi) && wifi?.componentDelivery === true;
+  const wifiBoardDeviceId = wifi?.boardDeviceId;
+  const wifiBootId = wifi?.bootId;
   const liveInventoryTarget = useMemo(() => {
     const boardDeviceId = String(usb.boardDeviceId || "").trim();
     if (usb.connected && boardDeviceId) {
       return { transport: "usb", boardDeviceId };
     }
+    if (!usb.connected && wirelessInventoryReady && wifiBoardDeviceId && wifiBootId) {
+      return { transport: "wifi", boardDeviceId: wifiBoardDeviceId, bootId: wifiBootId,
+        controlTrusted: true, panelControl: true };
+    }
     return configuredSshHost
       ? { transport: "ssh", sshHost: configuredSshHost }
       : null;
-  }, [configuredSshHost, usb.boardDeviceId, usb.connected]);
+  }, [configuredSshHost, usb.boardDeviceId, usb.connected, wirelessInventoryReady, wifiBoardDeviceId, wifiBootId]);
   const deviceConnected = Boolean(liveInventoryTarget);
+  const readsGlobalButtons = liveInventoryTarget?.transport === "wifi"
+    || (liveInventoryTarget?.transport === "usb" && usb.runtime === "esp-p4");
 
   const [createDrawerOpen, setCreateDrawerOpen] = useState(false);
   const [trashOpen,setTrashOpen]=useState(false);
@@ -501,18 +518,24 @@ export default function ComponentCenter({ active = true }) {
   }, [deviceCurrentComponent]);
 
   useEffect(() => {
-    const boardDeviceId = String(usb.boardDeviceId || "").trim();
-    if (!usb.connected || !boardDeviceId || String(usb.runtime || "").toLowerCase() !== "esp-p4") {
+    if (!readsGlobalButtons || !active) {
       setGlobalExitBinding({ boardDeviceId: "", events: [], status: "idle" });
       return undefined;
     }
+    const target = liveInventoryTarget;
+    const { boardDeviceId } = target;
+    const scope = inventoryTargetKey(target);
     let cancelled = false;
-    setGlobalExitBinding({ boardDeviceId, events: [], status: "loading" });
-    invoke("usb_get_button_config", { expectedBoardDeviceId: boardDeviceId })
+    setGlobalExitBinding({ boardDeviceId, scope, events: [], status: "loading" });
+    const pending = target.transport === "wifi"
+      ? wifiDeviceControl(invoke, target, "readInput")
+      : invoke("usb_get_button_config", { expectedBoardDeviceId: boardDeviceId });
+    pending
       .then((response) => {
         if (!cancelled) {
           setGlobalExitBinding({
             boardDeviceId,
+            scope,
             events: resolveGlobalExitEvents(response),
             realtimeEvents: resolveGlobalButtonEvents(response, "realtime_chat"),
             status: "ready",
@@ -521,12 +544,12 @@ export default function ComponentCenter({ active = true }) {
       })
       .catch((error) => {
         console.warn("[ComponentCenter] global exit binding query failed", error);
-        if (!cancelled) setGlobalExitBinding({ boardDeviceId, events: [], status: "error" });
+        if (!cancelled) setGlobalExitBinding({ boardDeviceId, scope, events: [], status: "error" });
       });
     return () => {
       cancelled = true;
     };
-  }, [usb.boardDeviceId, usb.connected, usb.runtime, previewComponentId]);
+  }, [active, liveInventoryTarget, readsGlobalButtons, previewComponentId]);
 
   const refreshComponentLibrary = useCallback(async () => {
     const requestId = libraryRefreshRequestRef.current + 1;
@@ -644,7 +667,7 @@ export default function ComponentCenter({ active = true }) {
     refreshDeviceInventory();
     return ()=>{
       inventoryRefreshRequestRef.current+=1;
-      SESSION_DEVICE_INVENTORY_REQUESTS.delete(activeComponentTargetKey(liveInventoryTarget));
+      SESSION_DEVICE_INVENTORY_REQUESTS.delete(inventoryTargetKey(liveInventoryTarget));
     };
   }, [active, liveInventoryTarget, refreshDeviceInventory]);
 
@@ -883,7 +906,7 @@ export default function ComponentCenter({ active = true }) {
     focusComponentLibrary();
     if (!installTargetKey) {
       push({tone:"success",title:`已下载「${component.name}」`,message:"已加入我的组件。"});
-    } else if (installTargetKey !== activeComponentTargetKey(targetRef.current)) {
+    } else if (installTargetKey !== inventoryTargetKey(targetRef.current)) {
       push({tone:"warning",title:`已下载「${component.name}」`,message:"设备连接已变化，请从我的组件确认安装目标。"});
     } else {
       await syncSelectedComponent(component, false, {freshImport:true});
@@ -904,7 +927,7 @@ export default function ComponentCenter({ active = true }) {
       });
       return;
     }
-    const firmwareError = componentUsbInstallBlockedReason(component, usb) || gameInstallBlockedReason(component, usb);
+    const firmwareError = componentUsbInstallBlockedReason(component, usb);
     if (firmwareError) {
       push({
         tone: "error",
@@ -1054,7 +1077,9 @@ export default function ComponentCenter({ active = true }) {
   }, [componentActionPending, pendingComponentAction, clearSaveConfirmationMode]);
 
   function clearActiveComponentState(target) {
-    setActiveComponentRecord(null);
+    if (activeComponentTargetKey(targetRef.current) === activeComponentTargetKey(target)) {
+      setActiveComponentRecord(null);
+    }
     try {
       removeActiveComponentForTarget(target);
       window.dispatchEvent(new Event("storage"));
@@ -1097,7 +1122,14 @@ export default function ComponentCenter({ active = true }) {
       if (removesDevice) {
         if (!target) throw new Error("无法确认要删除组件的目标设备");
         const savePolicy=deviceDeletePolicy({clearSave:clearDeviceSave,transport:target.transport,capabilities:usb.capabilities});
-        deviceResult = await invoke("remove_widget_from_device", {
+        if (inventoryTargetKey(target) !== inventoryTargetKey(targetRef.current)) {
+          throw new Error("设备或连接已变化，请重新确认移除。");
+        }
+        deviceResult = target.transport === "wifi"
+          ? await wifiDeviceControl(invoke, target, "removeComponent", {
+              removal: { ...savePolicy, componentId: component.id },
+            })
+          : await invoke("remove_widget_from_device", {
           input: {
             ...savePolicy,
             componentId: component.id,
@@ -1111,11 +1143,13 @@ export default function ComponentCenter({ active = true }) {
         }
         if (wasActive) clearActiveComponentState(target);
         deviceRemoved=true;
-        setDeviceInventory((current) => writeSessionDeviceInventory(target, {
-          ...current,
-          activeWidgetId: wasActive ? "" : current.activeWidgetId,
-          items: current.items.filter((item) => item.id !== component.id),
-        }));
+        setDeviceInventory((current) => current.scope === inventoryTargetKey(target)
+          ? writeSessionDeviceInventory(target, {
+              ...current,
+              activeWidgetId: wasActive ? "" : current.activeWidgetId,
+              items: current.items.filter((item) => item.id !== component.id),
+            })
+          : current);
       }
 
       if (deleteLibrary) {
@@ -1192,23 +1226,13 @@ export default function ComponentCenter({ active = true }) {
   }
 
   function bindingConflictForComponent(component) {
-    const boardDeviceId = String(usb.boardDeviceId || "").trim();
-    if (
-      usb.connected
-      && String(usb.runtime || "").toLowerCase() === "esp-p4"
-      && boardDeviceId
-      && (globalExitBinding.boardDeviceId !== boardDeviceId || globalExitBinding.status === "loading")
-    ) {
-      return "正在读取设备的全局按键配置，请稍候";
-    }
-    if (
-      usb.connected
-      && String(usb.runtime || "").toLowerCase() === "esp-p4"
-      && boardDeviceId
-      && globalExitBinding.boardDeviceId === boardDeviceId
-      && globalExitBinding.status === "error"
-    ) {
-      return "读取设备的全局按键配置失败，请重新连接设备后再试";
+    if (readsGlobalButtons) {
+      if (globalExitBinding.scope !== inventoryTargetKey(liveInventoryTarget) || globalExitBinding.status === "loading") {
+        return "正在读取设备的全局按键配置，请稍候";
+      }
+      if (globalExitBinding.status === "error") {
+        return "读取设备的全局按键配置失败，请重新连接设备后再试";
+      }
     }
     const seen = new Map();
     for (const binding of resolveComponentBindings(component)) {
@@ -1297,7 +1321,7 @@ export default function ComponentCenter({ active = true }) {
   }
 
   async function startOtaInstall(componentId, clawpkgPath, options = {}) {
-    options={...options,epoch:++installEpoch.current};
+    options={...options,target:options.target || liveInventoryTarget,epoch:++installEpoch.current};
     const component = BUILTIN_COMPONENT_CENTER.components.find((c) => c.id === componentId);
     const targetName = options.targetName || component?.name || componentId;
     setOtaTargetName(targetName);
@@ -1306,7 +1330,7 @@ export default function ComponentCenter({ active = true }) {
     setOtaError(null);
     setOtaResult(null);
     const sshHost = readConfiguredComponentSshHost();
-    if (sshHost && !usb.connected && !options.forceUsb) {
+    if (options.target?.transport === "wifi" || (sshHost && !usb.connected && !options.forceUsb)) {
       return performOtaInstall(componentId, clawpkgPath, options);
     }
     setOtaPhase("checking-usb");
@@ -1343,9 +1367,10 @@ export default function ComponentCenter({ active = true }) {
     const sshHost = readConfiguredComponentSshHost();
     let componentPackageInstalled = false;
     let attemptedSsh = false;
+    const useWifi = options.target?.transport === "wifi";
     transferInFlight.current=true;
     try {
-      if(options.target&&activeComponentTargetKey(options.target)!==activeComponentTargetKey(targetRef.current))throw new Error('目标设备已变化，请关闭后重新确认同步目标。');
+      if(options.target&&inventoryTargetKey(options.target)!==inventoryTargetKey(targetRef.current))throw new Error('目标设备已变化，请关闭后重新确认同步目标。');
       let result;
       let installTarget;
       let liveStatus = null;
@@ -1356,9 +1381,31 @@ export default function ComponentCenter({ active = true }) {
       }
       const liveUsbConnected = Boolean(liveStatus?.connected);
       if(options.epoch!==undefined&&options.epoch!==installEpoch.current)return false;
-      const useSsh = !options.forceUsb && !liveUsbConnected && sshHost.length > 0;
+      const useSsh = !useWifi && !options.forceUsb && !liveUsbConnected && sshHost.length > 0;
       attemptedSsh = useSsh;
-      if (useSsh) {
+      if (useWifi) {
+        if (liveUsbConnected) throw new Error("连接已切换到 USB，请重新确认同步。");
+        installTarget = options.target;
+        if (deviceInventory.freshness !== "live" || deviceInventory.scope !== inventoryTargetKey(installTarget)) {
+          throw new Error("请先刷新设备组件清单，再同步组件。");
+        }
+        const preview = await invoke("lan_component_preview", { path: clawpkgPath });
+        if (component?.id && component.id !== preview.id) throw new Error("组件与所选文件不匹配。");
+        const installed = deviceInventory.items.find((entry) => entry.id === preview.id);
+        if (installed && !installed.version) throw new Error("请先确认设备上已安装组件的版本。");
+        const inspected = await invoke("inspect_clawpkg", { path: clawpkgPath }).catch(() => null);
+        const centerTitle = centerTitleForSync(inspected?.deviceCenterTitle);
+        if (options.epoch !== undefined && options.epoch !== installEpoch.current) return false;
+        result = await invoke("lan_component_install", {
+          path: clawpkgPath, ...preview,
+          expectedBoardDeviceId: installTarget.boardDeviceId,
+          expectedBootId: installTarget.bootId,
+          expectedInstalledVersion: installed?.version,
+          centerTitle,
+          expectedVersionHash: component?.versionHash || undefined,
+          bindingOverrides: options.bindingMap || buildBindingOverridesForInstall(component),
+        });
+      } else if (useSsh) {
         installTarget = { transport: "ssh", sshHost };
         if(options.target&&activeComponentTargetKey(options.target)!==activeComponentTargetKey(installTarget))throw new Error('连接方式或目标已变化，请重新确认同步目标。');
         result = await invoke("install_clawpkg_over_ssh", {
@@ -1413,6 +1460,7 @@ export default function ComponentCenter({ active = true }) {
         return false;
       }
       componentPackageInstalled = true;
+      setOtaPendingOptions(current => current.epoch === options.epoch ? { ...current, target: installTarget } : current);
       if(options.bindingSnapshot)setSavedBindingOverrides(options.bindingSnapshot);
       markComponentInstalled(component, installTarget);
       await refreshDeviceInventory({ silent: true });
@@ -1428,6 +1476,7 @@ export default function ComponentCenter({ active = true }) {
       if (
         !componentPackageInstalled
         && !attemptedSsh
+        && !useWifi
         && (msg.includes("USB 未连接") || msg.includes("USB not connected"))
       ) {
         setOtaPhase("waiting-usb");
@@ -1557,6 +1606,10 @@ export default function ComponentCenter({ active = true }) {
           <RefreshCw size={14} />
           {componentLibraryLoading || inventoryLoading ? "刷新中…" : "刷新组件库"}
         </button>,
+        wifi?.componentDelivery && !wirelessInventoryReady && onOpenWirelessMaintenance && <button key="wireless-component-install"
+          type="button" className="btn-ghost btn-sm" onClick={onOpenWirelessMaintenance}>
+          Wi-Fi 安装组件包
+        </button>,
         <button
           key="import-hachiapp"
           type="button"
@@ -1635,12 +1688,16 @@ export default function ComponentCenter({ active = true }) {
         inventory={deviceInventory}
         onOpenLocal={openComponent}
         onCreate={() => setCreateDrawerOpen(true)}
-        usbInstallTargetKey={usb.connected && usb.boardDeviceId && deviceInventory.freshness === "live"
-          && !transferInFlight.current && !syncInFlight.current ? activeComponentTargetKey(liveInventoryTarget) : ""}
+        deviceInstallTargetKey={(liveInventoryTarget?.transport === "usb" || liveInventoryTarget?.transport === "wifi")
+          && deviceInventory.freshness === "live" && !transferInFlight.current && !syncInFlight.current
+          ? inventoryTargetKey(liveInventoryTarget) : ""}
         onImported={handleCommunityImport}
       >
       {componentLibraryError&&<div role="alert" className="community-error">本机组件库读取失败，保留上次列表。{componentLibraryError}<button onClick={refreshComponentLibrary}>重试</button></div>}
-      {deviceInventory.freshness!=='live'&&<p role="status">{deviceConnected?'设备清单待核对；安装状态暂不确定。':'设备未连接；仍可管理本机组件。'}</p>}
+      {deviceInventory.freshness !== 'live' && <p role="status">{deviceConnected
+        ? '设备清单待核对；安装状态暂不确定。'
+        : wifi ? '此固件暂未提供 Wi-Fi 组件清单。'
+          : '设备未连接；仍可管理本机组件。'}</p>}
       {deviceInventory.warnings?.map(w=><p role="alert" className="community-error" key={w}>{w}</p>)}
       {/* ── one library: local availability and live board state ─────────── */}
       <section
@@ -1760,7 +1817,6 @@ export default function ComponentCenter({ active = true }) {
                 ? "本机没有这个组件的安装源；可以继续保留，或从当前卡片移除。"
                 : localInstallBlockedReason(previewComponent)
                   || componentUsbInstallBlockedReason(previewComponent, usb)
-                  || gameInstallBlockedReason(previewComponent, usb)
             }
             onInstall={
               previewComponent.isDeviceOnly
@@ -1841,14 +1897,19 @@ export default function ComponentCenter({ active = true }) {
                   重试
                 </button>
               )}
-              {otaPhase === "success" && (
+              {otaPhase === "success" && otaPendingOptions.target?.transport !== "ssh" && (
                 <button
                   className="btn-secondary"
                   type="button"
-                  title="设备负一屏切回宠物主屏（widget 仍保留在 widgets/<id>/）"
+                  title="切回设备宠物主屏"
                   onClick={async () => {
                     try {
-                      await invoke("usb_set_screen_page", { page: "main" });
+                      const target = otaPendingOptions.target;
+                      if (!target || inventoryTargetKey(target) !== inventoryTargetKey(targetRef.current)) {
+                        throw new Error("设备或连接已变化，请在设备菜单重新操作。");
+                      }
+                      if (target.transport === "wifi") await wifiDeviceControl(invoke, target, "returnHome");
+                      else await invoke("usb_set_screen_page", { page: "main", expectedBoardDeviceId: target.boardDeviceId });
                       push({ tone: "success", title: "已请求设备切回主屏" });
                       dismissOtaModal();
                     } catch (err) {

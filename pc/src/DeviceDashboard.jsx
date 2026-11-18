@@ -67,6 +67,7 @@ import { useP4SessionSync } from "./dashboard/useP4SessionSync.js";
 import DashboardActionsMenu from "./dashboard/DashboardActionsMenu.jsx";
 import FirmwareUpdateModal from "./dashboard/FirmwareUpdateModal.jsx";
 import DeviceDiagnosticsModal from "./dashboard/DeviceDiagnosticsModal.jsx";
+import { wifiDeviceControl, wifiDeviceControlReady } from "./lib/wifi-device-control.js";
 import { ACTIVE_APPEARANCE_KEY } from "./lib/desktop-pet-assignment.js";
 import { observeAppearanceFromMenu, appearanceObservationError } from "./lib/appearance-readonly-observation.js";
 import { BUILTIN_TERRIER_APPEARANCE_ID } from "./lib/builtin-appearances.js";
@@ -675,15 +676,17 @@ function deferredButtonBindings(capabilities = {}) {
 
 const SETTINGS_NOT_READY = "设备暂未开放系统设置，所选按键动作已保留在电脑上。";
 
-export async function dispatchBoardButtonConfig({ boardDeviceId, buttonActions, buttonValues, runtime, voiceButton, voiceEnabled, capabilities, expectedConnectionId }) {
+export async function dispatchBoardButtonConfig({ boardDeviceId, buttonActions, buttonValues, runtime, voiceButton, voiceEnabled, capabilities, expectedConnectionId, wifi }) {
+  const bindings = buildBoardButtonConfigBindings(buttonActions, buttonValues, runtime, voiceEnabled)
+    .filter(binding => !deferredButtonBindings(capabilities)(binding)
+      && !(binding.event.endsWith(".double_press") && binding.action === "disabled"));
+  if (wifi) return wifiDeviceControl(invoke, wifi, "writeInput", { bindings });
   const requestId = createButtonConfigRequestId();
   return invoke("button_config_signal", {
     boardDeviceId,
     requestId,
     expectedConnectionId,
-    bindings: buildBoardButtonConfigBindings(buttonActions, buttonValues, runtime, voiceEnabled)
-      .filter(binding => !deferredButtonBindings(capabilities)(binding)
-        && !(binding.event.endsWith(".double_press") && binding.action === "disabled")),
+    bindings,
     voiceButton,
     voiceEnabled,
   });
@@ -835,11 +838,19 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
   const [diagnosticsModalOpen, setDiagnosticsModalOpen] = useState(false);
   const [firmwareTargetBoardDeviceId, setFirmwareTargetBoardDeviceId] = useState("");
   const [diagnosticsTargetBoardDeviceId, setDiagnosticsTargetBoardDeviceId] = useState("");
+  const [diagnosticsWifiTarget, setDiagnosticsWifiTarget] = useState(null);
   const [dismissedP4Sessions, setDismissedP4Sessions] = useState({});
   const buttonConfigRevisionRef = useRef(0);
   const buttonConfigQueryTokenRef = useRef(0);
   const isP4Runtime = String(usb.runtime || "").toLowerCase() === P4_RUNTIME_ID;
   const hasKnownRuntime = buttonControlRowsForRuntime(usb.runtime).length > 0;
+  const buttonPanelRuntime = wifi ? P4_RUNTIME_ID : usb.runtime;
+  const buttonPanelCapabilities = usb.connected ? usb.capabilities : wifi;
+  const buttonPanelOnWifi = Boolean(wifi);
+  const wifiControlReady = wifiDeviceControlReady(wifi);
+  const wifiInputScope = wifiControlReady ? `${wifi.boardDeviceId}:${wifi.bootId}` : "";
+  const wifiInputScopeRef = useRef(wifiInputScope);
+  wifiInputScopeRef.current = wifiInputScope;
   const voiceTarget = voiceRuntimeTarget(usb, selectedAgentId);
   const voiceTargetKeyRef = useRef(voiceTarget.key);
   // Update during render: an old Promise may settle before effect cleanup.
@@ -1132,7 +1143,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     buttonConfigRevisionRef.current += 1;
     setVoiceConfig((prev) => {
       let next = normalizeVoiceConfig({ ...prev, ...patch });
-      if (isP4Runtime) {
+      if (buttonPanelRuntime === P4_RUNTIME_ID) {
         const nextVoiceRow = preferredVoiceRow(
           P4_BUTTON_CONTROL_ROWS,
           next.buttonActions,
@@ -1146,10 +1157,54 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
       }
       saveVoiceConfigToStorage(next);
       setVoiceConfigDirty(true);
-      setVoiceConfigOtaState({ pending: false, tone: "warning", message: "修改已保存在电脑上，点击「同步到设备」后生效。" });
+      setVoiceConfigOtaState({ pending: false, tone: "warning", message: buttonPanelOnWifi && !wifiControlReady
+        ? "修改已保存在电脑上。普通按键配置需要通过 USB 同步。"
+        : "修改已保存在电脑上，点击「同步到设备」后生效。" });
       return next;
     });
-  }, [isP4Runtime]);
+  }, [buttonPanelOnWifi, buttonPanelRuntime, wifiControlReady]);
+
+  useEffect(() => {
+    if (!keyboardActive || !wifiInputScope) return;
+    let retired = false;
+    const revision = buttonConfigRevisionRef.current;
+    const scope = wifiInputScope;
+    const current = () => !retired && scope === wifiInputScopeRef.current && revision === buttonConfigRevisionRef.current;
+    setVoiceConfigOtaState({ pending: true, message: "正在读取设备按键配置…" });
+    wifiDeviceControl(invoke, wifi, "readInput").then(readback => {
+      if (!current()) return;
+      const matches = boardButtonConfigMatchesClient(voiceConfigRef.current, readback, P4_RUNTIME_ID, wifi);
+      setVoiceConfigDirty(!matches);
+      setVoiceConfigOtaState({ pending: false, tone: matches ? "success" : "warning",
+        message: matches ? "设备按钮配置与客户端一致。" : "设备按键配置与电脑不同，可同步当前配置。" });
+    }).catch(error => {
+      if (current()) setVoiceConfigOtaState({ pending: false, tone: "warning", message: `无法读取设备按键配置：${error}` });
+    });
+    return () => { retired = true; };
+  }, [keyboardActive, wifi, wifiInputScope]);
+
+  const applyButtonConfigOverWifi = useCallback(async () => {
+    if (!wifiInputScope) return;
+    const revision = ++buttonConfigRevisionRef.current;
+    const current = () => wifiInputScope === wifiInputScopeRef.current && revision === buttonConfigRevisionRef.current;
+    const requested = resolveButtonConfigForRuntime(voiceConfigRef.current, P4_RUNTIME_ID);
+    setVoiceConfigOtaState({ pending: true, message: "正在同步并核对设备按钮配置…" });
+    try {
+      const readback = await dispatchBoardButtonConfig({
+        wifi, runtime: P4_RUNTIME_ID, capabilities: wifi,
+        buttonActions: requested.config.buttonActions, buttonValues: requested.config.buttonValues,
+        voiceButton: requested.voiceButton, voiceEnabled: requested.voiceEnabled,
+      });
+      if (!current()) return;
+      if (!boardButtonConfigMatchesClient(requested.config, readback, P4_RUNTIME_ID, wifi)) {
+        throw new Error("设备回读的按键配置与本次下发不一致");
+      }
+      setVoiceConfigDirty(false);
+      setVoiceConfigOtaState({ pending: false, tone: "success", message: "已通过 Wi-Fi 同步并核对设备按钮配置。" });
+    } catch (error) {
+      if (current()) setVoiceConfigOtaState({ pending: false, tone: "error", message: `按钮配置结果未确认：${error}` });
+    }
+  }, [wifi, wifiInputScope]);
 
   const applyVoiceConfigOverUsb = useCallback(async (configOverride = null) => {
     const requestedRevision = buttonConfigRevisionRef.current;
@@ -1517,12 +1572,13 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
   /* 应急：负一屏物理按键失灵切不回主屏时，远程把设备 .screen-page 写成 main */
   const onDeviceReturnHome = useCallback(async () => {
     try {
-      await invoke("usb_set_screen_page", { page: "main" });
+      if (wifiControlReady) await wifiDeviceControl(invoke, wifi, "returnHome");
+      else await invoke("usb_set_screen_page", { page: "main", expectedBoardDeviceId: usb.boardDeviceId });
       push({ tone: "success", title: "已请求设备切回主屏" });
     } catch (err) {
       push({ tone: "error", title: "切回主屏失败", message: typeof err === "string" ? err : String(err) });
     }
-  }, [push]);
+  }, [push, usb.boardDeviceId, wifi, wifiControlReady]);
 
   /* 应急：客户端 UI 形象 vs 设备实际脱节时，绕过 desktop-pet-assignment.js 的
    * appearanceChanged 缓存判断，直接重新推送当前 active appearance 到设备 */
@@ -1550,10 +1606,21 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     }
   }, [p4TargetBoardDeviceId, push]);
 
-  const onInputConfigReset = useCallback(async () => {
-    buttonConfigRevisionRef.current += 1;
-    await refreshButtonConfigFromBoard();
-  }, [refreshButtonConfigFromBoard]);
+  const onInputConfigReset = useCallback(async (wirelessReadback) => {
+    const revision = ++buttonConfigRevisionRef.current;
+    const usbScope = voiceTarget.key;
+    const readback = wirelessReadback ?? await invoke("usb_get_button_config", {
+      expectedBoardDeviceId: diagnosticsTargetBoardDeviceId,
+    });
+    if (revision !== buttonConfigRevisionRef.current || (wirelessReadback
+      ? wifiInputScope !== wifiInputScopeRef.current || readback.boardDeviceId !== diagnosticsTargetBoardDeviceId
+      : usbScope !== voiceTargetKeyRef.current)) return;
+    const next = mergeBoardButtonConfig(voiceConfigRef.current, readback, wirelessReadback ? P4_RUNTIME_ID : usb.runtime);
+    saveVoiceConfigToStorage(next);
+    setVoiceConfig(next);
+    setVoiceConfigDirty(false);
+    setVoiceConfigOtaState({ pending: false, tone: "success", message: "已读取设备恢复后的按键配置。" });
+  }, [diagnosticsTargetBoardDeviceId, usb.runtime, voiceTarget.key, wifiInputScope]);
 
   // Session, voice, and device synchronization must keep running across tabs,
   // but the dashboard's large control tree and media previews do not.
@@ -1567,16 +1634,18 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
           buttonActions={voiceConfig.buttonActions}
           buttonValues={voiceConfig.buttonValues}
           buttonLabels={voiceConfig.buttonLabels}
-          runtime={usb.runtime}
+          runtime={buttonPanelRuntime}
           voiceConfigDirty={voiceConfigDirty}
           voiceConfigOtaState={voiceConfigOtaState}
           usbConnected={Boolean(usb.connected)}
-          doublePressSupported={usb.capabilities?.inputDoublePress === true}
-          systemSettingsSupported={usb.capabilities?.systemSettings === true}
-          voiceKeySupported={usb.capabilities?.nativeUsbHid === "p4-hid-keyboard-v1"}
+          wifiConnected={buttonPanelOnWifi}
+          wifiSyncAvailable={wifiControlReady}
+          doublePressSupported={buttonPanelCapabilities?.inputDoublePress === true}
+          systemSettingsSupported={buttonPanelCapabilities?.systemSettings === true}
+          voiceKeySupported={usb.connected && usb.capabilities?.nativeUsbHid === "p4-hid-keyboard-v1"}
           selectedTrigger={selectedVoiceTrigger}
           onVoiceConfigChange={updateVoiceConfig}
-          onApplyVoiceConfig={applyVoiceConfigOverUsb}
+          onApplyVoiceConfig={wifiControlReady ? applyButtonConfigOverWifi : applyVoiceConfigOverUsb}
         />
       </Card>
     </KeyboardConfiguration>}
@@ -1585,11 +1654,11 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
       help={hasKnownRuntime ? () => setGuideOpen(true) : undefined}
       actions={
         <DashboardActionsMenu
-          onSendTest={onSendTest}
+          onSendTest={usb.connected ? onSendTest : undefined}
           onCopyDesktopId={binding.desktopDeviceId ? onCopyDesktopId : undefined}
           onUnbind={onUnbind ? onUnbindClick : undefined}
-          onDeviceReturnHome={onDeviceReturnHome}
-          onForceSyncAppearance={onForceSyncAppearance}
+          onDeviceReturnHome={usb.connected || wifiControlReady ? onDeviceReturnHome : undefined}
+          onForceSyncAppearance={usb.connected ? onForceSyncAppearance : undefined}
           onReconcileAppearance={onReconcileAppearance}
           canReconcileAppearance={usb.connected === true && Boolean(usb.boardDeviceId) && !appearanceSync?.pending && !appearanceObservationBusy}
           onUpdateFirmware={usb.connected && usb.runtime === P4_RUNTIME_ID
@@ -1598,9 +1667,10 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
               setFirmwareModalOpen(true);
             }
             : undefined}
-          onDiagnostics={usb.connected && usb.runtime === P4_RUNTIME_ID
+          onDiagnostics={usb.connected && usb.runtime === P4_RUNTIME_ID || wifiControlReady
             ? () => {
-              setDiagnosticsTargetBoardDeviceId(usb.boardDeviceId || "");
+              setDiagnosticsWifiTarget(wifiControlReady ? wifi : null);
+              setDiagnosticsTargetBoardDeviceId(wifiControlReady ? wifi.boardDeviceId : usb.boardDeviceId || "");
               setDiagnosticsModalOpen(true);
             }
             : undefined}
@@ -1666,7 +1736,8 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
             busSessionsLoaded: selectedAgentSessionsLoaded,
             busSessionId: p4SessionSync.sessionId,
             selectedAgentId,
-            deviceOnline: usb.connected,
+            deviceOnline: Boolean(usb.connected || wifi),
+            wifiConnected: Boolean(wifi),
             voiceRuntimeTargetKey: voiceTarget.key,
             voiceRuntimeTargetReady: voiceTarget.kind !== "waiting",
           }}
@@ -1712,9 +1783,11 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
         onClose={() => {
           setDiagnosticsModalOpen(false);
           setDiagnosticsTargetBoardDeviceId("");
+          setDiagnosticsWifiTarget(null);
         }}
         onInputConfigReset={onInputConfigReset}
         expectedBoardDeviceId={diagnosticsTargetBoardDeviceId}
+        wifiTarget={diagnosticsWifiTarget}
         wasmCapabilities={usb.connected && diagnosticsTargetBoardDeviceId
           && usb.boardDeviceId === diagnosticsTargetBoardDeviceId
           ? usb.capabilities : null}

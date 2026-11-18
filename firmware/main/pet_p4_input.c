@@ -612,6 +612,7 @@ static void send_config_ack(
   unsigned int binding_count,
   const char *error
 ) {
+  if (!send_line) return;
   cJSON *root = cJSON_CreateObject();
   cJSON *payload = cJSON_CreateObject();
   char *line;
@@ -703,39 +704,28 @@ bool pet_p4_input_handle_config(
   return true;
 }
 
-bool pet_p4_input_send_config_state(
-  const cJSON *request,
-  const char *board_device_id,
-  pet_p4_send_line_fn send_line,
-  void *ctx
-) {
+cJSON *pet_p4_input_config_state(const cJSON *request, const char *board_device_id) {
   const char *request_id = json_string(request, "requestId");
   const char *voice_button = "";
   bool voice_enabled = false;
-  cJSON *root = cJSON_CreateObject();
   cJSON *payload = cJSON_CreateObject();
   cJSON *config = cJSON_CreateObject();
   cJSON *bindings = cJSON_CreateArray();
-  char *line;
-  bool sent;
-
-  if (!root || !payload || !config || !bindings) {
-    cJSON_Delete(root);
+  if (!payload || !config || !bindings) {
     cJSON_Delete(payload);
     cJSON_Delete(config);
     cJSON_Delete(bindings);
-    return false;
+    return NULL;
   }
 
   for (uint32_t i = 0; i < g_config.binding_count; i += 1) {
     const pet_p4_input_binding_t *binding = &g_config.bindings[i];
     cJSON *item = cJSON_CreateObject();
     if (!item) {
-      cJSON_Delete(root);
       cJSON_Delete(payload);
       cJSON_Delete(config);
       cJSON_Delete(bindings);
-      return false;
+      return NULL;
     }
     cJSON_AddStringToObject(item, "event", binding->event);
     cJSON_AddStringToObject(item, "action", binding->action);
@@ -757,11 +747,27 @@ bool pet_p4_input_send_config_state(
   cJSON_AddStringToObject(payload, "runtime", "esp-p4");
   cJSON_AddNumberToObject(payload, "bindingCount", g_config.binding_count);
   cJSON_AddItemToObject(payload, "config", config);
+  return payload;
+}
+
+bool pet_p4_input_send_config_state(
+  const cJSON *request,
+  const char *board_device_id,
+  pet_p4_send_line_fn send_line,
+  void *ctx
+) {
+  cJSON *payload = pet_p4_input_config_state(request, board_device_id);
+  cJSON *root = cJSON_CreateObject();
+  if (!root || !payload) {
+    cJSON_Delete(root);
+    cJSON_Delete(payload);
+    return false;
+  }
   cJSON_AddStringToObject(root, "topic", "input/config-state");
   cJSON_AddItemToObject(root, "payload", payload);
 
-  line = cJSON_PrintUnformatted(root);
-  sent = line && send_line;
+  char *line = cJSON_PrintUnformatted(root);
+  const bool sent = line && send_line;
   if (sent) send_line(line, ctx);
   cJSON_free(line);
   cJSON_Delete(root);
