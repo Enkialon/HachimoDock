@@ -25,7 +25,7 @@
     <img alt="Device" src="https://img.shields.io/badge/device-ESP32--P4%20%7C%20480%C3%97640-e8a23a" />
   </p>
   <p>
-    <a href="https://github.com/YizhengWw/HachimoDock/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/YizhengWw/HachimoDock?style=social" /></a>
+    <a href="https://github.com/ai-maker-lab/HachimoDock/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/ai-maker-lab/HachimoDock?style=social" /></a>
     <a href="https://github.com/YizhengWw"><img alt="Follow @YizhengWw" src="https://img.shields.io/github/followers/YizhengWw?label=Follow%20%40YizhengWw&style=social" /></a>
   </p>
 </div>
@@ -34,7 +34,7 @@
 
 HachimoDock（哈基米机）是面向 AI Agent 的桌面交互终端，由 Windows/macOS 管理端与 ESP32-P4 设备组成，提供工作状态显示、语音输入、自定义形象和互动组件。桌面应用的安装名称为 **HachimiDock**，部分开发文档使用 **Pet Manager** 指代管理端。
 
-[English](README.en.md) · [下载最新版本](https://github.com/ai-maker-lab/HachimoDock/releases/latest) · [问题反馈](https://github.com/YizhengWw/HachimoDock/issues) · [安全反馈](SECURITY.md)
+[English](README.en.md) · [下载最新版本](https://github.com/ai-maker-lab/HachimoDock/releases/latest) · [问题反馈](https://github.com/ai-maker-lab/HachimoDock/issues) · [安全反馈](SECURITY.md)
 
 ## 当前版本与下载
 
@@ -48,7 +48,7 @@ HachimoDock（哈基米机）是面向 AI Agent 的桌面交互终端，由 Wind
 
 完整烧录包用于新设备或恢复出厂，会清除设置、形象和组件；请同时核对板型和芯片修订版，WiFi6 与 Pico、v1 与 v3 不可混刷。日常升级优先使用客户端 OTA，独立 OTA ZIP 不能替代完整烧录包。
 
-当前预编译客户端支持 Apple silicon Mac 和 Windows x64；不提供 Intel Mac 或 Linux 安装包。macOS 包使用 Developer ID 签名并通过 Apple 公证；Windows 安装器未做 Authenticode 签名。发行包不内置服务 Key。GitHub 自动生成的源码归档对应公开仓库标签，并非本次二进制的构建源码快照；[PC 构建](pc/README.md)和[固件构建](firmware/BUILD.md)文档以当前公开源码为准。
+当前预编译客户端支持 Apple silicon Mac 和 Windows x64；不提供 Intel Mac 或 Linux 安装包。macOS 包使用 Developer ID 签名并通过 Apple 公证；Windows 安装器未做 Authenticode 签名。发行包不内置服务 Key。公开源码与安装包的关系见下方“源码与发布对应关系”；[PC 构建](pc/README.md)和[固件构建](firmware/BUILD.md)文档以当前公开源码为准。
 
 ## 核心能力
 
@@ -71,7 +71,7 @@ HachimoDock（哈基米机）是面向 AI Agent 的桌面交互终端，由 Wind
 
 - ChatGPT（Codex）、Claude、WorkBuddy、DeepSeek Harness 的桌面语音输入依赖当前可用的系统辅助功能输入框。
 - WorkBuddy 与 DeepSeek 的目标对话需在对应应用中打开；设备气泡选择不会自动切换它们的桌面对话。
-- MiMoCode 的语音支持与平台相关；OpenClaw 使用其会话路由。具体限制见 [Agent 接入与兼容说明](pc/docs/agent-integration-audit.md)。
+- MiMoCode 的语音支持与平台相关；OpenClaw 使用其会话路由。具体限制见 [PC 客户端说明](pc/README.md)。
 - 目标不明确、输入框不可用或提交结果未知时，本次操作会停止；不会选取最近的历史会话或自动重复发送。
 
 ### 组件与资源
@@ -136,7 +136,7 @@ v3 的 24 MHz 显示修复已在实机确认恢复宠物动画；本版本按键
   </tr>
 </table>
 
-家居控制能力由[**Xiaomi MiLoCo**](https://github.com/XiaoMi/xiaomi-miloco) 提供，相关 MiLoCo 授权作品的版权归小米所有，适用 [Xiaomi Miloco License](https://github.com/YizhengWw/HachimoDock/blob/main/licenses/Xiaomi-Miloco-LICENSE.md)，版权标识、免责声明及许可证随相关实现一并保留。非商业使用仍须符合该许可证的用途范围；本项目不向第三方授予额外的商业使用、再许可或商标权限。完整说明见 [第三方声明](https://github.com/YizhengWw/HachimoDock/blob/main/THIRD_PARTY_NOTICES.md)。
+家居控制能力由[**Xiaomi MiLoCo**](https://github.com/XiaoMi/xiaomi-miloco) 提供，相关 MiLoCo 授权作品的版权归小米所有，适用 [Xiaomi Miloco License](https://github.com/ai-maker-lab/HachimoDock/blob/main/licenses/Xiaomi-Miloco-LICENSE.md)，版权标识、免责声明及许可证随相关实现一并保留。非商业使用仍须符合该许可证的用途范围；本项目不向第三方授予额外的商业使用、再许可或商标权限。完整说明见 [第三方声明](https://github.com/ai-maker-lab/HachimoDock/blob/main/THIRD_PARTY_NOTICES.md)。
 
 ## 硬件方案
 
@@ -186,6 +186,10 @@ flowchart LR
 | `firmware/` | 板级驱动、渲染、输入、协议及出厂镜像工具 | [固件构建](firmware/BUILD.md)、[协议](firmware/protocol.md) |
 | `integrations/` | Agent 集成与相关契约 | [DSH 集成](integrations/dsh-hachimodock/README.md) |
 
+### 源码与发布对应关系
+
+公开 `main` 提供 0.1.237 / R284 的整理后源码，包含公开发布清理及安全修正，并非已发布安装包的可复现构建快照。`v0.1.237` Release 标签仍指向原公开基线，未因本次源码更新而移动；标签下自动生成的 Source code 归档也保持原基线。安装包构建标识与公开标签目标分别见 [发布元数据](latest-release.json)。
+
 资源保存在普通 Git 中，克隆不依赖 Git LFS。构建以锁定依赖和目标平台配置为准；不同发布包的源码对应关系以各 Release 说明为准。源码实现、离线验证、硬件测试和声学验证应分别评估，不作所有设备均已验收的承诺。
 
 新机的 32 MiB Flash 使用双 OTA 各 3 MiB、组件与元数据 8.875 MiB、内置及自定义形象各 8.5 MiB。普通 OTA 不会改变旧设备分区；迁移分区需要完整烧录，会清除设备数据。
@@ -198,7 +202,7 @@ flowchart LR
 
 **设备一定要联网吗？** 设备状态、形象和组件同步走 USB，不要求 ESP32-P4 加入局域网。语音识别、Agent 本身以及 AI 形象或组件生成仍可能需要电脑联网。
 
-**如何反馈？** 使用 [GitHub Issues](https://github.com/YizhengWw/HachimoDock/issues)，附客户端/固件版本、系统和复现步骤。提交前请移除日志、对话及设备信息中的个人数据。安全问题请按 [SECURITY.md](SECURITY.md) 私下反馈。
+**如何反馈？** 使用 [GitHub Issues](https://github.com/ai-maker-lab/HachimoDock/issues)，附客户端/固件版本、系统和复现步骤。提交前请移除日志、对话及设备信息中的个人数据。安全问题请按 [SECURITY.md](SECURITY.md) 私下反馈。
 
 ## 下载完整性
 

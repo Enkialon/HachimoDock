@@ -1,6 +1,6 @@
 # HachimoDock
 
-[简体中文](README.md) · [Downloads](https://github.com/ai-maker-lab/HachimoDock/releases/latest) · [Issues](https://github.com/YizhengWw/HachimoDock/issues)
+[简体中文](README.md) · [Downloads](https://github.com/ai-maker-lab/HachimoDock/releases/latest) · [Issues](https://github.com/ai-maker-lab/HachimoDock/issues)
 
 HachimoDock is a desktop interface for AI Agents. A Windows/macOS manager and an ESP32-P4 display provide task-state animations, conversation bubbles, voice input, custom appearances and interactive components. The installed desktop app is named **HachimiDock**; some developer documentation calls it **Pet Manager**.
 
@@ -16,7 +16,7 @@ See the [0.1.237 release notes](https://github.com/ai-maker-lab/HachimoDock/rele
 
 Complete flashing kits are for first installation or factory recovery and erase settings, appearances and components. Match both board model and chip revision; WiFi6 and Pico, and v1 and v3, are not interchangeable. Prefer client OTA for routine upgrades. The application-only OTA ZIP is not a complete flashing kit.
 
-Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package is Developer ID signed and Apple notarized; the Windows installer is not Authenticode signed. No service API keys are bundled. GitHub's automatic source archives represent the public tag, not the build-source snapshot for these binaries. See [firmware build and flashing](firmware/BUILD.md).
+Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package is Developer ID signed and Apple notarized; the Windows installer is not Authenticode signed. No service API keys are bundled. See “Source and release provenance” below for the relationship between public source and installers. See [firmware build and flashing](firmware/BUILD.md).
 
 ## Features and compatibility
 
@@ -27,7 +27,7 @@ Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package 
 - Install games, tools and PC-fed components. Optional missing touch capability does not block installation, but touch-dependent gameplay may be unavailable. Schema, integrity and storage checks still apply.
 - Manage device volume, city selection and Wi-Fi pairing in Settings. On the device, long-press SW3 or open Settings from the component center.
 
-Integrations include ChatGPT (Codex), Claude, OpenClaw, MiMoCode, WorkBuddy and DeepSeek Harness. Status reporting, dictation, sending and desktop conversation switching are distinct capabilities. WorkBuddy and DeepSeek target conversations must be opened in their own apps; selecting a device bubble does not switch those desktop conversations. MiMoCode voice support is platform-dependent. See the [Agent matrix](pc/docs/agent-integration-audit.md) and [WorkBuddy guide](pc/docs/workbuddy.md).
+Integrations include ChatGPT (Codex), Claude, OpenClaw, MiMoCode, WorkBuddy and DeepSeek Harness. Status reporting, dictation, sending and desktop conversation switching are distinct capabilities. WorkBuddy and DeepSeek target conversations must be opened in their own apps; selecting a device bubble does not switch those desktop conversations. MiMoCode voice support is platform-dependent. See the [desktop guide](pc/README.md) and [WorkBuddy guide](pc/docs/workbuddy.md).
 
 Unavailable or ambiguous editors stop the operation. Unknown write/send results are not automatically replayed. Detecting an Agent does not prove its editor is ready. Runtime features depend on actual firmware capabilities; host tests and successful compilation do not establish hardware, performance or acoustic acceptance.
 
@@ -49,6 +49,10 @@ The paired hardware uses ESP32-P4, 32 MiB Flash, 32 MiB PSRAM and a 480×640 MIP
 - [Firmware source and build guide](firmware/BUILD.md)
 - [PetUI component contracts](pc/skills/petui/SKILL.md)
 - [Volume and shared city settings](pc/docs/shared-device-settings.md)
+
+### Source and release provenance
+
+The public `main` branch provides the cleaned 0.1.237 / R284 source, including publication cleanup and safety fixes. It is not a reproducible build-source snapshot for the published installers. The `v0.1.237` release tag remains on its original public baseline; this source update does not move it or change its automatic Source code archives. The binary build identifier and public tag target are recorded separately in [release metadata](latest-release.json).
 
 Resources are stored in ordinary Git; Git LFS is not required. Preserve dependency locks and choose the correct target configuration. Published binaries retain their original build contents even when `main` changes.
 
