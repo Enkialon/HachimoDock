@@ -113,7 +113,7 @@ macOS 安装受阻时，先检查下载来源和校验值，再按系统“隐�
 
 ### 新设备或恢复出厂
 
-[v0.1.232 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.232#设备固件) 提供 WiFi6 和 Pico 原底板的完整烧录包，两种板型各有 v1、v3 版本。包内包含 Bootloader、应用固件、形象、组件及双平台烧录工具。请同时核对板型和实际芯片修订版；微雪 ESP32-P4-WIFI6-M 的 M 不代表芯片版本。同一芯片的固件由 Windows/macOS 共用。完整镜像会覆盖设备现有数据。
+[v0.1.237 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) 提供 WiFi6 和 Pico 原底板的完整烧录包，两种板型各有 v1、v3 版本。包内包含 Bootloader、应用固件、形象、组件及双平台烧录工具。请同时核对板型和实际芯片修订版；微雪 ESP32-P4-WIFI6-M 的 M 不代表芯片版本。同一芯片的固件由 Windows/macOS 共用。完整镜像会覆盖设备现有数据。
 
 **v1 与 v3 烧录包不可互刷，具体版本可以咨询客服进行确认。** 包内脚本需要 Python 3.10+，自动安装 esptool **5.4.0**。屏幕连接 **DSI**，不是 CSI；请断电后插拔排线。详细版本和步骤见 [固件构建与烧录指南](firmware/BUILD.md)。
 
@@ -202,7 +202,7 @@ flowchart LR
 
 ## 下载完整性
 
-当前 Release 的 `SHA256SUMS` 对照实际附件；完整烧录包内部另含镜像和分段校验清单。下载后核对 SHA-256，避免混用不同版本、芯片的镜像及清单。校验值能检查文件一致性，不替代来源与签名核验。
+Release 页面显示各附件的 SHA-256；完整烧录包内部另含镜像和分段校验清单。下载后核对 SHA-256，避免混用不同版本、芯片的镜像及清单。校验值能检查文件一致性，不替代来源与签名核验。
 
 ## 致谢 / Acknowledgements
 
