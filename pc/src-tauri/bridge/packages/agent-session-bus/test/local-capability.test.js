@@ -5,19 +5,25 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const http = require("node:http");
-const { createCapability, descriptorPath, readDescriptor, headersFor } = require("../src/local-capability");
+const { createCapability, descriptorPath, readDescriptor, headersFor, createCapabilityStore } = require("../src/local-capability");
 const { createAgentSessionBus } = require("../src/index");
 const { HookHttpServer } = require("../../clawd-backend-service/src/headless-mqtt");
 const { syncPermissionHook } = require("../../../hooks/permission-install");
 
 async function withDirectory(fn) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-cap-test-"));
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-cap-test-"));
+  const dir = path.join(root, "capability");
   const previous = process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR;
   process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR = dir;
-  try { await fn(dir); } finally {
+  try {
+    // Elevated Windows runners may give mkdtemp an Administrators owner.
+    // Let the production writer create its own protected child directory.
+    createCapabilityStore().prepareDirectory(descriptorPath());
+    await fn(dir);
+  } finally {
     if (previous === undefined) delete process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR;
     else process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR = previous;
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(root, { recursive: true, force: true });
   }
 }
 const req = (cap, role) => ({ headers: role ? { authorization: cap.headers(role).Authorization } : {} });
@@ -29,8 +35,16 @@ test("fresh epochs and distinct roles; restart invalidates old capability", asyn
   assert.deepEqual(Object.keys(client.tokens).sort(), ["control", "read"]);
   assert.deepEqual(Object.keys(hook.tokens), ["hook"]);
   assert.equal(new Set([...Object.values(client.tokens), ...Object.values(hook.tokens)]).size, 3);
-  assert.equal(fs.statSync(dir).mode & 0o077, 0);
-  assert.equal(fs.statSync(descriptorPath()).mode & 0o077, 0);
+  if (process.platform === "win32") {
+    const { windowsAcl } = require("../src/adapters/windows-acl");
+    const receipt = windowsAcl("verify-file", descriptorPath());
+    assert.equal(receipt.item.owner, receipt.currentSid);
+    assert.equal(receipt.item.protected, true);
+    assert.equal(receipt.item.rawAceCount, 2);
+  } else {
+    assert.equal(fs.statSync(dir).mode & 0o077, 0);
+    assert.equal(fs.statSync(descriptorPath()).mode & 0o077, 0);
+  }
   assert.deepEqual(headersFor("hook", 23333), first.headers("hook"));
   assert.throws(() => headersFor("hook", 23334));
   assert.throws(() => headersFor("hook", 8181));
@@ -41,15 +55,49 @@ test("fresh epochs and distinct roles; restart invalidates old capability", asyn
   second.clear(); assert.equal(fs.existsSync(descriptorPath()), false);
 }));
 
-test("descriptor rejects symlinks, shared modes, oversized and malformed files", async () => withDirectory(async dir => {
+test("descriptor rejects oversized and malformed files", async () => withDirectory(async dir => {
+  const cap = createCapability(); cap.publish({ busPort: 8181 });
+  const file = descriptorPath();
+  fs.writeFileSync(file, "x".repeat(4097)); assert.throws(() => readDescriptor());
+  fs.writeFileSync(file, "{}"); assert.throws(() => readDescriptor());
+
+}));
+
+test("Unix descriptor rejects symlinks and shared modes", { skip: process.platform === "win32" }, async () => withDirectory(async dir => {
   const cap = createCapability(); cap.publish({ busPort: 8181 });
   const file = descriptorPath(), backup = path.join(dir, "saved.json");
   fs.renameSync(file, backup); fs.symlinkSync(backup, file);
   assert.throws(() => readDescriptor()); fs.unlinkSync(file); fs.renameSync(backup, file);
   fs.chmodSync(file, 0o644); assert.throws(() => readDescriptor()); fs.chmodSync(file, 0o600);
-  fs.writeFileSync(file, "x".repeat(4097)); assert.throws(() => readDescriptor());
-  fs.writeFileSync(file, "{}"); assert.throws(() => readDescriptor());
   fs.chmodSync(dir, 0o755); assert.throws(() => cap.publish({ busPort: 8181 })); fs.chmodSync(dir, 0o700);
+}));
+
+test("Windows descriptor rejects a junction capability directory", { skip: process.platform !== "win32" }, async () => withDirectory(async dir => {
+  const cap = createCapability(); cap.publish({ busPort: 8181 });
+  const saved = `${dir}-saved`;
+  fs.renameSync(dir, saved);
+  try {
+    fs.symlinkSync(saved, dir, "junction");
+    assert.throws(() => readDescriptor());
+  } finally {
+    if (fs.existsSync(dir)) fs.unlinkSync(dir);
+    fs.renameSync(saved, dir);
+  }
+}));
+
+test("Windows descriptor rejects an extra public read ACE", { skip: process.platform !== "win32" }, async () => withDirectory(async () => {
+  const cap = createCapability(); cap.publish({ busPort: 8181 });
+  const { spawnSync } = require("node:child_process");
+  const { windowsAcl } = require("../src/adapters/windows-acl");
+  const file = descriptorPath();
+  const icacls = path.join(process.env.SystemRoot, "System32", "icacls.exe");
+  try {
+    // Only the disposable fixture is changed; SID syntax avoids localized names.
+    const changed = spawnSync(icacls, [file, "/grant", "*S-1-1-0:(R)"], { windowsHide: true, encoding: "utf8", timeout: 5000 });
+    assert.equal(changed.status, 0, "fixture ACL edit must succeed");
+    assert.throws(() => readDescriptor());
+  } finally { windowsAcl("protect-file", file); }
+  assert.deepEqual(headersFor("read", 8181), cap.headers("read"));
 }));
 
 function request(port, pathname, method, headers = {}, payload = {}) {

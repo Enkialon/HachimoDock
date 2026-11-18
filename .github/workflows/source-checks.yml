@@ -30,6 +30,7 @@ jobs:
         working-directory: pc
       - run: npm run test:bridge
         working-directory: pc
+        timeout-minutes: 10
       - run: npm run build:web
         working-directory: pc
   firmware-host:

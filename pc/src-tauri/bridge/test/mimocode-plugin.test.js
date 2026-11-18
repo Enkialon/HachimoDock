@@ -46,7 +46,7 @@ test("MiMoCode plugin sync is idempotent and preserves user plugins", () => {
   }
 });
 
-test("MiMoCode official lifecycle events publish working, waiting, and done states", async () => {
+test("MiMoCode official lifecycle events publish working, waiting, and done states", async (t) => {
   const received = [];
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -58,17 +58,22 @@ test("MiMoCode official lifecycle events publish working, waiting, and done stat
       res.end('{"ok":true}');
     });
   });
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
-  const capDir = fs.mkdtempSync(path.join(os.tmpdir(), "mimo-capability-"));
+  const capRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mimo-capability-"));
+  const capDir = path.join(capRoot, "capability");
   const oldCapDir = process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR;
   process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR = capDir;
   const capability = capabilityApi.createCapability();
-  capability.publish({ hookPort: address.port });
   const previousPort = process.env.PET_MANAGER_BRIDGE_PORT;
   process.env.PET_MANAGER_BRIDGE_PORT = String(address.port);
 
   try {
+    capability.publish({ hookPort: address.port });
     const source = fs.readFileSync(PLUGIN_SOURCE, "utf8").replace(JSON.stringify("__HACHIMO_CAPABILITY_MODULE__"), JSON.stringify(require.resolve("../packages/agent-session-bus/src/local-capability")));
     const dataUrl = `data:text/javascript;base64,${Buffer.from(
       `${source}\n// test-${Date.now()}`,
@@ -132,10 +137,9 @@ test("MiMoCode official lifecycle events publish working, waiting, and done stat
   } finally {
     capability.clear();
     if (oldCapDir === undefined) delete process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR; else process.env.HACHIMODOCK_BRIDGE_CAPABILITY_DIR = oldCapDir;
-    fs.rmSync(capDir, { recursive: true, force: true });
+    fs.rmSync(capRoot, { recursive: true, force: true });
     if (previousPort === undefined) delete process.env.PET_MANAGER_BRIDGE_PORT;
     else process.env.PET_MANAGER_BRIDGE_PORT = previousPort;
-    await new Promise((resolve) => server.close(resolve));
   }
 });
 

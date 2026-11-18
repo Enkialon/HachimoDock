@@ -21,6 +21,23 @@ from patch_hosted_radio import patch_transport
 WAMR_REVISION = "47c7c85ac21f240a878026af603e032065d183fb"
 WAMR_SHA256 = "fb5b7bd3f9d09e882463fe126314925af748c1b84caaea83ac15dea830602cef"
 WAMR_URL = f"https://codeload.github.com/bytecodealliance/wasm-micro-runtime/tar.gz/{WAMR_REVISION}"
+PROJECT_INPUTS = (
+    "sdkconfig.defaults", "sdkconfig.v3.defaults", "sdkconfig.wifi-settings.defaults",
+    "config/wifi6-ble.defaults", "dependencies.lock", "dependencies.v3.lock",
+    "dependencies.wifi-v1.lock", "dependencies.wifi-v3.lock",
+)
+
+
+def check_checkout_inputs(project):
+    # Local ignored defaults can make preparation pass while a clean checkout
+    # fails. Require both checked-in inputs and actual files before downloads.
+    tracked = subprocess.check_output(
+        ["git", "ls-files", "-z", "--", *PROJECT_INPUTS], cwd=project,
+    ).decode().split("\0")
+    missing = [name for name in PROJECT_INPUTS
+               if name not in tracked or not (project / name).is_file()]
+    if missing:
+        raise SystemExit("Required SDK inputs must be tracked and present: " + ", ".join(missing))
 
 
 def prepare_wamr(cache, archive=None):
@@ -84,6 +101,7 @@ def main():
     if not github_env:
         raise SystemExit("GITHUB_ENV is required to export the prepared test inputs")
     project = Path(__file__).resolve().parents[1]
+    check_checkout_inputs(project)
     cores = {"v1": Path.home() / ".platformio", "v3": Path(args.v3_core).resolve()}
     if cores["v1"].resolve() == cores["v3"]:
         raise SystemExit("v1 and v3 require separate SDK directories")
