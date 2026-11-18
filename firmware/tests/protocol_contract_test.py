@@ -1419,7 +1419,9 @@ def test_p4_runtime_initializes_waveshare_lcd_bsp():
     assert '#include "bsp/display.h"' in lcd
     assert "bsp_display_new" in lcd
     assert "bsp_display_backlight_on" in lcd
-    assert "esp_lcd_dpi_panel_set_pattern" in lcd
+    assert "esp_lcd_dpi_panel_register_event_callbacks" in lcd
+    assert "bsp_display_backlight_off" in lcd
+    assert source.index("pet_p4_renderer_render_boot(") < source.index("pet_p4_lcd_reveal()")
     assert "pet_p4_lcd_init()" in source
     assert "debug/lcd" in source
     assert "pet_p4_lcd_backlight_status()" in source
@@ -2517,7 +2519,8 @@ def test_p4_device_ptt_stream_is_validated_and_relayed_by_pc():
     assert 'send_topic("audio/begin"' in audio
     assert 'cJSON_AddBoolToObject(payload, "sessionQueueEmpty", session_queue_empty)' in audio
     assert "g_capture_session_queue_empty" in audio
-    assert 'send_topic("audio/chunk"' in audio
+    assert 'send_topic_to_transport("audio/chunk", payload, processed && conversation_session[0])' in audio
+    assert "xQueueSend(g_usb_capture_tx_queue, &frame, 0)" in audio
     assert 'send_topic("audio/end"' in audio
     assert "PET_P4_AUDIO_MAX_CAPTURE_MS 30000ULL" in audio
     assert 'strcmp(binding->action, "voice_ptt") == 0' in input_source

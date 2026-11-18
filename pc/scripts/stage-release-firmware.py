@@ -1,10 +1,12 @@
 """Stage the four desktop OTA inputs from an authenticated-by-digest public release."""
 import argparse
 import hashlib
+from functools import lru_cache
 import json
 import re
 import struct
 import tempfile
+import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -12,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DESTINATION = ROOT / 'pc/src-tauri/firmware/esp32-p4'
 DOWNLOAD_ROOT = 'https://github.com/ai-maker-lab/HachimoDock/releases/download'
+RELEASE_API = 'https://api.github.com/repos/ai-maker-lab/HachimoDock/releases'
 PROFILES = {
     'wifi6-v1': ('firmware.bin', 'wifi6', 1, 199),
     'wifi6-v3': ('firmware-v3.bin', 'wifi6', 300, 399),
@@ -28,8 +31,27 @@ def verify(condition, message):
         raise ValueError(message)
 
 
+@lru_cache(maxsize=1)
+def published_assets(tag):
+    with urllib.request.urlopen(f'{RELEASE_API}/tags/{tag}', timeout=15) as response:
+        release = json.loads(response.read(512 * 1024 + 1))
+    verify(release['tag_name'] == tag and not release['draft'], 'Unexpected public release')
+    return {asset['name']: asset['id'] for asset in release['assets']}
+
+
 def download(name, size, tag):
-    with urllib.request.urlopen(f'{DOWNLOAD_ROOT}/{tag}/{name}', timeout=90) as response:
+    try:
+        asset_id = published_assets(tag).get(name)
+        if isinstance(asset_id, int) and asset_id > 0:
+            request = urllib.request.Request(f'{RELEASE_API}/assets/{asset_id}',
+                                             headers={'Accept': 'application/octet-stream'})
+            with urllib.request.urlopen(request, timeout=25) as response:
+                data = response.read(size + 1)
+            if data.startswith(b'PK\x03\x04'):
+                return data
+    except (urllib.error.URLError, TimeoutError):
+        pass
+    with urllib.request.urlopen(f'{DOWNLOAD_ROOT}/{tag}/{name}', timeout=25) as response:
         return response.read(size + 1)
 
 
