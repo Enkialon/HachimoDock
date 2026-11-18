@@ -8,13 +8,15 @@ HachimoDock is a desktop interface for AI Agents. A Windows/macOS manager and an
 
 | Component | Version | Download |
 | --- | --- | --- |
-| Windows x64 | **0.1.232** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/HachimiDock_0.1.232_Windows-x64-setup.exe) |
-| macOS (Apple silicon) | **0.1.232** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/HachimiDock_0.1.232_macOS-arm64.dmg) |
-| Device firmware | **0.7.103-p4-r272 / R273** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.232#设备固件) |
+| Windows x64 | **0.1.237** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_Windows-x64-setup.exe) |
+| macOS (Apple silicon) | **0.1.237** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/HachimiDock_0.1.237_macOS-arm64.dmg) |
+| Device firmware | **0.7.103-p4-r284 / R284** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237) |
 
-Version 0.1.232 supports changing the followed agent over paired Wi-Fi and shows the active connection in the device dashboard. The desktop client prefers USB when connected. WiFi6 v3 firmware adds custom Bluetooth shortcuts. Both installers include OTA firmware for the WiFi6 and Pico boards with ESP32-P4 v1 and v3 chips. WiFi6 v1 uses R273 with an H.264 compatibility fix, while the other variants use R272. Verify downloads with [SHA256SUMS](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.232/SHA256SUMS). Prebuilt installers support Apple silicon and Windows x64. See the release notes for the public source baseline.
+See the [0.1.237 release notes](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.237). Both installers include R284 OTA firmware for WiFi6 and Pico boards with v1 and v3 chips. Wi-Fi button and conversation-state delivery requires both the updated client and firmware. After Wi-Fi pairing, the device can disconnect from the computer's USB data connection; it still needs power, and desktop-assisted features still require the client to run. Pico firmware does not include Wi-Fi or Bluetooth. Verify downloads with [SHA256SUMS](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.237/SHA256SUMS).
 
-Complete flashing kits are for first installation or factory recovery. Match both the board model and the chip revision; **WiFi6 and Pico, and v1 and v3, are not interchangeable**. A complete flash erases settings, appearances and components. Routine client OTA updates only the application and does not repartition existing devices. See [firmware build and flashing](firmware/BUILD.md).
+Complete flashing kits are for first installation or factory recovery and erase settings, appearances and components. Match both board model and chip revision; WiFi6 and Pico, and v1 and v3, are not interchangeable. Prefer client OTA for routine upgrades. The application-only OTA ZIP is not a complete flashing kit.
+
+Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package is Developer ID signed and Apple notarized; the Windows installer is not Authenticode signed. No service API keys are bundled. GitHub's automatic source archives represent the public tag, not the build-source snapshot for these binaries. See [firmware build and flashing](firmware/BUILD.md).
 
 ## Features and compatibility
 
