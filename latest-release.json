@@ -79,6 +79,18 @@
       "role": "factory-v3",
       "bytes": 12026008,
       "sha256": "ceaae2f6608811b55a223ba126dabc3617f7e0ad36b47c7eabaab8cc400c215f"
+    },
+    {
+      "file": "HachimiDock_0.1.245_wifi6-v1_FULL-FACTORY.zip",
+      "role": "factory-v1",
+      "bytes": 12027025,
+      "sha256": "4ba2a95c2c70c5d4ecb2280de35a4bb4d77ecdb6d5a9638b4b161d7dad594d71"
+    },
+    {
+      "file": "HachimiDock_0.1.245_pico-v1_FULL-FACTORY.zip",
+      "role": "factory-v1-pico",
+      "bytes": 11702629,
+      "sha256": "2196fd0c224dd3df905ac810b9250df8ad91b8fa0a0f5450aa220b2972130fec"
     }
   ]
 }

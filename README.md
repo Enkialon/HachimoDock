@@ -45,7 +45,7 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 | --- | --- | --- |
 | Windows x64 | **0.1.245** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_Windows-x64-setup.exe) |
 | macOS Apple silicon | **0.1.245** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_macOS-arm64.dmg) |
-| 配套设备固件 | **0.7.107-p4-r292 / R292** | [OTA](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/Hachimodock-0.1.245-0.7.107-p4-r292-OTA.zip) · [v3 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) |
+| 配套设备固件 | **0.7.107-p4-r292 / R292** | [OTA](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/Hachimodock-0.1.245-0.7.107-p4-r292-OTA.zip) · [完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) |
 
 更新说明见 [0.1.245 发布页](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245)。客户端内置 WiFi6 与 Pico 的 v1、v3 四种 R292 OTA 固件；Wi-Fi 按键与对话状态同步需要同时更新客户端和固件。Wi-Fi 配对后可脱离电脑 USB 数据连接，设备仍需供电，电脑协同功能仍需管理端运行；Pico 固件不包含 Wi-Fi／蓝牙。下载后可核对 Release 页面显示的 SHA-256。
 
@@ -57,9 +57,9 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 
 | 板型 | 芯片修订版 | R292 完整烧录包 |
 | --- | --- | --- |
-| WiFi6 | v1 | 已有设备可用客户端 OTA 升级。R292 完整烧录包暂未发布。 |
+| WiFi6 | v1 | [下载 WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_wifi6-v1_FULL-FACTORY.zip) |
 | WiFi6 | v3 | [下载 WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_wifi6-v3_FULL-FACTORY.zip) |
-| Pico | v1 | 已有设备可用客户端 OTA 升级。R292 完整烧录包暂未发布。 |
+| Pico | v1 | [下载 Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_pico-v1_FULL-FACTORY.zip) |
 | Pico | v3 | [下载 Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_pico-v3_FULL-FACTORY.zip) |
 
 ## 你可以用它做什么
