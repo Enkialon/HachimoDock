@@ -91,7 +91,8 @@ def test_builtin_sync_does_not_reject_new_components():
     import json
     bundle = json.loads((ROOT / "main/pet_p4_builtin_components.json").read_text())
     assert not any(item["id"] == "music-player" for item in bundle["components"])
-    assert {"cloud-hop","daily-news","book-pocket"}.issubset({item["id"] for item in bundle["components"]})
+    configured = json.loads((ROOT / "factory-config.json").read_text())["components"]["ids"]
+    assert {item["id"] for item in bundle["components"]} == set(configured)
     source = (ROOT / "main/pet_p4_miniapp.c").read_text()
     sync = source.split("esp_err_t pet_p4_miniapp_sync_builtins(void)", 1)[1]
     assert "(size_t)cJSON_GetArraySize(components) != pet_p4_builtin_slice_count" in sync

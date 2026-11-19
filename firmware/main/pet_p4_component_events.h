@@ -38,7 +38,7 @@ typedef struct {
 bool pet_cev_name_valid(const char *name);
 void pet_cev_bus_reset(pet_cev_bus_t *bus);
 /* Registers (or replaces) the subscription list of one installed component. The
- * queue survives a re-registration with the same id; false when 32 are used. */
+ * queue survives a re-registration with the same id; false when all component slots are used. */
 bool pet_cev_bus_subscribe(pet_cev_bus_t *bus, const char *widget_id, const char (*names)[PET_CEV_NAME_MAX], unsigned count);
 void pet_cev_bus_unsubscribe(pet_cev_bus_t *bus, const char *widget_id);
 /* Fans one name out to every subscribed component (the emitter included when it
