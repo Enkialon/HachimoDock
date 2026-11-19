@@ -949,8 +949,8 @@ mod tests {
     fn blocks_private_values() {
         for value in [
             "http://127.0.0.1/",
-            "https://192.168.1.2/",
-            "https://secret.internal/",
+            "https://192.168.0.1/",
+            "https://fixture.internal/",
             "/Users/private/data",
             concat!("-----BEGIN ", "PRIVATE KEY-----"),
         ] {

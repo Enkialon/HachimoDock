@@ -200,9 +200,9 @@ description: Generate, validate, and publish ESP32-P4 desktop-pet games, tools, 
 
 媒体切图扩展：已支持 widgetSurfaceImages=p4-surface-images-v1 时，遵循 references/pc-extensions.md 的 surface.images 契约；这是媒体独立配额，不扩大游戏 scene 精灵配额。
 
-### D 能力开发路由
+### PC 数据与应用界面
 
-涉及 pc-fetch、应用壳标签页、form v3、data rows、长文/figure 或通知时，读取 [D 宿主与展示参考](references/d-host-and-surfaces.md)。该参考区分已接入入口与仍待公共 C 钩子及统一构建/HIL 的能力；不得把独立测试通过宣传为完整设备支持。
+涉及 PC Fetch、应用壳标签页、form v3、data rows、长文、figure 或通知时，读取 [PC Fetch、页面、表单与通知](references/d-host-and-surfaces.md)。以目标设备实际报告的能力和相应验收结果判断是否支持同步与执行。
 
 ### 通用服务桥候选路由
 

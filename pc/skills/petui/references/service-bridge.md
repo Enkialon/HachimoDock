@@ -118,4 +118,4 @@ speechProvider=false，不等于有在线音源、录音、OAuth、账号或支�
 音频/语音抢占、Windows、声学和固定门槛 HIL；离线 core/JS/编译记录不能代替这些
 证据。program750µs、frame/gap66667µs、SAVE4096/free1024 等门槛保持不变。
 
-本地媒体另提供无参数 `volume_up` / `volume_down`（每次5、夹到0–100）及 `cycle_mode`（sequence/single/loop/shuffle）；这些方法注册于通用local-media provider，不能由包自行注册方法。删除仍须显式确认。示例候选包与统一验收清单见 `pc/docs/local-music-player-candidate.md`；没有真实候选协商不得同步。
+本地媒体另提供无参数 `volume_up` / `volume_down`（每次 5，范围 0–100）及 `cycle_mode`（sequence/single/loop/shuffle）。这些方法由通用 local-media provider 注册。删除仍须显式确认。示例包、离线验证和设备验收见[本地随身听组件参考](../../../docs/local-music-player-candidate.md)。同步前核对目标设备报告的能力。

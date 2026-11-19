@@ -227,7 +227,7 @@ test("P4 reachability prefers USB and uses authenticated Wi-Fi when USB disconne
 
 test("Wi-Fi status reconciliation preserves version and recovery information", () => {
   const status = { boardDeviceId: "p4-123456789abc", bootId: "0123456789abcdef", wifiConnected: true,
-    address: "192.168.1.12", firmware: "0.7.103-p4-r285-wifi6", bundledFirmwareVersion: "0.7.103-p4-r286-wifi6" };
+    address: "192.0.2.12", firmware: "0.7.103-p4-r285-wifi6", bundledFirmwareVersion: "0.7.103-p4-r286-wifi6" };
   const old = pairedWifiTarget(status);
   assert.equal(old.address, status.address);
   assert.equal(old.firmware, status.firmware);
@@ -235,7 +235,7 @@ test("Wi-Fi status reconciliation preserves version and recovery information", (
   assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, bundledFirmwareRollbackBlocked: true })), false);
   assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status })), true);
   assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, firmware: status.bundledFirmwareVersion })), false);
-  assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, address: "192.168.1.13" })), false);
+  assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, address: "192.0.2.13" })), false);
   assert.equal(pairedWifiTargetsEqual(old, null), false);
 });
 

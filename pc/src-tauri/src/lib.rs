@@ -467,18 +467,8 @@ fn reconnect_usb_serial_to_expected_board(
 /// Build a reqwest blocking client that is *immune* to system / shell HTTP
 /// proxy env vars (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, …).
 ///
-/// HTTP routed through this helper is exclusively loopback or LAN
-/// (`127.0.0.1:23333` to the bridge sidecar, `192.168.44.1:80` to the
-/// board's AP-mode HTTP server). `reqwest`'s default behaviour is to
-/// honour `ALL_PROXY` regardless, and its `NO_PROXY` parser is stricter
-/// than curl's — so a developer who runs a SOCKS/HTTP proxy in their
-/// shell (e.g. `ALL_PROXY=http://127.0.0.1:63762`) ends up routing
-/// loopback-to-loopback traffic through the proxy, which then refuses
-/// to relay it back into 127.0.0.1 and we surface "error sending
-/// request for url …". The user-visible symptom looked like the bridge
-/// was down, when in fact only the HTTP transport was misrouted.
-///
-/// We never want to proxy these calls; force `.no_proxy()` everywhere.
+/// Requests to the bridge sidecar and the device's setup access point
+/// use direct connections so a system or shell proxy cannot intercept them.
 fn lan_http_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .no_proxy()
@@ -16066,8 +16056,8 @@ mod tests {
     #[test]
     fn linux_audio_start_keeps_an_explicit_lan_address() {
         assert_eq!(
-            resolve_audio_bridge_pc_ip("start", Some("192.168.1.25".to_string()), true).unwrap(),
-            Some("192.168.1.25".to_string())
+            resolve_audio_bridge_pc_ip("start", Some("192.0.2.25".to_string()), true).unwrap(),
+            Some("192.0.2.25".to_string())
         );
     }
 

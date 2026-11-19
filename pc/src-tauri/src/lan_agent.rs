@@ -1327,8 +1327,8 @@ mod tests {
     #[test]
     fn local_pairing_code_is_exact_and_rejects_invalid_destinations() {
         let code = "0001 0203 0405 0607\n0809 0a0b 0c0d 0e0f";
-        let peer = parse_peer("192.168.1.12", code).unwrap();
-        assert_eq!(peer.address, ([192, 168, 1, 12], PORT).into());
+        let peer = parse_peer("192.0.2.12", code).unwrap();
+        assert_eq!(peer.address, ([192, 0, 2, 12], PORT).into());
         assert_eq!(hex(peer.key.as_ref()), "000102030405060708090a0b0c0d0e0f");
         for address in [
             "localhost",
@@ -1339,7 +1339,7 @@ mod tests {
         ] {
             assert!(parse_peer(address, code).is_err());
         }
-        assert!(parse_peer("192.168.1.12", "123456").is_err());
+        assert!(parse_peer("192.0.2.12", "123456").is_err());
     }
 
     #[test]

@@ -74,6 +74,4 @@ action，并且恰好使用 `every_ms` 或 `at_ms_var`；可选 background 和�
 对应闹钟；存档入队或 RAM ACK 不等于断电耐久证明，需重启读回验收。
 
 源码与共享向量分别见 `scripts/capability_ext.py`、`contracts/events-v1.json`；
-设备生命周期与锁规则见 `capability-ext-audit.md`，验收方案见
-`capability-ext-hil.md`。联网数据、页面、文本表单和通知 UI 另见
-`d-host-and-surfaces.md`；PC 托管本地媒体播放器见 `service-bridge.md`。
+设备生命周期与锁规则见[媒体资源与事件实现](capability-ext-audit.md)，实机步骤见[设备验收](capability-ext-hil.md)。联网数据、页面、文本表单和通知参见 [PC Fetch、页面、表单与通知](d-host-and-surfaces.md)。PC 托管本地媒体播放器参见[服务桥](service-bridge.md)。

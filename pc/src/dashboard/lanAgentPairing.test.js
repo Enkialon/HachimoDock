@@ -21,6 +21,7 @@ test("a saved address does not count as an authenticated Wi-Fi pairing", () => {
 });
 
 test("pairing clears the input before sending the code to native", async () => {
+  const ip = "192.0.2.12";
   const code = "0123 4567 89ab cdef 0123 4567 89ab cdef";
   const input = { value: code };
   globalThis.window = {
@@ -28,13 +29,13 @@ test("pairing clears the input before sending the code to native", async () => {
       invoke(command, args) {
         assert.equal(input.value, "");
         assert.equal(command, "lan_agent_pair");
-        assert.deepEqual(args, { ip: "192.168.1.12", code });
+        assert.deepEqual(args, { ip, code });
         return Promise.reject(new Error("fixture: rejected pairing"));
       },
     },
   };
   try {
-    await assert.rejects(pairLanAgent("192.168.1.12", input), /fixture/);
+    await assert.rejects(pairLanAgent(ip, input), /fixture/);
     assert.equal(input.value, "");
   } finally {
     delete globalThis.window;
