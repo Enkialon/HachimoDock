@@ -14,11 +14,11 @@ The installed app is named **HachimiDock**. Developer documentation may also cal
 
 | Component | Version | Download |
 | --- | --- | --- |
-| Windows x64 | **0.1.241** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_Windows-x64-setup.exe) |
-| macOS (Apple silicon) | **0.1.241** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_macOS-arm64.dmg) |
-| Device firmware | **0.7.104-p4-r287 / R287** | [WiFi6 and Pico factory flashing kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241) |
+| Windows x64 | **0.1.245** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_Windows-x64-setup.exe) |
+| macOS (Apple silicon) | **0.1.245** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_macOS-arm64.dmg) |
+| Device firmware | **0.7.107-p4-r292 / R292** | [OTA](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/Hachimodock-0.1.245-0.7.107-p4-r292-OTA.zip) · [v3 factory kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) |
 
-See the [0.1.241 release notes](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241). Both installers include R287 OTA firmware for WiFi6 and Pico boards with v1 and v3 chips. Wi-Fi button and conversation-state delivery requires both the updated client and firmware. After Wi-Fi pairing, the device can disconnect from the computer's USB data connection; it still needs power, and desktop-assisted features still require the client to run. Pico firmware does not include Wi-Fi or Bluetooth. Verify downloads against the SHA-256 shown on the release page.
+See the [0.1.245 release notes](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245). Both installers include R292 OTA firmware for WiFi6 and Pico boards with v1 and v3 chips. Wi-Fi button and conversation-state delivery requires both the updated client and firmware. After Wi-Fi pairing, the device can disconnect from the computer's USB data connection; it still needs power, and desktop-assisted features still require the client to run. Pico firmware does not include Wi-Fi or Bluetooth. Verify downloads against the SHA-256 shown on the release page.
 
 Complete flashing kits are for first installation or factory recovery and erase settings, appearances and components. Match both board model and chip revision; WiFi6 and Pico, and v1 and v3, are not interchangeable. For routine upgrades, use the built-in OTA updater.
 
@@ -26,12 +26,12 @@ Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package 
 
 ### Complete flashing kits
 
-| Board | Chip revision | R287 factory kit |
+| Board | Chip revision | R292 factory kit |
 | --- | --- | --- |
-| WiFi6 | v1 | [Download WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v1_FULL-FACTORY.zip) |
-| WiFi6 | v3 | [Download WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v3_FULL-FACTORY.zip) |
-| Pico | v1 | [Download Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v1_FULL-FACTORY.zip) |
-| Pico | v3 | [Download Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v3_FULL-FACTORY.zip) |
+| WiFi6 | v1 | Use the desktop OTA updater. The R292 factory kit is pending. |
+| WiFi6 | v3 | [Download WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_wifi6-v3_FULL-FACTORY.zip) |
+| Pico | v1 | Use the desktop OTA updater. The R292 factory kit is pending. |
+| Pico | v3 | [Download Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_pico-v3_FULL-FACTORY.zip) |
 
 ## What you can do
 
@@ -39,7 +39,9 @@ Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package 
 
 Pet animations and task bubbles show thinking, working, waiting, completion and errors. Choose the Agent or session you want to follow and keep its progress visible beside your main screen.
 
-Integrations include **ChatGPT (Codex), Claude, OpenClaw, MiMoCode, WorkBuddy and DeepSeek Harness**. Available events and controls vary by integration: status reporting, dictation, sending and switching desktop conversations are separate capabilities.
+Integrations include **ChatGPT (Codex), Claude, OpenClaw, MiMo Desktop / MiMoCode, WorkBuddy and DeepSeek Harness**. Available events and controls vary by integration: status reporting, dictation, sending and switching desktop conversations are separate capabilities.
+
+WorkBuddy and DeepSeek Harness can show the current session title and task state. Over USB or Wi-Fi, task bubbles use MiSans Medium at 32 px for titles and 24 px for body text.
 
 <p align="center"><img src="assets/agent-status.gif" alt="Agent task states shown through pet animations and conversation bubbles" /></p>
 
@@ -62,7 +64,7 @@ Supported WiFi6 boards connect to a computer on the **same local network** for A
 
 Pair for the first time on a trusted network. For wireless control, including real-time conversation, connect that same device over USB and open the client's Wi-Fi pairing settings to complete a one-time wired authorization. **Pairing and control authorization are separate steps.** Unpair on the device before moving to a different computer. See [Wi-Fi pairing and authorization](pc/docs/lan-agent-pairing.md).
 
-An active USB client takes priority and ends an existing Wi-Fi voice conversation. Some music and computer data features still require USB. Playback options vary by board and stream, and WiFi6 devices can play supported radio streams directly. Pico firmware has no Wi-Fi or Bluetooth support.
+An active USB client takes priority and ends an existing Wi-Fi voice conversation. The Computer Status widget receives data while the desktop client is running, over USB or paired Wi-Fi. Playback options vary by board and stream, and WiFi6 devices can play supported radio streams directly. Pico firmware has no Wi-Fi or Bluetooth support.
 
 ### Turn the buttons into a shortcut keyboard
 
@@ -77,7 +79,8 @@ While the Bluetooth keyboard is connected, the buttons and joystick send shortcu
 Use the built-in West Highland terrier or import your own appearance, state videos and sounds. Configure a generation service if you want to create new materials. The component centre lets you preview, install and remove games and utilities such as a Pomodoro timer, Gomoku, Snake, a wooden-fish instrument, computer status and city radio.
 
 - **Local components** run on the device once installed. Whether they need the computer or a network depends on the component.
-- **PC-fed and online components** need the relevant client connection and data source. A radio station also needs a working stream; station availability is not guaranteed.
+- **Online components on WiFi6** can fetch HTTPS JSON and subscribe to MQTT directly. Public feeds work immediately. For a private feed, authorize the component once on the device. It reconnects after restart.
+- **Computer status** uses the desktop client as its data source over USB or paired Wi-Fi.
 - **Your own components** can be created with the [PetUI Skill](pc/skills/petui/SKILL.md) in a supported Agent, then previewed, validated and synced from the component centre. Device capabilities and storage limits apply; this is not an unrestricted browser or script environment.
 
 Missing touch support does not prevent general component installation, but touch-based gameplay may be unavailable. Set a city manually or disable automatic location; automatic mode estimates a city from the outgoing IP address, not GPS. To-dos are stored locally, without cross-computer sync or scheduled notifications.
@@ -133,7 +136,7 @@ The paired hardware uses ESP32-P4, 32 MiB Flash, 32 MiB PSRAM and a 480×640 MIP
 
 ### Source and release provenance
 
-The `main` branch and `v0.1.241` tag provide the public 0.1.241 / R287 source. The [release metadata](latest-release.json) lists SHA-256 digests for installers and firmware.
+The `main` branch and `v0.1.245` tag provide the public 0.1.245 / R292 source. The [release metadata](latest-release.json) lists SHA-256 digests for installers and firmware.
 
 Resources are stored in ordinary Git; Git LFS is not required. Preserve dependency locks and choose the correct target configuration. Published binaries retain their original build contents even when `main` changes.
 

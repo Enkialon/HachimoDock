@@ -43,11 +43,11 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 
 | 项目 | 版本 | 下载 |
 | --- | --- | --- |
-| Windows x64 | **0.1.241** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_Windows-x64-setup.exe) |
-| macOS Apple silicon | **0.1.241** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_macOS-arm64.dmg) |
-| 配套设备固件 | **0.7.104-p4-r287 / R287** | [WiFi6 / Pico 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241) |
+| Windows x64 | **0.1.245** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_Windows-x64-setup.exe) |
+| macOS Apple silicon | **0.1.245** | [下载安装包](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_macOS-arm64.dmg) |
+| 配套设备固件 | **0.7.107-p4-r292 / R292** | [OTA](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/Hachimodock-0.1.245-0.7.107-p4-r292-OTA.zip) · [v3 完整烧录包](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) |
 
-更新说明见 [0.1.241 发布页](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241)。客户端内置 WiFi6 与 Pico 的 v1、v3 四种 R287 OTA 固件；Wi-Fi 按键与对话状态同步需要同时更新客户端和固件。Wi-Fi 配对后可脱离电脑 USB 数据连接，设备仍需供电，电脑协同功能仍需管理端运行；Pico 固件不包含 Wi-Fi／蓝牙。下载后可核对 Release 页面显示的 SHA-256。
+更新说明见 [0.1.245 发布页](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245)。客户端内置 WiFi6 与 Pico 的 v1、v3 四种 R292 OTA 固件；Wi-Fi 按键与对话状态同步需要同时更新客户端和固件。Wi-Fi 配对后可脱离电脑 USB 数据连接，设备仍需供电，电脑协同功能仍需管理端运行；Pico 固件不包含 Wi-Fi／蓝牙。下载后可核对 Release 页面显示的 SHA-256。
 
 完整烧录包用于新设备或恢复出厂，会清除设置、形象和组件；请同时核对板型和芯片修订版，WiFi6 与 Pico、v1 与 v3 不可混刷。日常升级优先使用客户端内置 OTA。
 
@@ -55,12 +55,12 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 
 ### 按板型和芯片修订版下载完整烧录包
 
-| 板型 | 芯片修订版 | R287 完整烧录包 |
+| 板型 | 芯片修订版 | R292 完整烧录包 |
 | --- | --- | --- |
-| WiFi6 | v1 | [下载 WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v1_FULL-FACTORY.zip) |
-| WiFi6 | v3 | [下载 WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_wifi6-v3_FULL-FACTORY.zip) |
-| Pico | v1 | [下载 Pico v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v1_FULL-FACTORY.zip) |
-| Pico | v3 | [下载 Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.241/HachimiDock_0.1.241_pico-v3_FULL-FACTORY.zip) |
+| WiFi6 | v1 | 已有设备可用客户端 OTA 升级。R292 完整烧录包暂未发布。 |
+| WiFi6 | v3 | [下载 WiFi6 v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_wifi6-v3_FULL-FACTORY.zip) |
+| Pico | v1 | 已有设备可用客户端 OTA 升级。R292 完整烧录包暂未发布。 |
+| Pico | v3 | [下载 Pico v3](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_pico-v3_FULL-FACTORY.zip) |
 
 ## 你可以用它做什么
 
@@ -68,7 +68,9 @@ HachimoDock（哈基米机）是一台与电脑协作的桌面小伙伴：让 AI
 
 设备用宠物动画和任务气泡显示思考、执行、等待、完成及错误状态。选择正在跟随的 Agent 或会话，就能在电脑之外保留一个简洁的工作状态窗口。
 
-当前适配 **ChatGPT（Codex）、Claude、OpenClaw、MiMoCode、WorkBuddy 和 DeepSeek Harness**。不同适配器提供的状态和操作能力不同；状态跟随不代表支持所有应用的语音输入或对话切换。
+当前适配 **ChatGPT（Codex）、Claude、OpenClaw、MiMo Desktop / MiMoCode、WorkBuddy 和 DeepSeek Harness**。不同适配器提供的状态和操作能力不同；状态跟随不代表支持所有应用的语音输入或对话切换。
+
+跟随 WorkBuddy 或 DeepSeek Harness 时，可以在设备上看到当前会话标题和任务状态。无论通过 USB 还是 Wi-Fi 连接，任务气泡都使用 MiSans Medium，标题 32px、正文 24px。
 
 <p align="center"><img src="assets/agent-status.gif" alt="Agent 工作状态与设备宠物动画" /></p>
 
@@ -91,7 +93,7 @@ WiFi6 板型可在**同一局域网**内与电脑配对，支持 Agent 状态跟
 
 首次配对应在可信的局域网中进行。要使用实时对话等无线控制，先通过 USB 连接同一设备，在客户端 Wi-Fi 配对设置中完成一次有线授权。**配对成功与获得无线控制权限是两步。** 更换电脑时，先在设备上解除旧配对。使用方法见 [Wi-Fi 配对与授权](pc/docs/lan-agent-pairing.md)。
 
-USB 客户端在线时优先走 USB，接管时会结束正在进行的 Wi-Fi 实时对话。部分音乐和电脑数据功能仍需要 USB。城市电台的播放方式取决于板型和音源，支持的音源可由 WiFi6 设备直接播放。Pico 固件不提供 Wi-Fi 或蓝牙。
+USB 客户端在线时优先走 USB，接管时会结束正在进行的 Wi-Fi 实时对话。「电脑状态」组件支持 USB 和已配对的 Wi-Fi，显示数据时电脑客户端需要在线。城市电台的播放方式取决于板型和音源，支持的音源可由 WiFi6 设备直接播放。Pico 固件不提供 Wi-Fi 或蓝牙。
 
 ### 把实体按键变成电脑快捷键
 
@@ -106,7 +108,8 @@ USB 客户端在线时优先走 USB，接管时会结束正在进行的 Wi-Fi �
 内置西高地形象，也可导入自定义外观、状态视频和提示音，或配置生成服务制作素材。在组件中心预览、安装与移除小游戏和工具，例如番茄钟、五子棋、贪吃蛇、木鱼、电脑状态和城市电台。
 
 - **设备本地组件**：安装后在设备上运行；是否需要联网或电脑协同，取决于组件自身功能。
-- **电脑与在线数据组件**：电脑状态、天气、音乐和电台等需要相应的客户端连接与数据来源。电台能否播放还取决于音源是否可用，不能保证每个台持续在线。
+- **WiFi6 联网组件**可在设备上直接读取 HTTPS JSON、订阅 MQTT。公开数据打开即用，私人数据在组件内授权一次，设备重启后会重新连接。
+- **电脑状态**等使用电脑数据的组件通过 USB 或已配对的 Wi-Fi 从桌面客户端取数。
 - **自己的组件**：在支持的 Agent 中使用 [PetUI Skill](pc/skills/petui/SKILL.md)描述游戏或工具，生成后在组件中心预览、校验并同步到设备。组件受设备能力和存储限制，不是任意网页或脚本。
 
 缺少触控不影响一般组件安装，但触控玩法可能无法使用。城市可以手动设置或关闭自动定位；自动定位按出口 IP 估算城市，不是 GPS。待办保存在本机，目前不提供跨电脑同步或到点通知。
@@ -136,7 +139,7 @@ macOS 安装受阻时，先检查下载来源和校验值，再按系统“隐�
 
 ### 新设备或恢复出厂
 
-[v0.1.241 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241) 提供 WiFi6 和 Pico 原底板的完整烧录包，两种板型各有 v1、v3 版本。包内包含 Bootloader、应用固件、形象、组件及双平台烧录工具。请同时核对板型和实际芯片修订版；微雪 ESP32-P4-WIFI6-M 的 M 不代表芯片版本。同一芯片的固件由 Windows/macOS 共用。完整镜像会覆盖设备现有数据。
+[v0.1.245 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) 提供 WiFi6 v3 和 Pico v3 原底板的完整烧录包。包内包含 Bootloader、应用固件、形象、组件及双平台烧录工具。请同时核对板型和实际芯片修订版；微雪 ESP32-P4-WIFI6-M 的 M 不代表芯片版本。同一芯片的固件由 Windows/macOS 共用。完整镜像会覆盖设备现有数据。
 
 **v1 与 v3 烧录包不可互刷，具体版本可以咨询客服进行确认。** 包内脚本需要 Python 3.10+，自动安装 esptool **5.4.0**。屏幕连接 **DSI**，不是 CSI；请断电后插拔排线。详细版本和步骤见 [固件构建与烧录指南](firmware/BUILD.md)。
 
@@ -200,7 +203,7 @@ macOS 安装受阻时，先检查下载来源和校验值，再按系统“隐�
 
 ### 源码与发布对应关系
 
-`main` 和 `v0.1.241` 标签提供 0.1.241 / R287 的公开源码。安装包和固件的 SHA-256 见 [发布元数据](latest-release.json)。
+`main` 和 `v0.1.245` 标签提供 0.1.245 / R292 的公开源码。安装包和固件的 SHA-256 见 [发布元数据](latest-release.json)。
 
 资源保存在普通 Git 中，克隆不依赖 Git LFS。构建以锁定依赖和目标平台配置为准；不同发布包的源码对应关系以各 Release 说明为准。自行编译请查阅下列构建文档，并按实际板型选择配置。
 
