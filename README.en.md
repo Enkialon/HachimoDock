@@ -26,6 +26,8 @@ Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package 
 
 ### Complete flashing kits
 
+**For your first flash, we recommend using an AI tool such as ChatGPT or WorkBuddy to guide you.** Download and unzip the kit for your board, share its `FLASH.md` with the tool, and tell it your operating system and board model. For example, ask “Can you help me check that this kit matches my connected board, walk me through the first flash, and verify the result?”
+
 | Board | Chip revision | R292 factory kit |
 | --- | --- | --- |
 | WiFi6 | v1 | [Download WiFi6 v1](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_wifi6-v1_FULL-FACTORY.zip) |
@@ -89,6 +91,8 @@ Learn more: [data components](pc/docs/widget-live-data.md), [computer status and
 
 ## Quick start
 
+For a new, unflashed board, follow the [complete flashing kit guide](#complete-flashing-kits) before connecting it to the desktop client.
+
 1. **Install and connect.** Download the client for your system and connect the device with a USB data cable. Confirm the board and firmware version in the client.
 2. **Try Agent status first.** Open a supported Agent, choose what to follow, and select an appearance and button mappings. Use client OTA for routine firmware upgrades.
 3. **Add voice if you want it.** Configure your own service credentials and grant the necessary system permissions. Open the target conversation for dictation; configure a chat model and voice for real-time conversation.
@@ -141,6 +145,8 @@ The `main` branch and `v0.1.245` tag provide the public 0.1.245 / R292 source. T
 Resources are stored in ordinary Git; Git LFS is not required. Preserve dependency locks and choose the correct target configuration. Published binaries retain their original build contents even when `main` changes.
 
 ## Frequently asked questions
+
+**The first flash succeeded. Why is the screen white?** Wait until the flashing tool confirms that both writing and verification succeeded. Then unplug the USB cable, plug it back in, and leave the device powered. The display may need about **5 minutes** to warm up before the picture appears normally. If it stays white, check that the kit matches both your board model and chip revision.
 
 **Can it work with the computer off?** Installed components that do not depend on a PC can continue while the device is powered. Agent status, speech services and PC-fed data require the client. The device does not run your desktop Agent or cloud model on its own.
 
