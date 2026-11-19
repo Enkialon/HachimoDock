@@ -19,7 +19,7 @@ test("Windows WorkBuddy installed budget survives valid slow ACL checks and reac
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "workbuddy-ingress-"));
   t.after(() => fs.rmSync(home, { recursive: true, force: true }));
   const root = path.join(home, ".workbuddy"), capDir = path.join(home, "capability");
-  fs.mkdirSync(root); fs.mkdirSync(capDir, { mode: 0o700 });
+  fs.mkdirSync(root);
   // Include an old installed hook: an upgrade must migrate its deadline too.
   const settings = path.join(root, "settings.json");
   fs.writeFileSync(settings, JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [
@@ -39,7 +39,13 @@ test("Windows WorkBuddy installed budget survives valid slow ACL checks and reac
   const descriptor = { version: 1, epoch: bootstrap.epoch, hookPort: 23333, busPort: null, tokens: { hook: bootstrap.tokens.hook } };
   const descriptorFile = path.join(capDir, "hook.json");
   const store = createCapabilityStore();
+  // Elevated Windows runners can give Node-created directories a default
+  // owner other than the current user SID. Let the production writer create
+  // this private leaf with its explicit owner and protected ACL; precreating
+  // it would correctly trigger the foreign-existing-owner rejection.
+  assert.equal(fs.existsSync(capDir), false);
   store.writeDescriptor(descriptor, descriptorFile);
+  assert.doesNotThrow(() => store.readDescriptor(descriptorFile), "production reader must verify the created capability ACL");
   const metricsTracker = new SessionMetricsTracker();
   const localStateDir = path.join(home, "snapshots");
   const publisher = new LocalStatePublisher({ enabledSources: ["workbuddy"], selectedSource: "workbuddy", localStateDir });

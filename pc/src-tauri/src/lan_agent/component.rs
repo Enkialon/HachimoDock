@@ -403,9 +403,16 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "installs one real package on USB-trusted board p4-80f1b2d72684 over LAN"]
+    #[ignore = "installs the selected package on an explicitly selected USB-trusted board"]
     fn hil_install_bundle() {
-        const APPROVED_BOARD: &str = "p4-80f1b2d72684";
+        let approved_board = std::env::var("HACHIMO_LAN_HIL_BOARD_ID")
+            .expect("set HACHIMO_LAN_HIL_BOARD_ID to the target device ID");
+        assert!(
+            approved_board.strip_prefix("p4-").is_some_and(|id|
+                id.len() == 12 && id.bytes().all(|b| b.is_ascii_hexdigit())
+            ),
+            "expected a p4 device ID"
+        );
         let path = std::env::var_os("HACHIMO_LAN_HIL_PACKAGE")
             .expect("set HACHIMO_LAN_HIL_PACKAGE to the exact .hachiapp file to install");
         let package = Package::read(Path::new(&path)).expect("validate the selected archive");
@@ -415,8 +422,8 @@ mod tests {
         let (peer, status) =
             read_with_recovery(query_status, "authenticate live status over Wi-Fi")
                 .expect("desktop must already be paired and USB-trusted");
-        assert_eq!(
-            status.board_device_id, APPROVED_BOARD,
+        assert!(
+            status.board_device_id == approved_board,
             "refusing a different device"
         );
         assert!(
@@ -430,9 +437,8 @@ mod tests {
 
         let total_bytes: usize = files.iter().map(|(_, bytes)| bytes.len()).sum();
         eprintln!(
-            "Installing {} on {} via mode 14: {} device files, {} bytes",
+            "Installing {} via mode 14: {} device files, {} bytes",
             package.preview.id,
-            APPROVED_BOARD,
             files.len(),
             total_bytes
         );
