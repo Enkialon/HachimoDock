@@ -63,12 +63,6 @@
       "sha256": "526a7b2d017d1712190c75fc9cd69618dcad6e501be127570382fbbcb0ebc6b3"
     },
     {
-      "file": "Hachimodock-0.1.245-0.7.107-p4-r292-OTA.zip",
-      "role": "ota",
-      "bytes": 7642490,
-      "sha256": "6d86136b11d3562e80ec72377c5604e03faa03d25d14ceb3dc101650566ee25e"
-    },
-    {
       "file": "HachimiDock_0.1.245_pico-v3_FULL-FACTORY.zip",
       "role": "factory-v3-pico",
       "bytes": 11709357,

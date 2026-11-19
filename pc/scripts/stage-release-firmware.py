@@ -1,7 +1,6 @@
 """Stage the four desktop OTA inputs from an authenticated-by-digest public release."""
 import argparse
 import hashlib
-import io
 from functools import lru_cache
 import json
 import re
@@ -22,7 +21,9 @@ PROFILES = {
     'pico-v1': ('firmware-pico-v1.bin', 'pico', 1, 199),
     'pico-v3': ('firmware-pico-v3.bin', 'pico', 300, 399),
 }
+APPLICATION_OFFSET = 0x10000
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
+FACTORY_BYTES = 0x1780000
 
 
 def verify(condition, message):
@@ -54,30 +55,34 @@ def download(name, size, tag):
         return response.read(size + 1)
 
 
-def read_ota_bundle(release, local_assets):
-    archive = f"Hachimodock-{release['desktopVersion']}-{release['firmwareVersion']}-OTA.zip"
+def extract(profile, release, local_assets, temporary):
+    file, board, low, high = PROFILES[profile]
+    version = release['desktopVersion']
+    stem = f'HachimiDock_{version}_{profile}_FULL-FACTORY'
+    archive = stem + '.zip'
     item, = (entry for entry in release['artifacts'] if entry['file'] == archive)
+    app, = (entry for entry in release['firmware'] if entry['file'] == file)
     size = item['bytes']
-    verify(0 < size <= MAX_ARCHIVE_BYTES, 'Invalid OTA archive size')
+    verify(0 < size <= MAX_ARCHIVE_BYTES, f'{profile}: invalid archive size')
     if local_assets:
         with (local_assets / archive).open('rb') as stream:
             data = stream.read(size + 1)
     else:
         data = download(archive, size, release['releaseTag'])
     verify(len(data) == size and hashlib.sha256(data).hexdigest() == item['sha256'],
-           'OTA archive integrity check failed')
-    return io.BytesIO(data)
-
-
-def extract(profile, release, package, temporary):
-    file, board, low, high = PROFILES[profile]
-    app, = (entry for entry in release['firmware'] if entry['file'] == file)
-    length = app['bytes']
-    verify(288 <= length <= 0x300000, f'{profile}: invalid application size')
-    matches = [member for member in package.infolist() if member.filename == profile + '.bin']
-    verify(len(matches) == 1 and matches[0].file_size == length, f'{profile}: invalid OTA image')
-    with package.open(matches[0]) as image:
-        application = image.read(length + 1)
+           f'{profile}: factory package integrity check failed')
+    archive_path = temporary / archive
+    archive_path.write_bytes(data)
+    with zipfile.ZipFile(archive_path) as package:
+        members = package.infolist()
+        matches = [member for member in members if member.filename == stem + '.bin']
+        verify(len(matches) == 1 and matches[0].file_size == FACTORY_BYTES,
+               f'{profile}: invalid factory image')
+        length = app['bytes']
+        verify(288 <= length <= 0x300000, f'{profile}: invalid application size')
+        with package.open(matches[0]) as image:
+            image.seek(APPLICATION_OFFSET)
+            application = image.read(length)
     verify(len(application) == length and hashlib.sha256(application).hexdigest() == app['sha256'],
            f'{profile}: application integrity check failed')
     verify(application[0] == 0xE9 and struct.unpack_from('<H', application, 12) == (18,)
@@ -92,7 +97,7 @@ def extract(profile, release, package, temporary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--assets-dir', type=Path, help='Use an already downloaded OTA bundle.')
+    parser.add_argument('--assets-dir', type=Path, help='Use already downloaded factory ZIP files.')
     args = parser.parse_args()
     release = json.loads((ROOT / 'latest-release.json').read_text(encoding='utf-8'))
     version = release['desktopVersion']
@@ -101,8 +106,7 @@ def main():
     DESTINATION.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=DESTINATION, prefix='.staging-') as directory:
         temporary = Path(directory)
-        with zipfile.ZipFile(read_ota_bundle(release, args.assets_dir)) as package:
-            files = [extract(profile, release, package, temporary) for profile in PROFILES]
+        files = [extract(profile, release, args.assets_dir, temporary) for profile in PROFILES]
         for file in files:
             (temporary / file).replace(DESTINATION / file)
     print(f'Staged four verified OTA images for HachimiDock {version}')

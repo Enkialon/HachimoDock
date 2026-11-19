@@ -16,7 +16,7 @@ The installed app is named **HachimiDock**. Developer documentation may also cal
 | --- | --- | --- |
 | Windows x64 | **0.1.245** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_Windows-x64-setup.exe) |
 | macOS (Apple silicon) | **0.1.245** | [Download installer](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/HachimiDock_0.1.245_macOS-arm64.dmg) |
-| Device firmware | **0.7.107-p4-r292 / R292** | [OTA](https://github.com/ai-maker-lab/HachimoDock/releases/download/v0.1.245/Hachimodock-0.1.245-0.7.107-p4-r292-OTA.zip) · [Factory kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) |
+| Device firmware | **0.7.107-p4-r292 / R292** | OTA included in the desktop client · [Factory kits](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245) |
 
 See the [0.1.245 release notes](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.245). Both installers include R292 OTA firmware for WiFi6 and Pico boards with v1 and v3 chips. Wi-Fi button and conversation-state delivery requires both the updated client and firmware. After Wi-Fi pairing, the device can disconnect from the computer's USB data connection; it still needs power, and desktop-assisted features still require the client to run. Pico firmware does not include Wi-Fi or Bluetooth. Verify downloads against the SHA-256 shown on the release page.
 

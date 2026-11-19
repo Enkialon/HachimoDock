@@ -45,7 +45,7 @@ python -m platformio run -e esp32_p4_pico_v3
 
 每个环境的应用输出为 `firmware/.pio/build/<环境名>/firmware.bin`。将四份经过核验的应用镜像按上表分别放入 `pc/src-tauri/firmware/esp32-p4/`，再准备桌面资源。四份镜像必须来自同一份已审核源码，板型、芯片修订范围、版本、构建标识和 SHA-256 均需核对；不要把完整 factory 镜像作为 OTA 输入，也不要沿用旧版本文件。
 
-使用发布版 OTA 时，在仓库根目录运行 `python pc/scripts/stage-release-firmware.py`，脚本会下载配套 OTA 压缩包，校验压缩包与四份应用镜像的 SHA-256，并核对板型和芯片修订范围。出厂形象与 **27 个组件**由 [factory-config.json](factory-config.json) 指定。三款新增 WASM 组件的完整模块随出厂存储镜像和桌面客户端提供，OTA 镜像保留其目录信息。
+使用发布版 OTA 时，在仓库根目录运行 `python pc/scripts/stage-release-firmware.py`，脚本会下载四个完整烧录包，提取对应的应用镜像，并核对压缩包及镜像的 SHA-256、板型和芯片修订范围。出厂形象与 **27 个组件**由 [factory-config.json](factory-config.json) 指定。三款新增 WASM 组件的完整模块随出厂存储镜像和桌面客户端提供，OTA 镜像保留其目录信息。
 
 ## 完整出厂镜像
 
