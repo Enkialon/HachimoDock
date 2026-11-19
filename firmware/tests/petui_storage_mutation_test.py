@@ -18,8 +18,16 @@ def test_optin_unchanged_commit_preserves_all_original_mutation_cases_and_live_s
 
 def _mutation_source(unchanged):
     code = (ROOT / 'main/pet_p4_miniapp.c').read_text()
-    install = code[code.index('bool pet_p4_miniapp_install_commit('):code.index('static bool commit_builtin_package(')]
-    install = 'typedef bool (*widget_commit_live_fn)(void *);\n' + function(code, 'install_commit_fenced') + function(code, 'pet_p4_miniapp_install_commit')
+    commit_errors = '\n'.join(
+        line for line in (ROOT/'main/pet_p4_miniapp.h').read_text().splitlines()
+        if line.startswith('#define PET_P4_WIDGET_COMMIT_')
+    )
+    install = '\n' + commit_errors + '\ntypedef bool (*widget_commit_live_fn)(void *);\n' + '\n'.join(
+        function(code, name) for name in (
+            'catalog_id_visible', 'catalog_item_visible', 'catalog_visible_count', 'catalog_has_room_for',
+            'widget_commit_audio_busy', 'install_commit_fenced', 'pet_p4_miniapp_install_commit',
+        )
+    )
     remove = function(code, 'remove_component')
     source = r'''
 #include <assert.h>
@@ -32,7 +40,8 @@ def _mutation_source(unchanged):
 #include "pet_p4_component_metadata.h"
 
 #include "pet_p4_storage_lane.h"
-#define PET_P4_MINIAPP_CATALOG_MAX 32
+#include "pet_p4_resources.h"
+#include "pet_p4_catalog_profile.h"
 #define PET_P4_MINIAPP_WIDGET_ID_MAX 48
 #define MINIAPP_DELETE_TARGETS 18
 #define PET_CENTER_TITLE_MASK_MAX 256
@@ -43,6 +52,7 @@ def _mutation_source(unchanged):
 #define pet_widget_trace_scope_end(name) ((void)(name))
 static unsigned held=1,critical,unlocks,locks,io_calls,commits,cleanups,forgets;
 static bool audio,fail_load,fail_save,fail_schema,forget_fail,requires_touch;
+static bool realtime_audio;
 static bool work_current=true,revoke_restore,revoke_commit;
 static int fail_io;
 static uintptr_t task=1;
@@ -57,7 +67,7 @@ typedef struct {char path[48];} pet_file_cleanup_target_t;
 typedef struct {uint32_t sequence;} pet_file_cleanup_plan_t;
 static staging_t g_staging;
 static miniapp_runtime_t g_runtime;
-static miniapp_catalog_item_t g_catalog[32];
+static miniapp_catalog_item_t g_catalog[PET_P4_MINIAPP_CATALOG_MAX];
 static size_t g_catalog_count,g_catalog_selected;
 static uint32_t g_catalog_sequence,g_image_revision;
 static int g_catalog_file_generation;
@@ -91,6 +101,9 @@ static bool write_center_title(unsigned slot,uint8_t generation,const uint8_t *d
 }
 static void catalog_scratch_free(miniapp_catalog_item_t **p){free(*p);}
 static bool storage_audio_busy(void){return audio;}
+static void pet_resources_device_usage(pet_resource_usage_t *usage){
+ *usage=(pet_resource_usage_t){.realtime_reservations=realtime_audio?1:0};
+}
 static bool pet_p4_audio_active(void){return audio;}
 static bool pet_p4_audio_playback_active(void){return false;}
 static bool pet_p4_audio_conversation_active(void){return false;}
@@ -152,7 +165,7 @@ static void reset(void){
  g_staging.active=true;strcpy(g_staging.transfer_id,"transfer");strcpy(g_staging.widget_id,"garden");
  strcpy(g_staging.widget_json,"{}");g_staging.widget_len=2;strcpy(g_staging.buttons_json,"{}");g_staging.buttons_len=2;
  io_calls=commits=cleanups=forgets=0;audio=fail_load=fail_save=fail_schema=forget_fail=false;g_catalog_seed_pending=false;fail_io=0;g_catalog_recovery_blocked=false;
- work_current=true;revoke_restore=revoke_commit=false;requires_touch=false;
+ work_current=true;revoke_restore=revoke_commit=false;requires_touch=false;realtime_audio=false;
 }
 int main(void){
  char error[160];cJSON *p=cJSON_Parse("{\"transferId\":\"transfer\",\"widgetId\":\"garden\"}");assert(p);
@@ -164,6 +177,22 @@ int main(void){
  assert(!pet_p4_miniapp_install_commit(late,error,sizeof(error)));
  assert(!memcmp(&before_staging,&g_staging,sizeof(g_staging))&&!io_calls&&!commits&&held);
  assert(pet_storage_lane_leave(&g_storage_lane));cJSON_Delete(late);
+ /* Busy admission writes nothing. The very same staging can commit once the owner leaves. */
+ reset();before_staging=g_staging;
+ assert(pet_storage_lane_enter(&g_storage_lane));task=2;
+ assert(!pet_p4_miniapp_install_commit(p,error,sizeof(error)));
+ assert(!strcmp(error,PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED));
+ assert(!memcmp(&before_staging,&g_staging,sizeof(g_staging))&&!io_calls&&!commits&&held);
+ realtime_audio=true;
+ assert(!pet_p4_miniapp_install_commit(p,error,sizeof(error)));
+ assert(!strcmp(error,PET_P4_WIDGET_COMMIT_AUDIO_BUSY));
+ assert(!memcmp(&before_staging,&g_staging,sizeof(g_staging))&&!io_calls&&!commits&&held);
+ realtime_audio=false;task=1;
+ assert(pet_storage_lane_leave(&g_storage_lane));
+ assert(pet_storage_lane_enter(&g_storage_lane));
+ assert(pet_p4_miniapp_install_commit(p,error,sizeof(error)));
+ assert(commits==1&&!g_staging.active&&held&&!g_storage_lane.occupied);
+ assert(pet_storage_lane_leave(&g_storage_lane));
  reset();assert(pet_storage_lane_enter(&g_storage_lane));
  assert(pet_p4_miniapp_install_commit(p,error,sizeof(error)));
  assert(held&&!g_storage_lane.occupied&&g_catalog_sequence==21&&commits==1);
@@ -273,7 +302,7 @@ static void catalog_sprite_path(size_t s,uint8_t g,unsigned i,bool t,char*out,si
  FILE*f=fopen("3-0-0-0","wb");assert(f&&fwrite("{}",1,2,f)==2&&!fclose(f));
  f=fopen("3-0-1-0","wb");assert(f&&fwrite("{}",1,2,f)==2&&!fclose(f));
  miniapp_runtime_t unchanged_runtime=g_runtime;
- miniapp_catalog_item_t unchanged_catalog[32];memcpy(unchanged_catalog,g_catalog,sizeof(g_catalog));
+ miniapp_catalog_item_t unchanged_catalog[PET_P4_MINIAPP_CATALOG_MAX];memcpy(unchanged_catalog,g_catalog,sizeof(g_catalog));
  uint32_t unchanged_revision=g_image_revision;
  assert(pet_storage_lane_enter(&g_storage_lane));
  assert(pet_p4_miniapp_install_commit(p,error,sizeof(error))&&g_install_unchanged);

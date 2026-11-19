@@ -10,10 +10,10 @@ fn key() -> Zeroizing<[u8; 16]> {
 
 fn uplink(record: Record, seq: u32) -> Zeroizing<Vec<u8>> {
     let h = header(record, seq);
-    let body = if matches!(record, Record::Audio { .. }) {
-        vec![11; PCM]
-    } else {
-        Vec::new()
+    let body = match record {
+        Record::Audio { .. } => vec![11; PCM],
+        Record::VoiceReady => vec![1],
+        _ => Vec::new(),
     };
     let sender = LessSafeKey::new(UnboundKey::new(&aead::AES_128_GCM, key().as_ref()).unwrap());
     let mut wire = Zeroizing::new(h.to_vec());
@@ -49,6 +49,19 @@ fn authenticated_order_bounds_and_vad() {
     too_long[2] = 0xff;
     assert!(channel.record_size(&too_long).is_none());
     assert!(channel.open(&mut uplink(vad, 0)).is_none());
+}
+
+#[test]
+fn voice_ready_carries_one_authenticated_byte_and_precedes_pcm() {
+    let mut channel = LanAudio::new(key());
+    let mut ready = uplink(Record::VoiceReady, 0);
+    assert_eq!(channel.record_size(ready[..HEADER].try_into().unwrap()), Some(HEADER + TAG + 1));
+    assert_eq!(channel.open(&mut ready), Some(Record::VoiceReady));
+    assert_eq!(&ready[HEADER..], &[1]);
+    let audio = Record::Audio { vad: None };
+    assert_eq!(channel.open(&mut uplink(audio, 1)), Some(audio));
+    assert_eq!(channel.open(&mut uplink(Record::Close, 2)), Some(Record::Close));
+    assert!(channel.open(&mut uplink(audio, 3)).is_none());
 }
 
 #[test]

@@ -242,6 +242,10 @@ bool pet_p4_miniapp_side_snapshot(pet_side_scene_t *scene,pet_side_art_t *art);
 bool pet_p4_miniapp_side_axis(int horizontal);
 void pet_p4_miniapp_host_process(uint64_t now_ms,bool visible,bool pc_connected);
 bool pet_p4_miniapp_host_source(const char *source);
+#if PET_P4_SYSTEM_WIFI
+#include "pet_p4_private_feed.h"
+bool pet_p4_miniapp_private_feed(pet_private_feed_t *feed, pet_wifi_endpoint_t *endpoint);
+#endif
 bool pet_p4_miniapp_get_surface_images(pet_p4_miniapp_sprite_pack_t *out, uint32_t *revision);
 bool pet_p4_miniapp_get_sprites(pet_p4_miniapp_sprite_pack_t *out);
 bool pet_p4_miniapp_installed_id(char *out, size_t out_size);
@@ -328,6 +332,9 @@ bool pet_p4_miniapp_dispatch_input(
 #define PET_P4_WIDGET_CHUNK_BYTES 4096
 bool pet_p4_miniapp_transfer_begin(const cJSON *payload, char *error, size_t error_size);
 bool pet_p4_miniapp_transfer_chunk(const cJSON *payload, char *error, size_t error_size);
+#define PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED "component storage is busy; commit has not started; staged package preserved"
+#define PET_P4_WIDGET_COMMIT_AUDIO_BUSY "device audio is busy; catalog not committed; staged package preserved"
+#define PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED "component storage interrupted; catalog not committed; staged package preserved"
 bool pet_p4_miniapp_transfer_commit(const cJSON *payload, char *error, size_t error_size);
 #if PET_P4_SYSTEM_WIFI
 bool pet_p4_miniapp_lan_install_idle(void);

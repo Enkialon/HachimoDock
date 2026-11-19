@@ -11,6 +11,7 @@ enum {
   LAN_RTC_BEGIN = 4,
   LAN_RTC_END = 5,
   LAN_RTC_FLUSH = 6,
+  LAN_RTC_PTT_READY = 8,
   LAN_RTC_TURN_BYTES = 4,
   LAN_RTC_BODY_MAX = PET_LAN_RTC_PCM + LAN_RTC_TURN_BYTES,
   LAN_RTC_WIRE_MAX = PET_LAN_RTC_HEADER + LAN_RTC_BODY_MAX + LAN_TAG_SIZE,
@@ -58,7 +59,8 @@ static atomic_uint rtc_wire_last_exit;
 static atomic_bool rtc_wire_last_suspended_power_save;
 static struct {
   int fd;
-  uint32_t generation;
+  uint32_t generation, ptt;
+  atomic_bool ptt_overrun;
   uint8_t handshake_key[LAN_KEY_SIZE];
   uint8_t media_key[LAN_KEY_SIZE];
   SemaphoreHandle_t capture_lock;
@@ -70,13 +72,18 @@ static void rtc_wire_tap(void *ctx, pet_p4_audio_wifi_session_t session, uint64_
                         const uint8_t pcm[PET_LAN_RTC_PCM], bool speech) {
   (void)ctx;
   (void)session;
-  if (xSemaphoreTake(rtc_wire.capture_lock, 0) != pdTRUE) return;
+  if (xSemaphoreTake(rtc_wire.capture_lock, rtc_wire.ptt ? 1 : 0) != pdTRUE) {
+    if (rtc_wire.ptt) atomic_store(&rtc_wire.ptt_overrun, true);
+    return;
+  }
   if (rtc_wire.count < LAN_RTC_CAPTURE_SLOTS) {
     const unsigned slot = (rtc_wire.head + rtc_wire.count) % LAN_RTC_CAPTURE_SLOTS;
     rtc_wire.queue[slot].captured = now;
     rtc_wire.queue[slot].speech = speech;
     memcpy(rtc_wire.queue[slot].pcm, pcm, PET_LAN_RTC_PCM);
     ++rtc_wire.count;
+  } else if (rtc_wire.ptt) {
+    atomic_store(&rtc_wire.ptt_overrun, true);
   }
   xSemaphoreGive(rtc_wire.capture_lock);
 }
@@ -93,6 +100,8 @@ static unsigned rtc_wire_take(uint8_t pcm[PET_LAN_RTC_PCM], bool wait_for_batch)
     if (age < LAN_RTC_CAPTURE_MAX_AGE_MS) {
       flags = PET_LAN_RTC_VAD_VALID | (frame->speech ? PET_LAN_RTC_SPEECH : 0);
       memcpy(pcm, frame->pcm, PET_LAN_RTC_PCM);
+    } else if (rtc_wire.ptt) {
+      atomic_store(&rtc_wire.ptt_overrun, true);
     }
     mbedtls_platform_zeroize(frame, sizeof(*frame));
     rtc_wire.head = (rtc_wire.head + 1) % LAN_RTC_CAPTURE_SLOTS;
@@ -163,6 +172,50 @@ static bool rtc_wire_retry_io(void) {
 
 /* The audio task owns the descriptor after handoff. The management listener
  * never waits for media, audio ownership, or this task's cleanup. */
+/* Capture-only socket. A normal authenticated CLOSE is emitted only after
+ * physical release and after the microphone worker can no longer enqueue PCM. */
+static void rtc_wire_ptt(int fd, mbedtls_gcm_context *gcm, uint8_t *wire, uint8_t *body,
+                         uint32_t *rx, uint32_t *tx, uint32_t pair_generation) {
+  const uint32_t token = rtc_wire.ptt;
+  if (rtc_wire_receive_start(fd, gcm, wire, body, rx, esp_timer_get_time() + LAN_IO_US) !=
+      PET_LAN_RTC_KEEPALIVE || !rtc_wire_trusted(pair_generation)) return;
+  bool queue_empty = false;
+  if (!lan_voice_claim(token, pair_generation, &queue_empty)) return;
+  atomic_store(&voice_mic_token, token);
+  const int power_save = pet_device_wifi_suspend_power_save();
+  pet_p4_audio_wifi_session_t session = 0;
+  bool ok = pet_p4_lan_voice_mic_allowed() &&
+    pet_p4_audio_wifi_ptt_start(rtc_wire_tap, queue_empty, &session) == ESP_OK;
+  if (ok) {
+    body[0] = queue_empty;
+    ok = rtc_wire_send(fd, gcm, wire, tx, LAN_RTC_PTT_READY, 0, body, 1);
+  }
+  while (ok && pet_p4_audio_wifi_live(session) &&
+         pet_p4_lan_voice_mic_allowed() && rtc_wire_trusted(pair_generation)) {
+    if (atomic_load(&rtc_wire.ptt_overrun)) { ok = false; break; }
+    struct timeval timeout = {0, 0};
+    fd_set readable;
+    FD_ZERO(&readable);
+    FD_SET(fd, &readable);
+    if (select(fd + 1, &readable, NULL, NULL, &timeout) != 0) { ok = false; break; }
+    if (rtc_wire_take(body, false)) {
+      ok = rtc_wire_send(fd, gcm, wire, tx, PET_LAN_RTC_AUDIO, 0, body, PET_LAN_RTC_PCM);
+    } else {
+      vTaskDelay(1);
+    }
+  }
+  atomic_store(&voice_mic_token, 0);
+  if (session) (void)pet_p4_audio_wifi_stop(session);
+  if (ok && lan_voice_released(token) && rtc_wire_trusted(pair_generation)) {
+    while (ok && rtc_wire_trusted(pair_generation) &&
+           !atomic_load(&rtc_wire.ptt_overrun) && rtc_wire_take(body, false))
+      ok = rtc_wire_send(fd, gcm, wire, tx, PET_LAN_RTC_AUDIO, 0, body, PET_LAN_RTC_PCM);
+    if (ok && !atomic_load(&rtc_wire.ptt_overrun) && rtc_wire_trusted(pair_generation))
+      rtc_wire_send(fd, gcm, wire, tx, PET_LAN_RTC_CLOSE, 0, body, 0);
+  }
+  pet_device_wifi_restore_power_save(power_save);
+}
+
 static void rtc_wire_task(void *unused) {
   (void)unused;
   const int fd = rtc_wire.fd;
@@ -178,7 +231,7 @@ static void rtc_wire_task(void *unused) {
   pet_p4_audio_wifi_session_t session = 0;
   mbedtls_gcm_context gcm;
   mbedtls_gcm_init(&gcm);
-  const uint8_t header[3] = {LAN_RTC_MODE, 0, LAN_RTC_BOOT_BYTES};
+  const uint8_t header[3] = {LAN_RTC_MODE, 0, rtc_wire.ptt ? LAN_VOICE_OFFER_BYTES : LAN_RTC_BOOT_BYTES};
   const bool admitted = rtc_wire_trusted(pair_generation);
   body[0] = admitted;
   bool ok = !mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rtc_wire.handshake_key, 128) &&
@@ -188,6 +241,10 @@ static void rtc_wire_task(void *unused) {
     !mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rtc_wire.media_key, 128);
   mbedtls_platform_zeroize(rtc_wire.media_key, sizeof(rtc_wire.media_key));
   if (!ok) goto cleanup;
+  if (rtc_wire.ptt) {
+    rtc_wire_ptt(fd, &gcm, wire, body, &rx, &tx, pair_generation);
+    goto cleanup;
+  }
 
   int64_t last = esp_timer_get_time();
   reason = 2;
@@ -338,11 +395,13 @@ cleanup:
     rtc_wire_send(fd, &gcm, wire, &tx, PET_LAN_RTC_CLOSE, 0, body, 0);
   }
   if (close_requested) close(fd);
-  const bool hud_closed = close_requested && rtc_wire_trusted(pair_generation);
-  portENTER_CRITICAL(&rtc_hud_mux);
-  if (hud_closed) pet_lan_hud_close(&rtc_hud);
-  else pet_lan_hud_end(&rtc_hud);
-  portEXIT_CRITICAL(&rtc_hud_mux);
+  if (!rtc_wire.ptt) {
+    const bool hud_closed = close_requested && rtc_wire_trusted(pair_generation);
+    portENTER_CRITICAL(&rtc_hud_mux);
+    if (hud_closed) pet_lan_hud_close(&rtc_hud);
+    else pet_lan_hud_end(&rtc_hud);
+    portEXIT_CRITICAL(&rtc_hud_mux);
+  }
   mbedtls_gcm_free(&gcm);
   mbedtls_platform_zeroize(wire, sizeof(wire));
   mbedtls_platform_zeroize(outgoing, sizeof(outgoing));
@@ -351,25 +410,32 @@ cleanup:
   rtc_wire.head = rtc_wire.count = 0;
   vSemaphoreDelete(rtc_wire.capture_lock);
   pet_device_wifi_restore_power_save(previous_power_save);
-  atomic_store(&rtc_wire_last_exit, reason);
+  if (!rtc_wire.ptt) atomic_store(&rtc_wire_last_exit, reason);
   atomic_store(&rtc_wire_busy, false);
   vTaskDelete(NULL);
 }
 
 /* Return true only when the worker owns fd and the caller must skip close. */
-static bool rtc_wire_handoff(int fd, const uint8_t *boot, const uint8_t *master,
+static bool rtc_wire_handoff(int fd, const uint8_t *offer, size_t size, const uint8_t *master,
                              const uint8_t *transcript, uint32_t pair_generation) {
   const char *current_boot = pet_p4_boot_identity();
   if (fd < 0 || fd >= LWIP_SELECT_MAXNFDS || strlen(current_boot) != LAN_RTC_BOOT_BYTES ||
-      memcmp(boot, current_boot, LAN_RTC_BOOT_BYTES) || !rtc_wire_trusted(pair_generation) ||
-      atomic_exchange(&rtc_wire_busy, true)) return false;
+      memcmp(offer, current_boot, LAN_RTC_BOOT_BYTES) || !rtc_wire_trusted(pair_generation)) return false;
+  const uint32_t ptt = size == LAN_VOICE_OFFER_BYTES ? ota_wire_u32(offer + LAN_RTC_BOOT_BYTES) : 0;
+  if (size == LAN_VOICE_OFFER_BYTES) {
+    uint8_t available[LAN_VOICE_STATUS_BYTES] = {0};
+    lan_voice_status(pair_generation, available);
+    if (!ptt || ptt != ota_wire_u32(available)) return false;
+  }
+  if (atomic_exchange(&rtc_wire_busy, true)) return false;
   static const uint8_t context[] = "P4LAN-RTC-v1";
-  uint8_t input[sizeof(context) - 1 + 2 * LAN_NONCE_SIZE + LAN_RTC_BOOT_BYTES], digest[32];
+  const size_t prefix = sizeof(context) - 1 + 2 * LAN_NONCE_SIZE;
+  uint8_t input[sizeof(context) - 1 + 2 * LAN_NONCE_SIZE + LAN_VOICE_OFFER_BYTES], digest[32];
   memcpy(input, context, sizeof(context) - 1);
   memcpy(input + sizeof(context) - 1, transcript + sizeof(domain) - 1, 2 * LAN_NONCE_SIZE);
-  memcpy(input + sizeof(input) - LAN_RTC_BOOT_BYTES, boot, LAN_RTC_BOOT_BYTES);
+  memcpy(input + prefix, offer, size);
   const mbedtls_md_info_t *sha256 = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  bool ok = !mbedtls_md_hmac(sha256, master, LAN_KEY_SIZE, input, sizeof(input), digest);
+  bool ok = !mbedtls_md_hmac(sha256, master, LAN_KEY_SIZE, input, prefix + size, digest);
   if (ok) {
     memcpy(rtc_wire.media_key, digest, LAN_KEY_SIZE);
     ok = !mbedtls_md_hmac(sha256, master, LAN_KEY_SIZE, transcript,
@@ -381,6 +447,8 @@ static bool rtc_wire_handoff(int fd, const uint8_t *boot, const uint8_t *master,
   if (ok && setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(enable)) == 0) {
     rtc_wire.fd = fd;
     rtc_wire.generation = pair_generation;
+    rtc_wire.ptt = ptt;
+    atomic_store(&rtc_wire.ptt_overrun, false);
     rtc_wire.capture_lock = xSemaphoreCreateMutex();
     if (rtc_wire.capture_lock &&
         xTaskCreate(rtc_wire_task, "pet_lan_rtc", 6144, NULL, tskIDLE_PRIORITY + 1, NULL) == pdPASS)

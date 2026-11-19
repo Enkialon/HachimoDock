@@ -1,6 +1,6 @@
 # HachimoDock ESP32-P4 固件
 
-当前源码版本 **0.7.104-p4-r287 / R287**，配套桌面端 **0.1.241**。完整烧录包见 [0.1.241 Release](https://github.com/ai-maker-lab/HachimoDock/releases/tag/v0.1.241)。
+当前源码版本 **0.7.107-p4-r292 / R292**，配套桌面端 **0.1.245**。完整烧录包见 [发布页](https://github.com/ai-maker-lab/HachimoDock/releases/latest)。
 
 本目录是 HachimoDock 当前使用的 ESP32-P4 固件源码，与 [PC 客户端](../pc/) 配合使用：PC 负责 Agent 状态监听、语音识别服务对接、素材预处理与传输；设备负责 USB 通信、受支持板型的 Wi-Fi／蓝牙、按键与摇杆输入、屏幕渲染、形象播放及组件运行。
 
@@ -64,7 +64,7 @@ ESP32-P4-WIFI6-M 的 M 表示焊接排针，不代表芯片版本。v1 与 v3 �
 
 ## 默认组件
 
-出厂配置包含 **27 个组件**，顺序及初始选择以 [factory-config.json](factory-config.json) 为准。当前初始选择为城市电台，设备开机仍进入宠物主界面。蛙蛙养成仅随设备出厂资源提供。
+出厂配置包含 **27 个组件**，设备组件目录最多支持 40 个可见组件。顺序及初始选择以 [factory-config.json](factory-config.json) 为准。当前初始选择为城市电台，设备开机仍进入宠物主界面。
 
 | 顺序 | 名称 | ID |
 | --- | --- | --- |
@@ -73,20 +73,20 @@ ESP32-P4-WIFI6-M 的 M 表示焊接排针，不代表芯片版本。v1 与 v3 �
 | 3 | 静心木鱼 | `wooden-fish` |
 | 4 | 自选股行情 | `stock-watchlist` |
 | 5 | 模拟琴键 | `wasm-piano` |
-| 6 | 自然声景 | `hachimi-sounds` |
+| 6 | 消星星 | `cozy-pop-stars` |
 | 7 | 中国象棋 | `xiangqi` |
 | 8 | 像素贪吃蛇 | `snake-turn` |
 | 9 | 2046 | `wasm-2046` |
 | 10 | 云端跳一跳 | `cloud-hop` |
-| 11 | 每日新鲜事 | `daily-news` |
-| 12 | 每天一本书 | `book-pocket` |
-| 13 | 像素方块 | `block-combo` |
-| 14 | 番茄钟 | `tomato-clock` |
-| 15 | 鲜果一刀 | `fresh-fruit-slice` |
-| 16 | 像素飞鸟 | `flappy-bird` |
-| 17 | 每日新知 | `hachimi-learn` |
-| 18 | 宠物旅行 | `hachimi-travel` |
-| 19 | 蛙蛙养成 | `bloomfrog_companion` |
+| 11 | 今天吃点什么 | `today-meal-menu` |
+| 12 | 成语笺 | `chengyu-jian` |
+| 13 | 鲜果一刀 | `fresh-fruit-slice` |
+| 14 | 每天一本书 | `book-pocket` |
+| 15 | 像素方块 | `block-combo` |
+| 16 | 番茄钟 | `tomato-clock` |
+| 17 | 像素飞鸟 | `flappy-bird` |
+| 18 | 每日新知 | `hachimi-learn` |
+| 19 | 自然声景 | `hachimi-sounds` |
 | 20 | 双键接球 | `two-key-pong` |
 | 21 | 电脑状态 | `computer-status` |
 | 22 | 喝水提醒 | `drink-reminder` |

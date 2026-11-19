@@ -14,6 +14,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/platform_util.h"
+#include "pet_p4_mqtt_feed.h"
+#include "pet_p4_mqtt_wire.h"
 #include "nvs.h"
 #include "pet_p4_device_wifi.h"
 #include "pet_p4_live_tls.h"
@@ -55,6 +58,16 @@ static atomic_bool retrying[SOURCE_COUNT];
 static bool pending, refresh_requested;
 static uint64_t visible_generation;
 static EXT_RAM_BSS_ATTR pet_wifi_data_feed_t visible_feed;
+static bool needs_account;
+static uint32_t account_epoch;
+bool pet_wifi_data_authorization_needed(const pet_private_feed_t *binding) {
+  portENTER_CRITICAL(&lock);
+  bool needed = needs_account && visible == SOURCE_FEED &&
+    account_epoch == pet_private_storage_epoch() &&
+    (!binding || !memcmp(binding->id, visible_feed.private.id, sizeof(binding->id)));
+  portEXIT_CRITICAL(&lock);
+  return needed;
+}
 static EXT_RAM_BSS_ATTR pet_wifi_watchlist_t pending_list;
 /* Only the Wi-Fi data worker uses this buffer. */
 static EXT_RAM_BSS_ATTR char receive_buffer[1024];
@@ -65,12 +78,15 @@ static uint64_t now_ms(void) {
 }
 
 bool pet_wifi_data_feed_init(pet_wifi_data_feed_t *out, const char *component_id, const char *url,
-                             const cJSON *response_map, const cJSON *http) {
+                             const cJSON *response_map, const cJSON *http, const cJSON *connection) {
   pet_wifi_data_feed_t feed = {0};
-  if (!out || !component_id || !*component_id || !pet_wifi_endpoint_parse(url, &feed.endpoint)
-      || !pet_wifi_feed_map_parse(response_map, &feed.response_map)
-      || !pet_wifi_feed_http_parse(http, &feed.http)) return false;
-  char identity[sizeof(feed.source) + sizeof(feed.endpoint) + 6 + sizeof(feed.response_map.paths)];
+  if (!out || !component_id || !*component_id ||
+      (connection ? (http || !pet_private_feed_parse(&feed.private, &feed.endpoint, component_id, url, connection))
+                  : !pet_wifi_endpoint_parse(url, &feed.endpoint)) ||
+      !pet_wifi_feed_map_parse(response_map, &feed.response_map) ||
+      !pet_wifi_feed_http_parse(http, &feed.http)) return false;
+  char identity[sizeof(feed.source) + sizeof(feed.endpoint) + 6 +
+                sizeof(feed.response_map.paths) + sizeof(feed.private.id) + 1];
   if (strlen(component_id) >= sizeof(feed.source)) return false;
   /* Component ids cannot contain newlines. Include the normalized URL origin
    * and the exact request target so edits get a separate cache identity. */
@@ -88,6 +104,11 @@ bool pet_wifi_data_feed_init(pet_wifi_data_feed_t *out, const char *component_id
     identity[length++] = feed.http.accept;
     identity[length++] = feed.http.revalidate;
     identity[length++] = feed.http.persist;
+  }
+  if (connection) {
+    identity[length++] = 0;
+    memcpy(identity + length, feed.private.id, sizeof(feed.private.id));
+    length += sizeof(feed.private.id);
   }
   unsigned char hash[32];
   if (mbedtls_sha256((const unsigned char *)identity, (size_t)length, hash, 0) != 0) return false;
@@ -116,12 +137,19 @@ static bool request_connect_current(void *ctx) {
   return pet_device_wifi_online();
 }
 
+typedef struct {
+  uint64_t generation;
+  uint32_t credential_epoch;
+  const pet_wifi_data_feed_t *feed;
+} feed_run_t;
+
 static bool feed_current(void *ctx) {
-  const uint64_t generation = *(const uint64_t *)ctx;
+  const feed_run_t *run = ctx;
   portENTER_CRITICAL(&lock);
-  bool current = visible == SOURCE_FEED && visible_generation == generation;
+  bool current = visible == SOURCE_FEED && visible_generation == run->generation;
   portEXIT_CRITICAL(&lock);
-  return current && pet_device_wifi_online();
+  return current && pet_device_wifi_online() &&
+    (!run->feed->private.kind || run->credential_epoch == pet_private_storage_epoch());
 }
 
 static bool tls_waitable(ssize_t result) {
@@ -156,29 +184,34 @@ static bool tls_read_exact(void *ctx, char *out, size_t bytes) {
 }
 
 static bool tls_send_request(const https_reader_t *reader, const char *host, const char *path,
-                             const char *accept, const char *etag) {
-  char request[PET_WIFI_DATA_URL_MAX + 144 + PET_WIFI_HTTP_ETAG_SIZE];
+                             const char *accept, const char *etag, const char *bearer) {
+  char request[PET_WIFI_DATA_URL_MAX + 176 + PET_WIFI_HTTP_ETAG_SIZE + PET_PRIVATE_TOKEN_MAX];
   int length = snprintf(request, sizeof(request),
     "GET %s HTTP/1.1\r\nHost: %s\r\nAccept-Encoding: identity\r\nConnection: close\r\n"
-    "%s%s%s%s%s%s\r\n", path, host,
+    "%s%s%s%s%s%s%s%s%s\r\n", path, host,
     accept ? "Accept: " : "", accept ? accept : "", accept ? "\r\n" : "",
-    etag ? "If-None-Match: " : "", etag ? etag : "", etag ? "\r\n" : "");
-  if (length <= 0 || (size_t)length >= sizeof(request)) return false;
+    etag ? "If-None-Match: " : "", etag ? etag : "", etag ? "\r\n" : "",
+    bearer ? "Authorization: Bearer " : "", bearer ? bearer : "", bearer ? "\r\n" : "");
+  if (length <= 0 || (size_t)length >= sizeof(request)) {
+    mbedtls_platform_zeroize(request, sizeof(request));
+    return false;
+  }
   int sent = 0;
   while (sent < length && now_ms() < reader->deadline && reader->current(reader->context)) {
     ssize_t n = esp_tls_conn_write(reader->tls, request + sent, (size_t)(length - sent));
     if (n > 0) sent += (int)n;
     else if (tls_waitable(n)) request_yield();
-    else return false;
+    else break;
   }
+  mbedtls_platform_zeroize(request, sizeof(request));
   return sent == length;
 }
 
 static bool read_response(https_reader_t *reader, const char *host, const char *path,
                           char *body, size_t limit, size_t *length, const char *accept,
-                          const char *etag, pet_wifi_http_metadata_t *metadata) {
+                          const char *etag, pet_wifi_http_metadata_t *metadata, const char *bearer) {
   if (!reader->tls) return false;
-  bool ok = tls_send_request(reader, host, path, accept, etag)
+  bool ok = tls_send_request(reader, host, path, accept, etag, bearer)
     && pet_wifi_http_response(tls_read_exact, reader, body, limit, length, etag, metadata)
     && now_ms() < reader->deadline && reader->current(reader->context);
   if (ok) pet_device_wifi_note_https(PET_WIFI_HTTPS_READY, 0);
@@ -208,19 +241,20 @@ static bool request(pet_wifi_data_endpoint_t endpoint, const pet_wifi_watchlist_
   };
   https_reader_t reader = {.deadline = deadline, .current = request_connect_current};
   reader.tls = pet_live_tls_connect(host, &config, (int64_t)deadline, request_connect_current, NULL);
-  return read_response(&reader, host, authority + host_length, body, limit, length, NULL, NULL, NULL);
+  return read_response(&reader, host, authority + host_length, body, limit, length, NULL, NULL, NULL, NULL);
 }
 
-static bool fetch_feed(const pet_wifi_data_feed_t *feed, uint64_t generation, char *body,
-                       size_t *length, const char *etag, pet_wifi_http_metadata_t *metadata) {
+static bool fetch_feed(feed_run_t *run, char *body, size_t *length, const char *etag,
+                       pet_wifi_http_metadata_t *metadata, const char *bearer) {
+  const pet_wifi_data_feed_t *feed = run->feed;
   const esp_tls_cfg_t config = {.non_block = true, .timeout_ms = HTTP_ATTEMPT_MS};
   https_reader_t reader = {
-    .deadline = now_ms() + HTTP_ATTEMPT_MS, .current = feed_current, .context = &generation,
+    .deadline = now_ms() + HTTP_ATTEMPT_MS, .current = feed_current, .context = run,
   };
   reader.tls = pet_live_tls_connect_public(feed->endpoint.host, &config,
     (int64_t)reader.deadline, reader.current, reader.context);
   return read_response(&reader, feed->endpoint.host, feed->endpoint.path, body,
-    PET_WIFI_DATA_BODY_MAX, length, pet_wifi_feed_media_types[feed->http.accept], etag, metadata);
+    PET_WIFI_DATA_BODY_MAX, length, pet_wifi_feed_media_types[feed->http.accept], etag, metadata, bearer);
 }
 
 static bool still_visible(source_t source) {
@@ -288,6 +322,14 @@ static bool save_watchlist(const pet_wifi_watchlist_t *list) {
   return ok;
 }
 
+static void accept_mqtt_value(const char *body, size_t length, void *ctx) {
+  feed_run_t *run = ctx;
+  cJSON *snapshot = pet_wifi_feed_snapshot(run->feed->source, body, length, &run->feed->response_map);
+  if (snapshot && feed_current(run)) (void)pet_p4_widget_data_apply_local(snapshot, now_ms(), 0);
+  if (!feed_current(run)) pet_p4_widget_data_clear_feed(run->feed->source);
+  cJSON_Delete(snapshot);
+}
+
 static void wifi_data_worker(void *unused) {
   (void)unused;
   pet_wifi_watchlist_t list = {.count = 2, .symbols = {"hk01810", "hk09988"}};
@@ -297,6 +339,7 @@ static void wifi_data_worker(void *unused) {
   bool stock_restored = false, news_restored = false;
   uint64_t stock_cache_after = 0, news_cache_after = 0;
   char scheduled_feed[sizeof(visible_feed.source)] = {0};
+  uint32_t last_credential_epoch = 0;
   uint64_t next_feed_attempt = 0, feed_cache_after = 0;
   char feed_etag[PET_WIFI_HTTP_ETAG_SIZE] = {0};
   char *body = NULL;
@@ -339,7 +382,11 @@ static void wifi_data_worker(void *unused) {
     }
     if (source == SOURCE_NONE) continue;
     schedule_t *job = &schedule[source];
-    if (source == SOURCE_FEED && strcmp(feed.source, scheduled_feed)) {
+    feed_run_t run = {.generation = generation, .credential_epoch = pet_private_storage_epoch(), .feed = &feed};
+    if (source == SOURCE_FEED && (strcmp(feed.source, scheduled_feed) ||
+        (feed.private.kind && run.credential_epoch != last_credential_epoch))) {
+      if (feed.private.kind) pet_p4_widget_data_clear_feed(feed.source);
+      last_credential_epoch = run.credential_epoch;
       *job = (schedule_t){0};
       strcpy(scheduled_feed, feed.source);
       feed_etag[0] = 0;
@@ -354,10 +401,10 @@ static void wifi_data_worker(void *unused) {
         || !pet_wifi_clock_read(now, &utc, &offset, &age) || age > 86400000ULL
         || time(NULL) < MIN_TLS_EPOCH) continue;
     if (source == SOURCE_FEED) {
-      if (!feed_current(&generation)) continue;
+      if (!feed_current(&run)) continue;
       next_feed_attempt = now + MANUAL_INTERVAL_MS;
     }
-    if (!body) body = heap_caps_malloc(PET_WIFI_DATA_BODY_MAX + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!body) body = heap_caps_malloc(PET_MQTT_BODY_LIMIT + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     atomic_store(&retrying[source], false);
     cJSON *snapshot = NULL;
     pet_wifi_http_metadata_t metadata = {0};
@@ -366,10 +413,33 @@ static void wifi_data_worker(void *unused) {
     if (body) {
       size_t length;
       if (source == SOURCE_FEED) {
-        feed_response = fetch_feed(&feed, generation, body, &length, feed_etag[0] ? feed_etag : NULL, &metadata);
-        if (feed_response && length)
-          snapshot = pet_wifi_feed_snapshot(feed.source, body, length, &feed.response_map);
-        unchanged = feed_response && !length;
+        pet_private_secret_t secret = {0};
+        pet_private_result_t credential = pet_feed_requires_account(feed.private.kind)
+          ? pet_private_secret_read(&feed.private, &secret) : PET_PRIVATE_SET;
+        portENTER_CRITICAL(&lock);
+        if (generation == visible_generation) {
+          needs_account = credential == PET_PRIVATE_ABSENT;
+          account_epoch = run.credential_epoch;
+        }
+        portEXIT_CRITICAL(&lock);
+        if (credential != PET_PRIVATE_SET) {
+          const char *message = credential == PET_PRIVATE_ABSENT ? "请连接服务账号" :
+            credential == PET_PRIVATE_NO_STORAGE ? "设备安全存储未配置" : "无法读取设备凭证";
+          snapshot = pet_wifi_data_snapshot(feed.source, "error", message, 300000, 0);
+        } else if ((feed.private.kind == PET_PRIVATE_MQTT || feed.private.kind == PET_PUBLIC_MQTT)) {
+          if (pet_mqtt_feed_run(&feed.endpoint, &feed.private, &secret, body,
+              feed_current, accept_mqtt_value, &run)) job->failures = 0;
+          pet_p4_widget_data_clear_feed(feed.source);
+        } else {
+          const bool bearer = feed.private.kind == PET_PRIVATE_BEARER;
+          feed_response = fetch_feed(&run, body, &length, feed_etag[0] ? feed_etag : NULL,
+            &metadata, bearer ? secret.token : NULL);
+          if (feed_response && length)
+            snapshot = pet_wifi_feed_snapshot(feed.source, body, length, &feed.response_map);
+          unchanged = feed_response && !length;
+          if (bearer) mbedtls_platform_zeroize(body, PET_WIFI_DATA_BODY_MAX + 1);
+        }
+        mbedtls_platform_zeroize(&secret, sizeof(secret));
       }
       else if (source == SOURCE_NEWS) snapshot = fetch_news(body, utc, now + NEWS_BUDGET_MS);
       else if (!list.count) {
@@ -380,7 +450,7 @@ static void wifi_data_worker(void *unused) {
                        now + HTTP_ATTEMPT_MS, &length)) snapshot = pet_wifi_stock_snapshot(body, &list, utc);
     }
     now = now_ms();
-    if (source == SOURCE_FEED && !feed_current(&generation)) {
+    if (source == SOURCE_FEED && !feed_current(&run)) {
       cJSON_Delete(snapshot);
       continue;
     }
@@ -389,6 +459,11 @@ static void wifi_data_worker(void *unused) {
     if (keep_feed) cJSON_DeleteItemFromObjectCaseSensitive(snapshot, "clearOnExpire");
     bool ok = snapshot && (source != SOURCE_FEED || !feed.http.persist || good_feed)
       && pet_p4_widget_data_apply_local(snapshot, now, list_revision);
+    if (source == SOURCE_FEED && feed.private.kind && !feed_current(&run)) {
+      pet_p4_widget_data_clear_feed(feed.source);
+      cJSON_Delete(snapshot);
+      continue;
+    }
     if (source == SOURCE_FEED && (feed_response || feed_etag[0])) {
       if (unchanged && !metadata.no_store) ok = pet_p4_widget_data_revalidate_feed(feed.source, now);
       if (!ok || metadata.no_store) feed_etag[0] = 0;
@@ -436,6 +511,7 @@ static void observe(source_t next, const pet_wifi_data_feed_t *feed) {
   bool changed = next != visible || (feed && strcmp(feed->source, visible_feed.source));
   if (changed) {
     refresh_requested = false;
+    needs_account = false;
     visible_generation++;
     atomic_store(&retrying[SOURCE_FEED], false);
     if (feed) visible_feed = *feed;

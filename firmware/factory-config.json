@@ -22,20 +22,20 @@
       "wooden-fish",
       "stock-watchlist",
       "wasm-piano",
-      "hachimi-sounds",
+      "cozy-pop-stars",
       "xiangqi",
       "snake-turn",
       "wasm-2046",
       "cloud-hop",
-      "daily-news",
+      "today-meal-menu",
+      "chengyu-jian",
+      "fresh-fruit-slice",
       "book-pocket",
       "block-combo",
       "tomato-clock",
-      "fresh-fruit-slice",
       "flappy-bird",
       "hachimi-learn",
-      "hachimi-travel",
-      "bloomfrog_companion",
+      "hachimi-sounds",
       "two-key-pong",
       "computer-status",
       "drink-reminder",
@@ -46,11 +46,14 @@
       "hope-train"
     ],
     "defaultActiveId": "city-radio",
-    "maxInstalled": 32,
+    "maxInstalled": 40,
     "widgetMaxBytes": 8191,
     "buttonsMaxBytes": 2047,
-    "firmwareOnlyIds": [
-      "bloomfrog_companion"
+    "firmwareOnlyIds": [],
+    "factoryWasmIds": [
+      "cozy-pop-stars",
+      "today-meal-menu",
+      "chengyu-jian"
     ],
     "firmwareOnlyPackagesDir": "../pc/optional-clawpkgs"
   },

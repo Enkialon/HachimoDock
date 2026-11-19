@@ -41,9 +41,14 @@ VIEW_CASES = '\n#include <assert.h>\n#include <stdio.h>\n#include <string.h>\n#i
 
 def test_main_compact_roi_handoff_uses_real_renderer_functions(tmp_path):
     source = (ROOT / "main/pet_p4_renderer.c").read_text()
-    names = ["draw_home_white_panel", "main_compact_underlay_prepare", "draw_bubble",
-             "scan_session_overlay_cache_runs", "copy_session_overlay_cache"]
-    compile_run(tmp_path, PRELUDE + "\n" + "\n\n".join(function(source, n) for n in names) + "\n" + CASES)
+    names = ["draw_bubble_large_line", "draw_bubble_card_title", "draw_home_white_panel",
+             "main_compact_underlay_prepare", "draw_bubble", "scan_session_overlay_cache_runs",
+             "copy_session_overlay_cache"]
+    prelude = PRELUDE.replace(
+        'static int text_y_in_box(const char *s,int scale,int y,int h){(void)s;(void)scale;(void)h;return y+4;}',
+        'static const pet_bubble_text_view_t *g_bubble_glyph_view;static unsigned g_bubble_glyph_style;',
+    )
+    compile_run(tmp_path, prelude + "\n" + "\n\n".join(function(source, n) for n in names) + "\n" + CASES)
     main = source.split("esp_err_t pet_p4_renderer_render(", 1)[1]
     assert main.index("main_compact_underlay_prepare(drew_asset, compact_requested)") < main.index("if(g_main_appearance_ready)") < main.index("draw_session_queue(state, now_ms)")
     # The ROI copy/reset stays inside both content trace and the inclusive
@@ -59,3 +64,33 @@ def test_main_compact_roi_handoff_uses_real_renderer_functions(tmp_path):
 
 def test_done_metadata_does_not_hide_real_reply_or_realtime(tmp_path):
     compile_run(tmp_path, VIEW_CASES, ROOT / "main/pet_p4_view.c", ROOT / "main/pet_p4_conversation.c")
+
+
+def test_reply_layout_stays_full_size_across_incremental_text_and_state(tmp_path):
+    code = r'''
+#include <assert.h>
+#include <string.h>
+#include "pet_p4_view.h"
+static pet_p4_runtime_state_t state;
+int main(void) {
+  pet_p4_view_model_t view;
+  strcpy(state.active_agent, "codex");
+  strcpy(state.current_state, "idle");
+  strcpy(state.current_speech, "休息中");
+  pet_p4_build_view_model(&state, &view);
+  assert(view.show_bubble && view.compact_bubble);
+  strcpy(state.current_state, "working");
+  strcpy(state.current_speech, "字重一致 A1");
+  pet_p4_build_view_model(&state, &view);
+  assert(view.show_bubble && !view.compact_bubble);
+  strcat(state.current_speech, "，追加内容超过原先的字节阈值 B2");
+  assert(strlen(state.current_speech) > 36);
+  pet_p4_build_view_model(&state, &view);
+  assert(view.show_bubble && !view.compact_bubble);
+  strcpy(state.current_state, "done");
+  pet_p4_build_view_model(&state, &view);
+  assert(view.show_bubble && !view.compact_bubble);
+  return 0;
+}
+'''
+    compile_run(tmp_path, code, ROOT / "main/pet_p4_view.c", ROOT / "main/pet_p4_conversation.c")

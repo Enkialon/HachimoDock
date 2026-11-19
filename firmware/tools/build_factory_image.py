@@ -610,6 +610,8 @@ def build_builtin_component_tree(
             {
                 "widgetId": widget_id,
                 "title": title,
+                "packageVersion": component["version"],
+                "packageKind": component["kind"],
                 "slot": slot,
                 "packageGeneration": 0,
                 "widgetChecksum": f"{fnv1a32_bytes(widget_bytes):08x}",
@@ -628,7 +630,7 @@ def build_builtin_component_tree(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    if len(catalog_bytes) >= 16384:
+    if len(catalog_bytes) >= 32 * 1024:
         raise ValueError("generated P4 component catalog exceeds the firmware buffer")
     write_spiffs_root_file(spiffs_tree, MINIAPP_CATALOG_FILE, catalog_bytes)
     package_bytes += len(catalog_bytes)

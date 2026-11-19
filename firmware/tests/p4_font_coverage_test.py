@@ -30,7 +30,7 @@ static unsigned long long reads;
 #define LV_FONT_GLYPH_FORMAT_A8 8
 typedef struct glyph lv_font_glyph_dsc_t;
 typedef struct {int line_height,base_line;const void*(*get_glyph_bitmap)(lv_font_glyph_dsc_t*,void*);} lv_font_t;
-struct glyph {const lv_font_t *resolved_font;int box_w,box_h,ofs_x,ofs_y,adv_w,format,stride,req_raw_bitmap;};
+struct glyph {const lv_font_t *resolved_font;int box_w,box_h,ofs_x,ofs_y,adv_w,format,stride,req_raw_bitmap;bool is_placeholder;};
 static const uint8_t *data;
 static const void *bitmap(lv_font_glyph_dsc_t *g,void *b){(void)g;(void)b;return data;}
 static const lv_font_t pet_p4_font_cn_16={18,3,bitmap};
@@ -50,6 +50,8 @@ def build(tmp, source, label, perf=False):
     phrase = '每日新鲜事：首屏文字清晰，重绘字重一致。MiSans 123'
     cps = list(dict.fromkeys(map(ord, phrase + '龘鬱测试对齐gjAV!?')))
     code = PREAMBLE
+    if 'draw_bubble_cell(codepoint' in source:
+        code += '\nstatic bool draw_bubble_cell(uint32_t cp,int x,int y,uint16_t c,bool m){(void)cp;(void)x;(void)y;(void)c;(void)m;return false;}\n'
     for name in ('blend_rgb565','app_clip_contains','blend_px','glyph_alpha_at',
                  'medium_glyph_coverage','glyph_width','medium_glyph_width',
                  'medium_glyph_visual_bounds','draw_lvgl_glyph_medium'):

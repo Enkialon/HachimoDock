@@ -22,6 +22,7 @@ typedef struct {
   char source[48], status[8], message[91], date[11];
   uint64_t received_ms;
   uint32_t ttl_ms;
+  uint32_t usb_count, wifi_count;
   uint8_t count;
   pet_p4_data_row_t rows[PET_P4_DATA_MAX_ROWS];
 } data_snapshot_t;
@@ -110,7 +111,7 @@ static bool safe_source(const char *s) {
   return true;
 }
 static bool apply(const cJSON *payload, uint64_t now_ms, bool local, uint64_t watchlist_revision,
-                  bool restored) {
+                  bool restored, bool via_lan) {
   int schema, ttl;
   if (!cJSON_IsObject(payload) || !integer(payload, "schema", 1, 1, &schema)
       || !integer(payload, "ttlMs", 5000, 300000, &ttl)) return false;
@@ -180,7 +181,14 @@ static bool apply(const cJSON *payload, uint64_t now_ms, bool local, uint64_t wa
     int slot = -1;
     for (int i = 0; i < PET_P4_DATA_MAX_SOURCES; i++) if (g_sources[i].used && !strcmp(g_sources[i].source, next->source)) { slot = i; break; }
     if (slot < 0) for (int i = 0; i < PET_P4_DATA_MAX_SOURCES; i++) if (!g_sources[i].used) { slot = i; break; }
-    if (slot >= 0) { g_sources[slot] = *next; ok = true; }
+    if (slot >= 0) {
+      next->usb_count = g_sources[slot].usb_count;
+      next->wifi_count = g_sources[slot].wifi_count;
+      uint32_t *count = via_lan ? &next->wifi_count : &next->usb_count;
+      if (*count < UINT32_MAX) ++*count;
+      g_sources[slot] = *next;
+      ok = true;
+    }
   }
 #if PET_P4_SYSTEM_WIFI
   if (ok && settings) {
@@ -200,15 +208,68 @@ done:
   free(next); return ok;
 }
 bool pet_p4_widget_data_apply(const cJSON *payload, uint64_t now_ms) {
-  return apply(payload, now_ms, false, 0, false);
+  return apply(payload, now_ms, false, 0, false, false);
 }
+bool pet_p4_widget_data_apply_lan(const cJSON *payload, uint64_t now_ms) {
+  return apply(payload, now_ms, false, 0, false, true);
+}
+
+cJSON *pet_p4_widget_data_diagnostics(uint64_t now_ms) {
+  struct {
+    char source[48];
+    bool fresh;
+    uint32_t usb_count, wifi_count;
+  } streams[PET_P4_DATA_MAX_SOURCES];
+  size_t count = 0;
+  portENTER_CRITICAL(&g_lock);
+#if PET_P4_SYSTEM_WIFI
+  int local_rows = g_local_feed.used && !snapshot_stale(&g_local_feed, now_ms)
+    ? g_local_feed.count : -1;
+#endif
+  for (size_t i = 0; i < PET_P4_DATA_MAX_SOURCES; ++i) {
+    const data_snapshot_t *s = &g_sources[i];
+    if (!s->used) continue;
+    strcpy(streams[count].source, s->source);
+    streams[count].fresh = !snapshot_stale(s, now_ms);
+    streams[count].usb_count = s->usb_count;
+    streams[count++].wifi_count = s->wifi_count;
+  }
+  portEXIT_CRITICAL(&g_lock);
+
+  cJSON *root = cJSON_CreateObject();
+  if (!root) return NULL;
+#if PET_P4_SYSTEM_WIFI
+  if (local_rows >= 0) {
+    cJSON *feed = cJSON_AddObjectToObject(root, "device.feed");
+    if (feed) cJSON_AddNumberToObject(feed, "freshRows", local_rows);
+  }
+#endif
+  for (size_t i = 0; i < count; ++i) {
+    cJSON *stream = cJSON_AddObjectToObject(root, streams[i].source);
+    if (!stream || !cJSON_AddBoolToObject(stream, "received", true) ||
+        !cJSON_AddBoolToObject(stream, "fresh", streams[i].fresh) ||
+        !cJSON_AddNumberToObject(stream, "usbCount", streams[i].usb_count) ||
+        !cJSON_AddNumberToObject(stream, "wifiCount", streams[i].wifi_count)) {
+      cJSON_Delete(root);
+      return NULL;
+    }
+  }
+  return root;
+}
+
 #if PET_P4_SYSTEM_WIFI
 bool pet_p4_widget_data_apply_local(const cJSON *payload, uint64_t now_ms, uint64_t watchlist_revision) {
-  return apply(payload, now_ms, true, watchlist_revision, false);
+  return apply(payload, now_ms, true, watchlist_revision, false, false);
 }
 bool pet_p4_widget_data_restore_local(const cJSON *payload, uint64_t now_ms, uint64_t watchlist_revision) {
-  return apply(payload, now_ms, true, watchlist_revision, true);
+  return apply(payload, now_ms, true, watchlist_revision, true, false);
 }
+void pet_p4_widget_data_clear_feed(const char *source) {
+  portENTER_CRITICAL(&g_lock);
+  if (g_local_feed.used && !strcmp(g_local_feed.source, source)) g_local_feed.used = false;
+  portEXIT_CRITICAL(&g_lock);
+}
+
 bool pet_p4_widget_data_revalidate_feed(const char *source, uint64_t now_ms) {
   portENTER_CRITICAL(&g_lock);
   bool ok = g_local_feed.used && !g_local_feed.restored && !strcmp(g_local_feed.source, source);

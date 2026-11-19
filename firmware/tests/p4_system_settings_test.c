@@ -5,6 +5,22 @@
 #include "pet_p4_lan_context.h"
 #include "pet_p4_wifi_clock.h"
 
+static bool private_source;
+void mbedtls_platform_zeroize(void *bytes, size_t size) { memset(bytes, 0, size); }
+bool pet_p4_miniapp_private_feed(pet_private_feed_t *feed, pet_wifi_endpoint_t *endpoint) {
+  if (!private_source) return false;
+  *feed = (pet_private_feed_t){.kind = PET_PRIVATE_BEARER};
+  *endpoint = (pet_wifi_endpoint_t){.host = "service.example.org", .path = "/account"};
+  return true;
+}
+bool pet_wifi_data_authorization_needed(const pet_private_feed_t *binding) {
+  return private_source && (!binding || binding->kind == PET_PRIVATE_BEARER);
+}
+bool pet_private_storage_ready(void) { return true; }
+pet_private_result_t pet_private_local_result(void) { return PET_PRIVATE_ABSENT; }
+bool pet_private_secret_schedule(const pet_private_feed_t *binding, const pet_private_secret_t *secret, bool forget) {
+  (void)binding; (void)secret; (void)forget; return true;
+}
 static pet_wifi_snapshot_t wifi;
 static pet_wifi_operation_t last_operation;
 static char submitted[PET_WIFI_PASSWORD_SIZE];
@@ -228,6 +244,17 @@ int main(void) {
   pet_settings_input(&state, PET_SETTINGS_BACK, 17);
   pet_settings_maintain(&state, false);
   assert(strcmp(state.screen_page, "components") == 0);
+  strcpy(state.screen_page, "app");
+  pet_settings_maintain(&state, false);
+  assert(!pet_settings_active(&state));
+  private_source = true;
+  pet_settings_maintain(&state, false);
+  pet_settings_snapshot(&view);
+  assert(pet_settings_active(&state) && view.screen == PET_SETTINGS_FEED);
+  pet_settings_input(&state, PET_SETTINGS_BACK, 18);
+  pet_settings_maintain(&state, false);
+  assert(!strcmp(state.screen_page, "app"));
+  private_source = false;
   test_lan_settings();
   test_lan_volume();
   test_timezone_settings();

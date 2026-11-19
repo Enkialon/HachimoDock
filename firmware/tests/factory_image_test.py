@@ -171,20 +171,20 @@ def test_factory_components_match_current_builtin_catalog_and_device_files(tmp_p
         "wooden-fish",
         "stock-watchlist",
         "wasm-piano",
-        "hachimi-sounds",
+        "cozy-pop-stars",
         "xiangqi",
         "snake-turn",
         "wasm-2046",
         "cloud-hop",
-        "daily-news",
+        "today-meal-menu",
+        "chengyu-jian",
+        "fresh-fruit-slice",
         "book-pocket",
         "block-combo",
         "tomato-clock",
-        "fresh-fruit-slice",
         "flappy-bird",
         "hachimi-learn",
-        "hachimi-travel",
-        "bloomfrog_companion",
+        "hachimi-sounds",
         "two-key-pong",
         "computer-status",
         "drink-reminder",
@@ -192,14 +192,14 @@ def test_factory_components_match_current_builtin_catalog_and_device_files(tmp_p
         "token-usage",
         "decision-capsule",
         "answer-book",
-        "hope-train"
+        "hope-train",
     ]
     assert config["components"]["ids"] == expected_ids
     assert len(expected_ids) == 27
     visible = {p.parent.name for p in (REPOSITORY / "pc/builtin-clawpkgs").glob("*/component.json")}
     visible -= {"music-player", "hachimi-agent", "hachimi-desk"}
     assert set(expected_ids) == visible | set(config["components"]["firmwareOnlyIds"])
-    assert config["components"]["maxInstalled"] == 32
+    assert config["components"]["maxInstalled"] == 40
     assert config["components"]["widgetMaxBytes"] == 8191
     assert "falling-catch" not in config["components"]["ids"]
     assert "slack-off-countdown" not in config["components"]["ids"]
@@ -210,8 +210,8 @@ def test_factory_components_match_current_builtin_catalog_and_device_files(tmp_p
     summary = factory.build_builtin_component_tree(RUNTIME, config, spiffs_tree)
     assert summary["count"] == len(expected_ids)
     assert summary["defaultActiveId"] == "city-radio"
-    assert summary["spriteFiles"] == len(list(spiffs_tree.glob("p4s*-0-*.bin"))) - 3
-    assert summary["wasmFiles"] == 3
+    assert summary["spriteFiles"] == len(list(spiffs_tree.glob("p4s*-0-*.bin"))) - 6
+    assert summary["wasmFiles"] == 6
     assert summary["payloadBytes"] < 3 * 1024 * 1024
     assert summary["physicalFiles"] == len(expected_ids) * 2 + summary["spriteFiles"] + summary["wasmFiles"] + 1
     assert not (spiffs_tree / "p4-miniapp-id.txt").exists()
@@ -230,13 +230,15 @@ def test_factory_components_match_current_builtin_catalog_and_device_files(tmp_p
     assert all(re.fullmatch(r"[0-9a-f]{8}", item["spritesChecksum"]) for item in catalog["items"])
     for item in catalog["items"]:
         slot = item["slot"]
+        manifest = json.loads((REPOSITORY / "pc/builtin-clawpkgs" / item["widgetId"] / "component.json").read_text())
+        assert (item["packageVersion"], item["packageKind"]) == (manifest["version"], manifest["kind"])
         assert item["widgetChecksum"] == (
             f"{factory.fnv1a32_bytes((spiffs_tree / f'p4w{slot:02d}.json').read_bytes()):08x}"
         )
         assert item["buttonsChecksum"] == (
             f"{factory.fnv1a32_bytes((spiffs_tree / f'p4b{slot:02d}.json').read_bytes()):08x}"
         )
-    for id in ("xiangqi", "wasm-2046", "wasm-piano"):
+    for id in ("xiangqi", "wasm-2046", "wasm-piano", *config["components"]["factoryWasmIds"]):
         slot = expected_ids.index(id)
         module = (spiffs_tree / f"p4s{slot:02d}-0-254.bin").read_bytes()
         widget = json.loads((spiffs_tree / f"p4w{slot:02d}.json").read_text())
@@ -277,14 +279,6 @@ def test_factory_components_match_current_builtin_catalog_and_device_files(tmp_p
         "knob.rotate_cw",
         "button.sw2.short_press",
     ]
-
-    frog_widget = json.loads(
-        (spiffs_tree / f"p4w{expected_ids.index('bloomfrog_companion'):02d}.json").read_text(encoding="utf-8")
-    )
-    frog_sprite = (spiffs_tree / f"p4s{expected_ids.index('bloomfrog_companion'):02d}-0-0.bin").read_bytes()
-    assert frog_widget["dashboard"]["title"] == "蛙蛙养成"
-    assert frog_sprite.startswith(b"P4J1")  # Scene art uses the shared full-resolution background.
-    assert catalog["items"][expected_ids.index('bloomfrog_companion')]["spritesChecksum"] != "00000000"
 
     token_widget = json.loads(
         (spiffs_tree / f"p4w{expected_ids.index('token-usage'):02d}.json").read_text(encoding="utf-8")

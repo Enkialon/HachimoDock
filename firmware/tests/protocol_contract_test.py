@@ -730,20 +730,6 @@ def test_p4_ab_firmware_embeds_and_migrates_all_builtin_components():
     main = read_required("main/pet_p4_main.c")
     protocol_doc = read("protocol.md")
 
-    builtin_ids = [
-        "stock-watchlist",
-        "wooden-fish",
-        "upcoming-todos",
-        "computer-status",
-        "two-key-pong",
-        "bloomfrog_companion",
-        "flappy-bird",
-        "block-combo",
-        "snake-turn",
-        "tomato-clock",
-        "drink-reminder",
-        "token-usage",
-    ]
     assert bundle["version"] == 1
     catalog = json.loads(read("factory-config.json"))["components"]
     builtin_ids = catalog["ids"]
@@ -774,9 +760,11 @@ def test_p4_ab_firmware_embeds_and_migrates_all_builtin_components():
         )
         assert re.fullmatch(r"[0-9a-f]{8}", item["spritesChecksum"])
         assert isinstance(item["spriteFiles"], list)
-    frog = next(item for item in bundle["components"] if item["id"] == "bloomfrog_companion")
-    assert frog["resourcePackage"] is True
-    assert frog["spriteFiles"] == []  # Full art lives in factory/PC packages, not duplicated in OTA.
+    sources = read_required("main/pet_p4_builtin_components_data.c")
+    for component_id in catalog["factoryWasmIds"]:
+        assert f'"id":"{component_id}","resourcePackage":true,"factoryWasm":true'.replace('"', '\\"') in sources
+        assert f'wasm_{component_id.replace("-", "_")}[]' not in sources
+    assert 'cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(indexed, "factoryWasm"))' in miniapp
 
     assert '"pet_p4_builtin_components_data.c"' in cmake
     assert "build_builtin_bundle.py" in cmake
@@ -1196,8 +1184,9 @@ def test_p4_conversation_queue_is_synced_and_rendered_with_pixel_ellipsis():
     assert "rgb565(255, 255, 255)" in renderer
     from p4_render_trace_test import function
     queue_draw = function(renderer, "draw_session_queue_uncached")
-    assert queue_draw.index("session_text(item, now_ms, &text)") < queue_draw.index("renderer_bubble_draw_pinned(&text, PET_BUBBLE_TITLE")
-    assert queue_draw.index("renderer_bubble_draw_pinned(&text, PET_BUBBLE_TITLE") < queue_draw.index("draw_text_line_vcenter(text.title")
+    assert queue_draw.index("session_text(state->current_session_agent, item, now_ms, &text)") < queue_draw.index("draw_bubble_card_title(&text,")
+    title_draw = function(renderer, "draw_bubble_card_title")
+    assert title_draw.index("renderer_bubble_draw_pinned(view, PET_BUBBLE_TITLE") < title_draw.index("draw_bubble_large_line(view, PET_BUBBLE_TITLE, view->title")
     assert "renderer_prefers_resident" not in queue_draw
     assert "pet_bubble_pixels_release(&text)" in queue_draw
     assert "static void draw_card_body_lines(" in renderer
@@ -1233,7 +1222,7 @@ def test_p4_conversation_queue_is_synced_and_rendered_with_pixel_ellipsis():
     assert "int h = 56" in renderer
     assert "w = 72 + utf8_text_width(body, -1, 2)" in renderer
     assert "#define PET_P4_COMPACT_TEXT_OPTICAL_Y (-2)" in renderer
-    assert "text_y_in_box(body, 2, y, h) + PET_P4_COMPACT_TEXT_OPTICAL_Y" in renderer
+    assert "y + (h - 36) / 2 + PET_P4_COMPACT_TEXT_OPTICAL_Y" in renderer
     assert "draw_session_card_panel(x, y, w, h, PET_P4_SESSION_CARD_RADIUS, true, selection)" in renderer
     assert "int banner_w = utf8_text_width(label, -1, 1) + 48" in renderer
     assert "int banner_x = PET_P4_UI_WIDTH - banner_w - 20" in renderer
@@ -1417,10 +1406,13 @@ def test_p4_runtime_initializes_waveshare_lcd_bsp():
     assert "espressif__esp_lcd_touch_gt911" in cmake
     assert '#include "bsp/esp-bsp.h"' in lcd
     assert '#include "bsp/display.h"' in lcd
-    assert "bsp_display_new" in lcd
-    assert "bsp_display_backlight_on" in lcd
-    assert "esp_lcd_dpi_panel_register_event_callbacks" in lcd
-    assert "bsp_display_backlight_off" in lcd
+    init = function(lcd, "pet_p4_lcd_init")
+    assert "bsp_display_new(" in init
+    assert ".on_refresh_done = lcd_refresh_done_callback" in init
+    assert "esp_lcd_dpi_panel_register_event_callbacks(" in init
+    assert "bsp_display_backlight_off(" in init
+    assert "bsp_display_backlight_on(" not in init
+    assert "bsp_display_backlight_on(" in function(lcd, "pet_p4_lcd_reveal")
     assert source.index("pet_p4_renderer_render_boot(") < source.index("pet_p4_lcd_reveal()")
     assert "pet_p4_lcd_init()" in source
     assert "debug/lcd" in source
@@ -2446,7 +2438,7 @@ def test_p4_hardware_inputs_are_debounced_persistent_and_configurable():
     assert "pet_p4_miniapp_catalog_move(-event.delta)" not in input_source
     assert "pet_p4_miniapp_activation_request_selected" in input_source
     assert '#include "pet_p4_catalog_profile.h"' in read_required("main/pet_p4_miniapp.h")
-    assert "#define PET_P4_MINIAPP_CATALOG_MAX 32" in read_required("main/pet_p4_catalog_profile.h")
+    assert "#define PET_P4_MINIAPP_VISIBLE_MAX 40" in read_required("main/pet_p4_catalog_profile.h")
     assert "#if PET_PRIVATE_PARENT_CAPACITY_ACCEPTANCE" in read_required("main/pet_p4_catalog_profile.h")
     assert "MINIAPP_CATALOG_PATH" in read_required("main/pet_p4_miniapp.c")
     renderer = read_required("main/pet_p4_renderer.c")

@@ -37,9 +37,8 @@ const generatedRuntime = join(tauriRoot, "generated-runtime");
 const bundledP4FirmwareDir = join(tauriRoot, "firmware", "esp32-p4");
 const p4Profiles = readFileSync(join(repositoryRoot, "firmware", "platformio.ini"), "utf8");
 const auditedFfmpegBinarySha256 = {
-  "macos-arm64": "e340c148c720888a528e7bd2e7867da3b4bea91d1f6e508c9526111257ee0468",
-  "macos-x64": "8817b8186324bcfac4c18070ba7c1981cf05b1de2b722ed0514fa6dfce4e9bf0",
-  "windows-x64": "1cefca14ea713d5d7e7a1b948299142831185487f5efb14914d049ba9090d95f",
+  "macos-arm64": "ec8356f02a301258f9c4737ef3ab034259f4ff9031c905271e07892fa8bdf7c5",
+  "windows-x64": "18ac8e4c695148f3e2e20b6a24b3974a7b350b3a6dee1c8a018db5c2d1b3fc4f",
 };
 
 function requestedTarget(argv, platform) {
@@ -233,7 +232,7 @@ function ensureBundledFfmpeg(target, arch) {
   const targetReadme = join(generatedRuntime, "ffmpeg.README");
   const targetLicense = join(generatedRuntime, "ffmpeg.LICENSE");
   const targetSource = join(generatedRuntime, "ffmpeg.SOURCE.txt");
-  const targetSourceArchive = join(generatedRuntime, "ffmpeg-8.1.2.tar.xz");
+  const targetSourceArchive = join(generatedRuntime, "ffmpeg-8.1.3.tar.xz");
   const targetZlibLicense = join(generatedRuntime, "zlib.LICENSE");
   const configuredRuntime = process.env.PET_MANAGER_FFMPEG_BIN;
 
@@ -259,8 +258,8 @@ function ensureBundledFfmpeg(target, arch) {
     if (!existsSync(sourceRuntime)) throw new Error(`FFmpeg 运行时不存在：${sourceRuntime}`);
     if (!existsSync(sourceArchive)) throw new Error(`FFmpeg 源码包不存在：${sourceArchive}`);
     const sourceArchiveHash = sha256(readFileSync(sourceArchive));
-    if (sourceArchiveHash !== "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c") {
-      throw new Error(`FFmpeg 8.1.2 源码包 SHA-256 不匹配：${sourceArchiveHash}`);
+    if (sourceArchiveHash !== "99b393871f64a2d860587bcf0f9bdbf68b28693100b51c9dfdf3f37b604896a9") {
+      throw new Error(`FFmpeg 8.1.3 源码包 SHA-256 不匹配：${sourceArchiveHash}`);
     }
     assertRuntimeMatchesTarget(sourceRuntime, target, arch);
     assertLgplFfmpegMetadata(sourceReadme, sourceLicense, target);
@@ -273,10 +272,10 @@ function ensureBundledFfmpeg(target, arch) {
       targetSource,
       [
         "Pet Manager bundled LGPL-only FFmpeg runtime",
-        "FFmpeg version: 8.1.2",
+        "FFmpeg version: 8.1.3",
         `Target: ${target}-${arch}`,
-        "Source: https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz",
-        "Source SHA-256: 464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c",
+        "Source: https://api.github.com/repos/FFmpeg/FFmpeg/tarball/1041abdc962f4cc4f394aa8de9dc5236c0c3b9e7",
+        "Source SHA-256: 99b393871f64a2d860587bcf0f9bdbf68b28693100b51c9dfdf3f37b604896a9",
         `Binary SHA-256: ${sha256(readFileSync(targetRuntime))}`,
         "Relinkable FFmpeg source and exact build configuration are identified in ffmpeg.README.",
         "",
@@ -292,7 +291,7 @@ function ensureBundledFfmpeg(target, arch) {
   if (target === "windows" && !existsSync(targetZlibLicense)) {
     throw new Error("Windows FFmpeg 缺少 zlib 许可证");
   }
-  if (sha256(readFileSync(targetSourceArchive)) !== "464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c") {
+  if (sha256(readFileSync(targetSourceArchive)) !== "99b393871f64a2d860587bcf0f9bdbf68b28693100b51c9dfdf3f37b604896a9") {
     throw new Error("已暂存 FFmpeg 源码包校验失败");
   }
   const expectedBinaryHash = auditedFfmpegBinarySha256[`${target}-${arch}`];
@@ -324,6 +323,7 @@ function ensureBundledFfmpeg(target, arch) {
     if (
       version.error
       || version.status !== 0
+      || !/^ffmpeg version 8\.1\.3\s/m.test(buildText)
       || !buildText.includes("--disable-gpl")
       || !buildText.includes("--disable-nonfree")
       || buildText.includes("--enable-gpl")

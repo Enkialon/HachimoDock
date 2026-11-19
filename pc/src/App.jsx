@@ -22,6 +22,7 @@ import DeviceSetup from "./DeviceSetup";
 import DeviceDashboard from "./DeviceDashboard";
 import KeyboardConfiguration from "./dashboard/KeyboardConfiguration.jsx";
 import LanAgentSessionFeed from "./dashboard/LanAgentSessionFeed.jsx";
+import DshConnectionPanel, { useDshFollowConnection } from "./dashboard/DshConnectionPanel.jsx";
 const AppearanceGallery = lazy(() => import("./AppearanceGallery"));
 const CustomAvatarWizard = lazy(() => import("./CustomAvatarWizard"));
 const AppearanceDetail = lazy(() => import("./AppearanceDetail"));
@@ -239,6 +240,8 @@ function AppInner({
   const { push, dismiss } = useToast();
   const activity = useExitReasons();
   const { refresh, usb, wifi, selectedAgentId } = useDeviceContext();
+  // One persistent owner for both USB dashboard and LAN-only follow paths.
+  const dshFollowConnection = useDshFollowConnection(hasTauriRuntime() ? selectedAgentId : "");
   const dashboardBinding = binding || (wifi ? { boardDeviceId: wifi.boardDeviceId } : null);
   const isDashboard = Boolean(dashboardBinding) && (view === "dashboard" || (view === "setup" && !binding));
   const isSetup = (view === "setup" && (Boolean(binding) || !wifi)) || (view === "dashboard" && !dashboardBinding);
@@ -360,7 +363,7 @@ function AppInner({
             <button type="button" className={`sidebar-nav__item ${activeTab === "settings" ? "is-active" : ""}`} onClick={() => setView("settings")} title="其它设置">
               <Settings size={16} /><span className="sidebar-nav-label">其它设置</span>
             </button>
-            <FirmwareUpdateNavItem usb={usb} wifi={wifi} onOpenWirelessMaintenance={openWirelessMaintenance} />
+            <FirmwareUpdateNavItem usb={usb} wifi={wifi} />
           </nav>
           {!!activity.length && <details className="app-activity"><summary>{activity.length} 项进行中或未保存</summary>
             <ul>{activity.map(item => <li key={item}>{item}</li>)}</ul>
@@ -380,6 +383,8 @@ function AppInner({
               <p>设备管理和本地组件仍可使用；依赖这些凭据的服务暂不可用。不会自动清空或覆盖原配置。</p>
               <p>{configReadError}</p>
             </div>}
+            {hasTauriRuntime() && selectedAgentId === "deepseek-harness" && (isDashboard || isSetup)
+              && <DshConnectionPanel connection={dshFollowConnection} />}
             <Suspense fallback={<p role="status">正在载入页面…</p>}>
             {isSetup && <>
               <p role="status">连接设备后可同步内容；也可以先浏览组件、创建形象或配置 API。</p>

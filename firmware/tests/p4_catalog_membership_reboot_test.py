@@ -25,7 +25,8 @@ def function(code, name):
 
 @pytest.fixture(scope='module', params=[0, 1], ids=['atomic-rename', 'sealed-inplace'])
 def binary(request, tmp_path_factory):
-    code = SOURCE.read_text(); out = tmp_path_factory.mktemp('catalog-host')
+    code = SOURCE.read_text().replace('__attribute__((optimize("Oz"))) ', '')
+    out = tmp_path_factory.mktemp('catalog-host')
     record = code[code.index('typedef struct {\n  char widget_id[PET_P4_MINIAPP_WIDGET_ID_MAX];\n  char title[64];'):code.index('static const char *TAG =', code.index('} miniapp_catalog_item_t;'))]
     cursor = code[code.index('typedef struct {uint32_t magic,sequence;char id[48];} catalog_cursor_t;'):code.index('static bool write_catalog_snapshot_at(')]
     bundle = json.dumps({'version': 1, 'components': [{'id': 'seed-one', 'resourcePackage': True, 'widget': {}, 'buttons': [], 'spriteFiles': [], 'spritesChecksum': '00000000'}, {'id': 'seed-two', 'resourcePackage': True, 'widget': {}, 'buttons': [], 'spriteFiles': [], 'spritesChecksum': '00000000'}]}, separators=(',', ':')).encode() + b'\0'
@@ -51,15 +52,18 @@ def binary(request, tmp_path_factory):
 static pet_center_filter_t g_center_filter = PET_CENTER_ALL;
 #define PET_P4_MINIAPP_WIDGET_ID_MAX 48
 #define PET_COMPONENT_BACKGROUND_ENABLED 1
+#define PET_COMPONENT_PROGRAM_ENABLED 1
+#define PET_COMPONENT_PROGRAM_EXECUTION_REVIEWED 1
+#define PET_COMPONENT_PROGRAM_PARENT_UNIFIED 1
 #define PET_P4_MINIAPP_BACKGROUND_MAX 4
 typedef struct {char widget_id[48];} pet_p4_miniapp_background_status_t;
 static char registered_program[48];
 static size_t pet_p4_miniapp_background_list(pet_p4_miniapp_background_status_t *out){if(!registered_program[0])return 0;strcpy(out[0].widget_id,registered_program);return 1;}
-#define PET_P4_MINIAPP_CATALOG_MAX 32
+#include "pet_p4_catalog_profile.h"
 #define MINIAPP_CATALOG_GENERATION_COUNT 2
 #define MINIAPP_PACKAGE_GENERATION_COUNT 2
 #define MINIAPP_CATALOG_VERSION 3
-#define MINIAPP_CATALOG_JSON_MAX 16384
+#define MINIAPP_CATALOG_JSON_MAX (32 * 1024)
 #define MINIAPP_WIDGET_JSON_MAX 20000
 #define MINIAPP_BUTTONS_JSON_MAX 4000
 #define PET_P4_BUILD_ID "host-next-build"
@@ -121,7 +125,7 @@ static bool enqueue_cursor(uint64_t token,void *ctx){(void)ctx;if(!queue_ok)retu
 
 static struct{bool active;char widget_id[48];} g_runtime,g_staging;
 '''
-    for name in ['safe_widget_id', 'copy_utf8', 'parse_checksum_hex', 'miniapp_checksum', 'catalog_find', 'catalog_item_visible', 'catalog_entry_visible', 'catalog_entry_matches', 'catalog_filtered_index', 'catalog_visible_index','catalog_visible_preferred_in','catalog_visible_preferred']:
+    for name in ['safe_widget_id', 'copy_utf8', 'parse_checksum_hex', 'miniapp_checksum', 'catalog_find', 'catalog_id_visible', 'catalog_item_visible', 'catalog_entry_visible', 'catalog_entry_matches', 'catalog_filtered_index', 'catalog_visible_index','catalog_visible_preferred_in','catalog_visible_preferred']:
         body += function(code, name)
     body += '#define MINIAPP_CATALOG_CHECK_KEY "\\\"check\\\":\\\""\n'
     for name in ['catalog_hex_digit', 'catalog_check_digits', 'catalog_check_value', 'catalog_check_seal', 'catalog_check_verify']:

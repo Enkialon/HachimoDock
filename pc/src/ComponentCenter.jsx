@@ -51,7 +51,7 @@ import { listen } from "@tauri-apps/api/event";
 import { watch } from "@tauri-apps/plugin-fs";
 import { centerTitleForSync } from "./lib/component-center-text.js";
 import { useExitProtection } from "./lib/exit-protection.js";
-import {syncAudioPreflight,deviceDeletePolicy,componentTransferError} from './component-center/component-transfer-policy.js';
+import {syncAudioPreflight,deviceDeletePolicy,componentTransferError,componentCommitOutcomeUnknown} from './component-center/component-transfer-policy.js';
 import { componentRequiresPc } from "./component-center/catalog-state.js";
 import { BUILTIN_COMPONENT_CENTER } from "./fixtures";
 import {
@@ -1473,6 +1473,7 @@ export default function ComponentCenter({ active = true, onOpenWirelessMaintenan
       return true;
     } catch (err) {
       const msg = componentTransferError(err);
+      const commitUnconfirmed = !componentPackageInstalled && !attemptedSsh && !useWifi && componentCommitOutcomeUnknown(err);
       if (
         !componentPackageInstalled
         && !attemptedSsh
@@ -1482,10 +1483,10 @@ export default function ComponentCenter({ active = true, onOpenWirelessMaintenan
         setOtaPhase("waiting-usb");
       } else {
         setOtaError(msg);
-        setOtaPhase("error");
+        setOtaPhase(commitUnconfirmed ? "unconfirmed" : "error");
         push({
           tone: "error",
-          title: componentPackageInstalled ? "组件已安装，本地状态更新失败" : "同步失败",
+          title: componentPackageInstalled ? "组件已安装，本地状态更新失败" : commitUnconfirmed ? "安装结果待核对" : "同步失败",
           message: msg,
         });
       }
@@ -1841,7 +1842,7 @@ export default function ComponentCenter({ active = true, onOpenWirelessMaintenan
         <InstallDialog busy={otaPhase==='installing'} onClose={dismissOtaModal}>
           <section className="ota-modal">
             <span className="ota-modal__eyebrow">
-              {otaPhase === "success" ? "✓ 安装完成" : otaPhase === "error" ? "× 安装失败" : "USB OTA 安装"}
+              {otaPhase === "success" ? "✓ 安装完成" : otaPhase === "unconfirmed" ? "安装结果待核对" : otaPhase === "error" ? "× 安装失败" : "USB OTA 安装"}
             </span>
             <h2>{otaTargetName}</h2>
             {otaPhase === "checking-usb" && <p>正在检测 USB 连接…</p>}
@@ -1870,13 +1871,25 @@ export default function ComponentCenter({ active = true, onOpenWirelessMaintenan
                 {otaResult.manifest?.name && ` 屏幕应已切到 "${otaResult.manifest.name}"。`}
               </p>
             )}
-            {otaPhase === "error" && (
+            {(otaPhase === "error" || otaPhase === "unconfirmed") && (
               <p className="ota-modal__error">{otaError || "未知错误"}</p>
             )}
             <div className="ota-modal__actions">
               {(otaPhase === "waiting-usb" || otaPhase === "checking-usb") && (
                 <button className="btn-secondary" type="button" onClick={dismissOtaModal}>
                   取消
+                </button>
+              )}
+              {otaPhase === "unconfirmed" && (
+                <button
+                  className="btn-primary"
+                  type="button"
+                  onClick={() => {
+                    dismissOtaModal();
+                    refreshDeviceInventory({ announce: true });
+                  }}
+                >
+                  刷新设备组件清单
                 </button>
               )}
               {otaPhase === "error" && otaPendingPath && (
@@ -1921,7 +1934,7 @@ export default function ComponentCenter({ active = true, onOpenWirelessMaintenan
                   ⤴ 返回主屏
                 </button>
               )}
-              {(otaPhase === "success" || otaPhase === "error") && (
+              {(otaPhase === "success" || otaPhase === "error" || otaPhase === "unconfirmed") && (
                 <button
                   className={otaPhase === "success" ? "btn-primary" : "btn-secondary"}
                   type="button"

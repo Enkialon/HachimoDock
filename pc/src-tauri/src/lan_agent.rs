@@ -3,6 +3,8 @@
 mod discovery;
 #[path = "lan_agent/component.rs"]
 pub(crate) mod component;
+#[path = "lan_agent/appearance.rs"]
+pub(crate) mod appearance;
 #[path = "lan_agent/ota.rs"]
 pub(crate) mod ota;
 #[path = "lan_agent/reboot.rs"]
@@ -11,8 +13,13 @@ pub(crate) mod reboot;
 pub(crate) mod trust;
 #[path = "lan_agent/realtime.rs"]
 pub(crate) mod realtime;
+pub(crate) mod voice;
+pub(crate) mod private_feed;
+#[path = "lan_agent/widget_data.rs"]
+pub(crate) mod widget_data;
 pub(crate) mod press;
 mod press_state;
+pub(crate) mod bubble_pixels;
 #[cfg(test)]
 #[path = "lan_agent/confirmation_tests.rs"]
 mod confirmation_tests;
@@ -176,6 +183,18 @@ struct AuthenticatedLink {
 
 fn exchange_link(peer: &Peer, mode: u8, body: &[u8], response_max: Option<usize>,
                  response_timeout: Duration) -> io::Result<AuthenticatedLink> {
+    exchange_link_bounded(peer, mode, body, response_max, response_timeout, None)
+}
+
+// Optional assets have a total deadline including TCP/authentication, rather
+// than just an ACK timeout. Existing control/audio callers keep their budgets.
+fn exchange_link_bounded(peer: &Peer, mode: u8, body: &[u8], response_max: Option<usize>,
+                 response_timeout: Duration, until: Option<Instant>) -> io::Result<AuthenticatedLink> {
+    let budget = |limit: Duration| -> io::Result<Duration> {
+        let remaining = until.map(|at| at.saturating_duration_since(Instant::now())).unwrap_or(limit);
+        if remaining.is_zero() { return Err(io::ErrorKind::TimedOut.into()); }
+        Ok(limit.min(remaining))
+    };
     let invalid = || io::Error::new(io::ErrorKind::InvalidData, "LAN authentication failed");
     if body.len() > MAX_BODY {
         return Err(invalid());
@@ -184,9 +203,9 @@ fn exchange_link(peer: &Peer, mode: u8, body: &[u8], response_max: Option<usize>
     SystemRandom::new()
         .fill(&mut client)
         .map_err(|_| invalid())?;
-    let mut stream = TcpStream::connect_timeout(&peer.address, IO_TIMEOUT)?;
-    let deadline = Instant::now() + IO_TIMEOUT;
-    stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    let mut stream = TcpStream::connect_timeout(&peer.address, budget(IO_TIMEOUT)?)?;
+    let deadline = Instant::now() + budget(IO_TIMEOUT)?;
+    stream.set_write_timeout(Some(budget(IO_TIMEOUT)?))?;
     stream.set_nodelay(true)?;
     stream.write_all(&client)?;
     let mut server = [0; 16];
@@ -207,15 +226,16 @@ fn exchange_link(peer: &Peer, mode: u8, body: &[u8], response_max: Option<usize>
     });
     let length = (body.len() as u16).to_be_bytes();
     let header = [mode, length[0], length[1]];
-    let mut ciphertext = Vec::with_capacity(body.len() + 16);
+    let mut ciphertext = Zeroizing::new(Vec::with_capacity(body.len() + 16));
     ciphertext.extend_from_slice(body);
-    key.seal_in_place_append_tag(nonce(0), aead::Aad::from(header), &mut ciphertext)
+    key.seal_in_place_append_tag(nonce(0), aead::Aad::from(header), &mut *ciphertext)
         .map_err(|_| invalid())?;
     let mut frame = Vec::with_capacity(header.len() + ciphertext.len());
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&ciphertext);
+    stream.set_write_timeout(Some(budget(IO_TIMEOUT)?))?;
     stream.write_all(&frame)?;
-    let deadline = Instant::now() + response_timeout;
+    let deadline = Instant::now() + budget(response_timeout)?;
     let mut aad = header.to_vec();
     let length = if let Some(max) = response_max {
         let mut bytes = [0; 2];
@@ -252,6 +272,14 @@ pub(crate) struct LanDeviceStatus {
     component_delivery: bool,
     #[serde(default)]
     component_bundle: bool,
+    #[serde(default, rename(deserialize = "ac"))]
+    appearance_capacity: u32,
+    #[serde(default, rename(deserialize = "wd"))]
+    widget_data_delivery: bool,
+    #[serde(default, rename(deserialize = "ptt"))]
+    wireless_voice_input: bool,
+    #[serde(default, rename(deserialize = "pf"))]
+    widget_credential_storage_ready: bool,
     #[serde(default)]
     input_double_press: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -290,7 +318,14 @@ fn read_with_recovery<T>(read: impl Fn(&Peer) -> io::Result<T>, error: &str) -> 
 }
 
 fn query_status(peer: &Peer) -> io::Result<LanDeviceStatus> {
-    let reply = exchange_response(peer, DEVICE_STATUS, &[], Some(DEVICE_STATUS_MAX))?;
+    // The single-byte request opts into extended fields. Released firmware
+    // returns the original status only for an empty request.
+    let reply = exchange_response(peer, DEVICE_STATUS, &[1], Some(DEVICE_STATUS_MAX))
+        .or_else(|error| match error.kind() {
+            io::ErrorKind::UnexpectedEof | io::ErrorKind::ConnectionReset | io::ErrorKind::BrokenPipe =>
+                exchange_response(peer, DEVICE_STATUS, &[], Some(DEVICE_STATUS_MAX)),
+            _ => Err(error),
+        })?;
     serde_json::from_slice(&reply).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
@@ -298,10 +333,14 @@ fn query_status(peer: &Peer) -> io::Result<LanDeviceStatus> {
 pub(crate) async fn lan_device_status(app: tauri::AppHandle) -> Result<PairedLanStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
         read_with_recovery(query_status, "无法读取 Wi-Fi 设备状态，请确认设备在线且固件支持无线状态查询。")
-            .map(|(peer, device)| PairedLanStatus {
-                address: peer.address.ip().to_string(),
-                bundled_firmware_version: ota::bundled_wifi6_version(&app),
-                device,
+            .map(|(peer, device)| {
+                let (version, rollback_blocked) = ota::bundled_wifi6_status(&app, &device.board_device_id);
+                PairedLanStatus {
+                    address: peer.address.ip().to_string(),
+                    bundled_firmware_version: version,
+                    bundled_firmware_rollback_blocked: rollback_blocked,
+                    device,
+                }
             })
     }).await.map_err(|_| "Wi-Fi 设备状态查询任务未完成。")?
 }
@@ -311,6 +350,7 @@ pub(crate) async fn lan_device_status(app: tauri::AppHandle) -> Result<PairedLan
 pub(crate) struct PairedLanStatus {
     address: String,
     bundled_firmware_version: Option<&'static str>,
+    bundled_firmware_rollback_blocked: bool,
     #[serde(flatten)]
     device: LanDeviceStatus,
 }
@@ -369,6 +409,8 @@ pub(crate) enum LanPanelOperation {
     ReadComponents = 6,
     ResetInput = 7,
     RemoveComponent = 8,
+    EnableMicrophone = 9,
+    DisableMicrophone = 10,
 }
 
 #[derive(serde::Deserialize)]
@@ -421,7 +463,10 @@ pub(crate) async fn lan_panel_control(
         if !status.wifi_connected || status.board_device_id != board_device_id || status.boot_id != expected_boot_id {
             return Err("Wi-Fi 设备身份已变化，请重新读取状态。".into());
         }
-        if !status.panel_control {
+        if !status.panel_control
+            || (matches!(operation, LanPanelOperation::EnableMicrophone | LanPanelOperation::DisableMicrophone)
+                && !status.wireless_voice_input)
+        {
             return Err("当前设备固件暂不支持这项无线操作。".into());
         }
         if !status.control_trusted {
@@ -1099,6 +1144,7 @@ pub(crate) fn require_no_usb(usb: &crate::usb_serial::UsbSerialManager) -> Resul
 }
 
 pub(crate) fn start(app: tauri::AppHandle, usb: crate::usb_serial::UsbSerialManager) {
+    voice::start(app.clone(), usb.clone());
     std::thread::spawn(move || {
         let mut presses = press::Poller::default();
         let mut last_sent: Option<(SocketAddr, Value, Instant)> = None;
@@ -1110,11 +1156,13 @@ pub(crate) fn start(app: tauri::AppHandle, usb: crate::usb_serial::UsbSerialMana
             std::thread::sleep(Duration::from_millis(800));
             if usb.status().connected {
                 presses.reset();
+                bubble_pixels::reset();
                 last_sent = None;
                 continue;
             }
             let Some(peer) = load_peer() else {
                 presses.reset();
+                bubble_pixels::reset();
                 last_address = None;
                 last_sent = None;
                 continue;
@@ -1167,6 +1215,7 @@ pub(crate) fn start(app: tauri::AppHandle, usb: crate::usb_serial::UsbSerialMana
                 body.insert("sessions".into(), sessions);
             }
             if body.is_empty() {
+                bubble_pixels::reset();
                 last_sent = None;
                 if probe_due {
                     connected(press_polled || exchange(&peer, PROBE, &[]).is_ok());
@@ -1174,7 +1223,8 @@ pub(crate) fn start(app: tauri::AppHandle, usb: crate::usb_serial::UsbSerialMana
                 continue;
             }
             body.insert("source".into(), json!(source));
-            let body = Value::Object(body);
+            let mut body = Value::Object(body);
+            bubble_pixels::prepare(&peer, &usb, &mut body);
             let mut signature = body.clone();
             if let Some(rows) = signature
                 .pointer_mut("/sessions/sessions")
@@ -1196,6 +1246,7 @@ pub(crate) fn start(app: tauri::AppHandle, usb: crate::usb_serial::UsbSerialMana
                 let success = exchange(&peer, SNAPSHOT, &payload).is_ok();
                 connected(success);
                 if success {
+                    bubble_pixels::sent(&peer, &body);
                     last_sent = Some((peer.address, signature, Instant::now()));
                 }
             }

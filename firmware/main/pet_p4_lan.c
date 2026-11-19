@@ -1,4 +1,5 @@
 #include "pet_p4_lan.h"
+#include "pet_p4_private_feed.h"
 
 #if PET_P4_SYSTEM_WIFI
 // Network control only: keep the renderer and interpreter optimization unchanged.
@@ -9,7 +10,9 @@
 #include "pet_p4_lan_press.h"
 #include "pet_p4_json_source.h"
 #include "pet_p4_ota.h"
+#include "pet_p4_raw_assets.h"
 #include "pet_p4_miniapp.h"
+#include "pet_p4_widget_data.h"
 #include "pet_p4_wifi_clock.h"
 #include "esp_app_desc.h"
 #include "esp_srp.h"
@@ -41,6 +44,7 @@
 #define LAN_MAX_BODY 16384
 #define LAN_STATUS_MODE 6
 #define LAN_PRESS_MODE 16
+#define LAN_PRIVATE_FEED_MODE 21
 #define LAN_VOLUME_REQUEST 11
 #define LAN_VOLUME_QUERY 8
 #define LAN_STATUS_MAX 576
@@ -48,6 +52,10 @@
 #define LAN_KEYBOARD_REPLY_MAX 512
 #define LAN_PANEL_REQUEST_MAX 8192
 #define LAN_PANEL_REPLY_MAX (LAN_MAX_BODY - 2)
+#define LAN_APPEARANCE_REPLY_MAX 3072
+#define LAN_WIDGET_DATA_MAX 10240
+#define LAN_WIDGET_BOARD_BYTES 15
+#define LAN_WIDGET_PREFIX_BYTES (16 + LAN_WIDGET_BOARD_BYTES)
 #define LAN_LEASE_MS 10000
 #define LAN_IO_US 1800000
 #define LAN_KEY_SIZE 16
@@ -185,7 +193,10 @@ static bool valid_snapshot(const cJSON *root) {
   const cJSON *status = cJSON_GetObjectItemCaseSensitive(root, "status");
   const cJSON *sessions = cJSON_GetObjectItemCaseSensitive(root, "sessions");
   const cJSON *speech = cJSON_GetObjectItemCaseSensitive(root, "speech");
-  if (!valid_source(source) || (!status && !sessions && !speech) ||
+  const cJSON *pixels = cJSON_GetObjectItemCaseSensitive(root, "textPixels");
+  const bool masks_only = cJSON_IsObject(pixels) &&
+    cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(pixels, "bodyMasks"));
+  if (!valid_source(source) || (!status && !sessions && !speech && !masks_only) ||
       (status && !cJSON_IsObject(status)) || (speech && !cJSON_IsObject(speech)))
     return false;
   if (sessions) {
@@ -196,7 +207,8 @@ static bool valid_snapshot(const cJSON *root) {
         cJSON_GetArraySize(rows) > PET_P4_SESSION_QUEUE_MAX) return false;
   }
   /* Reject unknown or duplicate envelope keys. */
-  return cJSON_GetArraySize(root) == 1 + (status != NULL) + (sessions != NULL) + (speech != NULL);
+  return (!pixels || cJSON_IsObject(pixels) || cJSON_IsFalse(pixels)) &&
+    cJSON_GetArraySize(root) == 1 + (status != NULL) + (sessions != NULL) + (speech != NULL) + (pixels != NULL);
 }
 
 static bool payload_hash(const cJSON *root, const char *field, uint8_t hash[32]) {
@@ -359,12 +371,13 @@ static bool send_sealed_response(int fd, mbedtls_gcm_context *gcm, const uint8_t
 }
 
 #include "pet_p4_lan_ota.inc"
+#include "pet_p4_lan_voice.inc"
 #include "pet_p4_lan_realtime.inc"
 #include "pet_p4_lan_component_wire.inc"
 
 __attribute__((optimize("Oz")))
 static bool send_device_status(int fd, mbedtls_gcm_context *gcm, const uint8_t header[3],
-                               uint8_t *cipher, uint8_t *plain, int64_t deadline) {
+                               uint8_t *cipher, uint8_t *plain, int64_t deadline, bool extended) {
   const esp_app_desc_t *app = esp_app_get_description();
   const pet_wifi_link_status_t link = pet_device_wifi_link_status();
   uint64_t utc, age;
@@ -397,7 +410,12 @@ static bool send_device_status(int fd, mbedtls_gcm_context *gcm, const uint8_t h
     cJSON_AddBoolToObject(status, "controlTrusted", atomic_load(&control_trusted) && !atomic_load(&forget_pending)) &&
     cJSON_AddNumberToObject(status, "httpsSuccesses", link.successes) &&
     cJSON_AddNumberToObject(status, "httpsFailures", link.failures);
-  const bool encoded = built && cJSON_PrintPreallocated(status, (char *)plain, LAN_STATUS_MAX, false);
+  const bool encoded = built &&
+    (!extended || (cJSON_AddNumberToObject(status, "ac", (double)pet_p4_raw_assets_capacity_bytes()) &&
+      cJSON_AddBoolToObject(status, "wd", true) &&
+      cJSON_AddBoolToObject(status, "ptt", true) &&
+      cJSON_AddBoolToObject(status, "pf", pet_private_storage_ready()))) &&
+    cJSON_PrintPreallocated(status, (char *)plain, LAN_STATUS_MAX, false);
   cJSON_Delete(status);
   if (!encoded) return false;
   return send_sealed_response(fd, gcm, header, cipher, plain, strlen((char *)plain), deadline);
@@ -421,19 +439,28 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
     return;
   }
   switch (mode) {
-    case 0: case LAN_STATUS_MODE: case LAN_OTA_MODE: if (size) return; break;
+    case 0: case LAN_OTA_MODE: if (size) return; break;
+    case LAN_STATUS_MODE: if (size > 1) return; break;
     case 2: if (!size || size > LAN_MAX_BODY) return; break;
     case LAN_PRESS_MODE: if (size != 36) return; break;
+    case LAN_PRIVATE_FEED_MODE: if (size < 25 || size > PET_PRIVATE_FEED_REQUEST_MAX) return; break;
     case LAN_VOLUME_REQUEST:
       if (size != 16 + PET_LAN_VOLUME_ID_SIZE + 1) return;
       break;
     case LAN_VOLUME_QUERY: if (size != PET_LAN_VOLUME_ID_SIZE) return; break;
-    case PET_LAN_CONTROL_REBOOT: case LAN_RTC_MODE: case LAN_BUNDLE_MODE:
+    case LAN_RTC_MODE:
+      if (size != LAN_RTC_BOOT_BYTES && size != LAN_VOICE_OFFER_BYTES) return;
+      break;
+    case PET_LAN_CONTROL_REBOOT: case LAN_BUNDLE_MODE: case LAN_VOICE_MODE:
       if (size != 16) return;
       break;
     case PET_LAN_CONTROL_COMPONENT: if (size < 24 || size > LAN_COMPONENT_MAX) return; break;
     case PET_LAN_CONTROL_KEYBOARD: if (size < 18 || size > 16 + LAN_KEYBOARD_REQUEST_MAX) return; break;
     case PET_LAN_CONTROL_PANEL: if (size < 17 || size > LAN_PANEL_REQUEST_MAX) return; break;
+    case PET_LAN_CONTROL_APPEARANCE: if (size < 19 || size > LAN_MAX_BODY - 1) return; break;
+    case PET_LAN_CONTROL_WIDGET_DATA:
+      if (size <= LAN_WIDGET_PREFIX_BYTES || size > LAN_WIDGET_DATA_MAX) return;
+      break;
     default: return;
   }
   if (!socket_io(fd, cipher, size + LAN_TAG_SIZE, false, deadline)) return;
@@ -517,9 +544,24 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
     }
     xSemaphoreGive(lock);
     send_sealed_response(fd, &gcm, header, cipher, reply, sizeof(reply), deadline);
+  } else if (ok && mode == LAN_PRIVATE_FEED_MODE) {
+    uint8_t reply = PET_PRIVATE_REFUSED;
+    if (strlen(pet_p4_boot_identity()) == 16 && !memcmp(plain, pet_p4_boot_identity(), 16) &&
+        !pet_p4_ota_active() && ota_wire_trusted(request_generation)) {
+      reply = pet_private_credentials_request(plain + 16, size - 16);
+    }
+    mbedtls_platform_zeroize(plain, size);
+    send_sealed_response(fd, &gcm, header, cipher, &reply, sizeof(reply), deadline);
+  } else if (ok && mode == LAN_VOICE_MODE) {
+    uint8_t reply[LAN_VOICE_STATUS_BYTES] = {0};
+    if (rtc_wire_trusted(request_generation) &&
+        !memcmp(plain, pet_p4_boot_identity(), LAN_RTC_BOOT_BYTES)) {
+      lan_voice_status(request_generation, reply);
+      send_sealed_response(fd, &gcm, header, cipher, reply, sizeof(reply), deadline);
+    }
   } else if (ok && mode == LAN_RTC_MODE) {
     *handed_off = !wired && !pet_p4_ota_active() && !pet_p4_diagnostics_reboot_pending() &&
-      rtc_wire_handoff(fd, plain, master, transcript, request_generation);
+      rtc_wire_handoff(fd, plain, size, master, transcript, request_generation);
     if (!*handed_off) {
       plain[0] = 0;
       send_sealed_response(fd, &gcm, header, cipher, plain, 1, deadline);
@@ -535,17 +577,45 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
     if (send_sealed_response(fd, &gcm, header, cipher, plain, 1, deadline) && trusted)
       ota_wire_session(fd, &gcm, cipher, plain, request_generation);
   } else if (ok && (mode == PET_LAN_CONTROL_COMPONENT || mode == PET_LAN_CONTROL_REBOOT)) {
-    const uint8_t result = wired ? 0 : control_deliver(fd, mode, plain, size, request_generation, NULL, NULL);
+    const uint8_t result = wired ? 0 : control_deliver(fd, mode, plain, size, request_generation, NULL, NULL, NULL);
     mbedtls_platform_zeroize(plain, size);
     plain[0] = result;
     send_sealed_response(fd, &gcm, header, cipher, plain, 1, esp_timer_get_time() + LAN_IO_US);
+  } else if (ok && mode == PET_LAN_CONTROL_WIDGET_DATA) {
+    cJSON *request = NULL;
+    const size_t json_size = size - LAN_WIDGET_PREFIX_BYTES;
+    plain[size] = 0;
+    if (!wired && atomic_load(&control_trusted) && !atomic_load(&rtc_wire_busy) &&
+        pet_json_source_text_limit_bytes(plain + LAN_WIDGET_PREFIX_BYTES, json_size, 3))
+      request = cJSON_ParseWithLengthOpts((char *)plain + LAN_WIDGET_PREFIX_BYTES,
+        json_size + 1, NULL, true);
+    const uint8_t result = cJSON_IsObject(request)
+      ? control_deliver(fd, mode, plain, size, request_generation, request, NULL, NULL) : 0;
+    cJSON_Delete(request);
+    mbedtls_platform_zeroize(plain, size);
+    plain[0] = result;
+    send_sealed_response(fd, &gcm, header, cipher, plain, 1, esp_timer_get_time() + LAN_IO_US);
+  } else if (ok && mode == PET_LAN_CONTROL_APPEARANCE) {
+    cJSON *request = NULL;
+    plain[size] = 0;
+    if (!wired && pet_json_source_text_limit_bytes(plain + 17, size - 17, 2))
+      request = cJSON_ParseWithLengthOpts((char *)plain + 17, size - 16, NULL, true);
+    const bool supported = cJSON_IsObject(request);
+    // After decryption, the ciphertext buffer is available to hold the ACK.
+    cipher[0] = 0;
+    if (supported)
+      control_deliver(fd, mode, plain, size, request_generation, request, NULL, (char *)cipher);
+    cJSON_Delete(request);
+    const size_t length = cipher[0] ? strlen((char *)cipher) : 1;
+    memcpy(plain, cipher, length);
+    send_sealed_response(fd, &gcm, header, cipher, plain, length, esp_timer_get_time() + LAN_IO_US);
   } else if (ok && mode == PET_LAN_CONTROL_KEYBOARD) {
     cJSON *request = NULL, *reply = NULL;
     plain[size] = 0;
     if (!wired && pet_json_source_text_limit_bytes(plain + 16, size - 16, 2))
       request = cJSON_ParseWithLengthOpts((char *)plain + 16, size - 16 + 1, NULL, true);
     if (cJSON_IsObject(request))
-      control_deliver(fd, mode, plain, size, request_generation, request, &reply);
+      control_deliver(fd, mode, plain, size, request_generation, request, &reply, NULL);
     mbedtls_platform_zeroize(plain, size);
     size_t length = 1;
     if (reply && cJSON_PrintPreallocated(reply, (char *)plain, LAN_KEYBOARD_REPLY_MAX, false))
@@ -557,15 +627,16 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
   } else if (ok && mode == PET_LAN_CONTROL_PANEL) {
     const unsigned action = plain[16];
     cJSON *request = NULL, *reply = NULL;
-    if ((action == PET_LAN_PANEL_WRITE_INPUT || action == PET_LAN_PANEL_REMOVE_COMPONENT) && size > 17 &&
+    if ((action == PET_LAN_PANEL_WRITE_INPUT || action == PET_LAN_PANEL_REMOVE_COMPONENT || action == PET_LAN_PANEL_TEXT_PIXELS) && size > 17 &&
         pet_json_source_text_limit_bytes(plain + 17, size - 17, 4)) {
       plain[size] = 0;
       request = cJSON_ParseWithLengthOpts((const char *)plain + 17, size - 17 + 1, NULL, true);
     }
     const bool valid = action == PET_LAN_PANEL_WRITE_INPUT ? lan_panel_valid_input(request)
       : action == PET_LAN_PANEL_REMOVE_COMPONENT ? lan_panel_remove_valid(request)
-      : size == 17 && action >= PET_LAN_PANEL_READ_INPUT && action <= PET_LAN_PANEL_RESET_INPUT;
-    if (!wired && valid) control_deliver(fd, mode, plain, size, request_generation, request, &reply);
+      : action == PET_LAN_PANEL_TEXT_PIXELS ? size <= 1553 && lan_bubble_valid(request)
+      : size == 17 && action >= PET_LAN_PANEL_READ_INPUT && action <= PET_LAN_PANEL_DISABLE_MICROPHONE;
+    if (!wired && valid) control_deliver(fd, mode, plain, size, request_generation, request, &reply, NULL);
     mbedtls_platform_zeroize(plain, size);
     size_t length = 1;
     if (reply && cJSON_PrintPreallocated(reply, (char *)plain, LAN_PANEL_REPLY_MAX, false))
@@ -575,7 +646,8 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
     cJSON_Delete(reply);
     send_sealed_response(fd, &gcm, header, cipher, plain, length, esp_timer_get_time() + LAN_IO_US);
   } else if (ok && mode == LAN_STATUS_MODE) {
-    send_device_status(fd, &gcm, header, cipher, plain, deadline);
+    if (!size || plain[0] == 1)
+      send_device_status(fd, &gcm, header, cipher, plain, deadline, size == 1);
   } else if (ok && (mode == LAN_VOLUME_REQUEST || mode == LAN_VOLUME_QUERY)) {
     plain[0] = volume_result;
     send_sealed_response(fd, &gcm, header, cipher, plain, 1, deadline);
@@ -586,6 +658,7 @@ static void handle_peer(int fd, uint8_t *cipher, uint8_t *plain, bool *handed_of
       socket_io(fd, cipher, LAN_TAG_SIZE, true, deadline);
   }
   cJSON_Delete(update.root);
+  if (mode == LAN_PRIVATE_FEED_MODE) mbedtls_platform_zeroize(plain, size);
   mbedtls_gcm_free(&gcm);
   mbedtls_platform_zeroize(master, sizeof(master));
 }
@@ -707,10 +780,11 @@ void pet_p4_lan_process(pet_p4_runtime_state_t *state, uint64_t now_ms) {
   static bool have_status, have_speech;
   static uint8_t last_status[32], last_speech[32];
   static char last_source[PET_P4_AGENT_MAX];
-  static uint64_t last_seen;
-  static uint32_t last_generation;
+  static uint64_t last_seen, last_pixel_manifest;
+  static uint32_t last_generation, last_pixel_generation;
   const bool usb = pet_p4_state_usb_client_connected(state, now_ms);
   atomic_store(&usb_client_active, usb);
+  if (usb || state->approval_active) pet_p4_lan_voice_cancel();
   if (!lock || xSemaphoreTake(lock, 0) != pdTRUE) return;
   const lan_update_t update = mailbox;
   mailbox.root = NULL;
@@ -723,6 +797,10 @@ void pet_p4_lan_process(pet_p4_runtime_state_t *state, uint64_t now_ms) {
   const bool recently_seen = client_seen_ms &&
     (now_ms < client_seen_ms || now_ms - client_seen_ms < LAN_LEASE_MS);
   const bool client_connected = !usb && enabled && online && (recently_seen || atomic_load(&rtc_wire_busy));
+  /* Retire only this transport: USB may already have installed its own owner. */
+  if (!enabled || !online || usb || !recently_seen || last_pixel_generation != current_generation
+      || now_ms - last_pixel_manifest >= LAN_LEASE_MS || !atomic_load(&control_trusted))
+    pet_bubble_pixels_retire_route(PET_BUBBLE_LAN_ROUTE);
   xSemaphoreGive(lock);
 
   if (state->lan_client_connected != client_connected) {
@@ -742,10 +820,21 @@ void pet_p4_lan_process(pet_p4_runtime_state_t *state, uint64_t now_ms) {
   const uint64_t age = update.received > now_ms ? 0 : now_ms - update.received;
   if (!usb && enabled && online && age < LAN_LEASE_MS &&
       !state->asset_transfer_active && !pet_p4_ota_transfer_active()) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (current_generation == generation && volume_available() && atomic_load(&control_trusted)
+        && !atomic_load(&usb_client_active)) {
+      pet_bubble_pixels_desire(snapshot, PET_BUBBLE_LAN_ROUTE, "lan", now_ms);
+      last_pixel_manifest = now_ms;
+      last_pixel_generation = current_generation;
+    }
+    xSemaphoreGive(lock);
     const char *source = cJSON_GetObjectItemCaseSensitive(snapshot, "source")->valuestring;
     const cJSON *status = cJSON_GetObjectItemCaseSensitive(snapshot, "status");
     const cJSON *sessions = cJSON_GetObjectItemCaseSensitive(snapshot, "sessions");
     const cJSON *speech = cJSON_GetObjectItemCaseSensitive(snapshot, "speech");
+    /* A realtime HUD publishes pixels on this control lane while the existing
+     * audio connection owns its text. This envelope leaves Agent state alone. */
+    if (!status && !sessions && !speech) goto retire_snapshot;
     const bool source_changed = last_source[0] && strcmp(last_source, source);
     if (source_changed || (!status && have_status)) {
       pet_p4_lan_expire(state);
@@ -772,6 +861,7 @@ void pet_p4_lan_process(pet_p4_runtime_state_t *state, uint64_t now_ms) {
     last_seen = now_ms;
     last_generation = current_generation;
   }
+retire_snapshot:
   /* The worker normally collects the consumed JSON before its next accept. */
   cJSON_Delete(atomic_exchange(&retired, snapshot));
 }

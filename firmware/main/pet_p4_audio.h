@@ -100,6 +100,9 @@ typedef enum {
  * do not retain a lock required by the tap when calling stop. */
 esp_err_t pet_p4_audio_wifi_start(pet_p4_audio_wifi_capture_fn tap, void *ctx,
                                  pet_p4_audio_wifi_session_t *session);
+esp_err_t pet_p4_audio_wifi_ptt_start(pet_p4_audio_wifi_capture_fn tap, bool queue_empty,
+                                     pet_p4_audio_wifi_session_t *session);
+esp_err_t pet_p4_audio_wifi_ptt_enable(bool enabled);
 bool pet_p4_audio_wifi_live(pet_p4_audio_wifi_session_t session);
 esp_err_t pet_p4_audio_wifi_stop(pet_p4_audio_wifi_session_t session);
 /* Consumes the latest exact playback turn drained by the speaker worker.

@@ -12,7 +12,7 @@ FFmpeg 为独立可执行文件。可从 HachimiDock **v0.1.167** 正常公开�
 | `PET_MANAGER_FFMPEG_BIN` | `ffmpeg` 或 `ffmpeg.exe` |
 | `PET_MANAGER_FFMPEG_README` | `ffmpeg.README` |
 | `PET_MANAGER_FFMPEG_LICENSE` | `ffmpeg.LICENSE` |
-| `PET_MANAGER_FFMPEG_SOURCE_ARCHIVE` | `FFmpeg-8.1.2-source.tar.xz`（或随包同内容源码） |
+| `PET_MANAGER_FFMPEG_SOURCE_ARCHIVE` | `FFmpeg-8.1.3-source.tar.xz`（或随包同内容源码） |
 | `PET_MANAGER_ZLIB_LICENSE` | Windows 所需 `zlib.LICENSE` |
 
 准备脚本会校验架构、版本和 SHA-256，并将文件复制到 `src-tauri/generated-runtime/`。该目录为自动生成的构建资源，无需加入版本控制。

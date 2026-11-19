@@ -100,6 +100,15 @@ pub(crate) struct Pending {
 }
 
 impl Pending {
+    pub fn rolled_back(&self, authenticated_board_id: &str, boot: &Boot) -> bool {
+        authenticated_board_id == self.board_id
+            && !boot.id.is_empty()
+            && boot.id != self.prior.id
+            && boot.valid
+            && boot.partition == self.prior.partition
+            && boot.digest == self.prior.digest
+    }
+
     /// A commit receipt proves the requested reboot was scheduled. Only a new
     /// healthy boot of the exact verified image completes the update.
     pub fn validated(&self, authenticated_board_id: &str, boot: &Boot) -> bool {
@@ -117,6 +126,7 @@ pub(crate) fn install(
     board_id: &str,
     id: TransferId,
     image: VerifiedImage<'_>,
+    mut report_progress: impl FnMut(&'static str, u8),
 ) -> Result<Pending, Error> {
     if board_id.is_empty() || link.board_id() != board_id || id == [0; 16] {
         return Err(Error::Device);
@@ -135,9 +145,19 @@ pub(crate) fn install(
             revision_min: image.revision_min,
             revision_max: image.revision_max,
         })?;
+        let mut written = 0_u64;
+        let mut previous_percent = 0;
+        report_progress("upload", 0);
         for (sequence, chunk) in image.bytes.chunks(CHUNK_BYTES).enumerate() {
             link.chunk(id, sequence as u32, chunk)?;
+            written += chunk.len() as u64;
+            let percent = (written * 100 / image.bytes.len() as u64) as u8;
+            if percent != previous_percent {
+                report_progress("upload", percent);
+                previous_percent = percent;
+            }
         }
+        report_progress("verify", 100);
         let receipt = link.commit(id)?;
         if receipt.partition == prior.partition
             || receipt.installed_digest != image.installed_digest
@@ -253,7 +273,7 @@ mod tests {
             let image =
                 VerifiedImage::new(&bytes, Sha256::digest(&bytes).into(), [7; 32], 302).unwrap();
             assert!(matches!(
-                install(&mut link, "test-board", [1; 16], image),
+                install(&mut link, "test-board", [1; 16], image, |_, _| {}),
                 Err(Error::Unknown(_))
             ));
             assert_eq!(link.events, events);
@@ -270,7 +290,7 @@ mod tests {
         let image =
             VerifiedImage::new(&bytes, Sha256::digest(&bytes).into(), [7; 32], 302).unwrap();
         assert!(matches!(
-            install(&mut link, "test-board", [1; 16], image),
+            install(&mut link, "test-board", [1; 16], image, |_, _| {}),
             Err(Error::Rejected(_))
         ));
         assert_eq!(link.events, ["boot", "begin", "close"]);
@@ -285,7 +305,20 @@ mod tests {
         };
         let image =
             VerifiedImage::new(&bytes, Sha256::digest(&bytes).into(), [7; 32], 302).unwrap();
-        let update = install(&mut link, "test-board", [1; 16], image).unwrap();
+        let mut progress = Vec::new();
+        let update = install(&mut link, "test-board", [1; 16], image, |stage, percent| {
+            progress.push((stage, percent));
+        })
+        .unwrap();
+        assert_eq!(
+            progress,
+            [
+                ("upload", 0),
+                ("upload", 99),
+                ("upload", 100),
+                ("verify", 100)
+            ]
+        );
         let mut boot = Boot {
             id: "second".into(),
             partition: 2,
@@ -299,5 +332,12 @@ mod tests {
         boot.digest[0] ^= 1;
         assert!(!update.validated("test-board", &boot));
         assert!(!update.validated("test-board", &update.prior));
+        assert!(!update.rolled_back("test-board", &update.prior));
+        let mut restored = update.prior.clone();
+        restored.id = "third".into();
+        assert!(!update.rolled_back("different-board", &restored));
+        assert!(update.rolled_back("test-board", &restored));
+        restored.digest[0] ^= 1;
+        assert!(!update.rolled_back("test-board", &restored));
     }
 }

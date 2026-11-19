@@ -20,6 +20,14 @@ env["ENV"]["PET_P4_UART_BAUD_OVERRIDE"] = env.GetProjectOption(
     "custom_p4_uart_baud", "4000000"
 )
 
+# Use a linker that can resolve the vendor hardware-loop relocations in the
+# pre-v3 H.264 archives. Keep the v1 SDK and compiler for all compilation.
+if env["PIOENV"] == "esp32_p4_wifi6_system_settings_v1":
+    linker_dir = os.environ.get("PET_P4_PRE_V3_LINKER_DIR", "")
+    if not os.path.isabs(linker_dir) or not os.access(os.path.join(linker_dir, "ld"), os.X_OK):
+        raise RuntimeError("Set PET_P4_PRE_V3_LINKER_DIR to the compatible linker directory")
+    env.Append(LINKFLAGS=[f"-B{linker_dir}/"])
+
 
 def normalize_component_lock(source, target, env):
     """Restore only this project's local component source paths, not versions."""

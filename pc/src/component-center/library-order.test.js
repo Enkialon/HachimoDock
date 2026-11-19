@@ -65,16 +65,16 @@ test("USB preflight checks the declared service requirements against the current
 
 test("PC and firmware share the curated default component order", () => {
   const factory = JSON.parse(readFileSync(new URL("../../../firmware/factory-config.json", import.meta.url)));
-  const firstEntries=["city-radio", "inkline-gomoku", "wooden-fish", "stock-watchlist", "wasm-piano", "hachimi-sounds", "xiangqi", "snake-turn"];
+  const firstEntries=["city-radio", "inkline-gomoku", "wooden-fish", "stock-watchlist", "wasm-piano", "cozy-pop-stars", "xiangqi", "snake-turn"];
   assert.deepEqual(DEFAULT_COMPONENT_ORDER.slice(0,firstEntries.length),firstEntries);
   assert.deepEqual(factory.components.ids.filter(id => !factory.components.firmwareOnlyIds.includes(id)), DEFAULT_COMPONENT_ORDER);
-  assert.deepEqual(factory.components.firmwareOnlyIds, ['bloomfrog_companion']);
+  assert.deepEqual(factory.components.firmwareOnlyIds, []);
   assert.ok(!DEFAULT_COMPONENT_ORDER.includes('bloomfrog_companion'));
   assert.equal(isComponentVisible({id:'bloomfrog_companion'}), true);
-  assert.equal(new Set(DEFAULT_COMPONENT_ORDER).size,26);
+  assert.equal(new Set(DEFAULT_COMPONENT_ORDER).size,27);
   assert.deepEqual(DEFAULT_COMPONENT_ORDER.slice(-3), ['decision-capsule','answer-book','hope-train']);
   assert.equal(factory.components.defaultActiveId,'city-radio');
-  for (const id of ['music-player','hachimi-weather','daily-almanac','hachimi-home','hachimi-garden','hachimi-break']) {
+  for (const id of ['music-player','daily-news','hachimi-travel','hachimi-weather','daily-almanac','hachimi-home','hachimi-garden','hachimi-break']) {
     assert.ok(!factory.components.ids.includes(id), id);
     if (id !== 'music-player') assert.equal(isComponentVisible({id}), true);
   }

@@ -27,7 +27,7 @@ pub fn require_capability(runtime: &Value, capabilities: &Value) -> Result<(), S
 }
 /// Strict data extension (select_var, filters, refresh_action).
 pub fn config(data: &Value, runtime: Option<&Value>) -> Result<Config, String> {
-    let o = data.as_object().filter(|o| o.contains_key("source") && o.contains_key("page_var") && o.keys().all(|k| ["source","page_var","select_var","filters","refresh_action","url","response_map","http"].contains(&k.as_str()))).ok_or_else(bad)?;
+    let o = data.as_object().filter(|o| o.contains_key("source") && o.contains_key("page_var") && o.keys().all(|k| ["source","page_var","select_var","filters","refresh_action","url","response_map","http","connection"].contains(&k.as_str()))).ok_or_else(bad)?;
     if let Some(http) = o.get("http") {
         let valid = data["source"] == "wifi.feed" && http.as_object().is_some_and(|fields| {
             !fields.is_empty() && fields.iter().all(|(key, value)| match key.as_str() {

@@ -328,7 +328,8 @@ export async function applyDesktopPetAssignment({
 
   if (followChanged) {
     try {
-      await invoke("ensure_bridge_runtime", { input: { forceRestart: true } });
+      const runtime = await invoke("ensure_bridge_runtime", { input: { forceRestart: true } });
+      if (runtime?.running !== true) throw new Error("本地桥接服务未就绪");
     } catch {
       const error = new Error("USB 跟随指令已提交且配置已保存，但本地桥接服务未就绪；请检查桥接状态，不要重复发送设备指令。");
       error.committedAssignment = { nextMap, enabledAgents, agentId };

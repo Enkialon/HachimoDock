@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "firmware/tools"))
 from build_builtin_bundle import (
-    bootstrap_widget, component_root, compressed_arrays, DATA_SOURCE_PATH,
+    bootstrap_widget, component_root, compressed_arrays, DATA_SOURCE_PATH, FACTORY_WASM_IDS,
     read_component_wasm, render_bundle, render_data_source,
 )
 from p4_component_sprites import compile_component_sprites
@@ -26,7 +26,10 @@ def test_compressed_bootstrap_roundtrip_and_budget():
         if item["widget"].get("hachiWasm"):
             name = "wasm_" + item["id"].replace("-", "_")
             raw = read_component_wasm(component_root(item["id"]), item["widget"])
-            assert zlib.decompress(packed[name]) == raw
+            if item["id"] in FACTORY_WASM_IDS:
+                assert raw is not None and name not in packed
+            else:
+                assert zlib.decompress(packed[name]) == raw
     assert render_data_source(bundle, packed) == source
 
 def test_bootstrap_preserves_game_and_actions_without_changing_source():

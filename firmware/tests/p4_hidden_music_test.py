@@ -15,7 +15,9 @@ def test_hidden_music_keeps_storage_and_navigation_indices(tmp_path):
             end += 1
         return source[start:end]
     functions = [function(name) for name in [
-        "static bool catalog_item_visible(", "static int catalog_visible_preferred_in(",
+        "static bool catalog_id_visible(", "static bool catalog_item_visible(",
+        "static size_t catalog_visible_count(", "static bool catalog_has_room_for(",
+        "static int catalog_visible_preferred_in(",
         "static bool catalog_entry_visible(", "static bool catalog_entry_matches(", "static int catalog_filtered_index(", "static int catalog_visible_index(",
         "static int catalog_visible_preferred(", "size_t pet_p4_miniapp_catalog_count(",
         "size_t pet_p4_miniapp_catalog_capacity(",
@@ -34,10 +36,10 @@ def test_hidden_music_keeps_storage_and_navigation_indices(tmp_path):
 #define PET_P4_MINIAPP_WIDGET_ID_MAX 48
 #define miniapp_runtime_lock() ((void)0)
 #define miniapp_runtime_unlock() ((void)0)
-#define PET_P4_MINIAPP_CATALOG_MAX 32
+#include "pet_p4_catalog_profile.h"
 static pet_center_filter_t g_center_filter=PET_CENTER_ALL;
 typedef struct { const char *widget_id; pet_center_filter_t center_category; } miniapp_catalog_item_t;
-static miniapp_catalog_item_t g_catalog[4] = {
+static miniapp_catalog_item_t g_catalog[PET_P4_MINIAPP_CATALOG_MAX] = {
   {.widget_id="stock-watchlist"},{.widget_id="music-player"},{.widget_id="wooden-fish"},{.widget_id="hachimi-notes"}
 };
 static size_t g_catalog_count=4, g_catalog_selected=0, opened=99;
@@ -51,7 +53,7 @@ static bool activate_catalog_index(size_t index) {opened=index;return true;}
 ''' + "\n".join(functions) + r'''
 int main(void) {
   assert(pet_p4_miniapp_catalog_count()==3);
-  assert(pet_p4_miniapp_catalog_capacity()==31);
+  assert(pet_p4_miniapp_catalog_capacity()==40);
   assert(catalog_visible_index(0)==0 && catalog_visible_index(1)==2 && catalog_visible_index(2)==3);
   assert(catalog_visible_index(3)==-1 && catalog_visible_preferred(1)==0);
   assert(pet_p4_miniapp_catalog_move(1) && g_catalog_selected==2);
@@ -69,11 +71,21 @@ int main(void) {
   assert(pet_p4_miniapp_catalog_selected()==0&&g_catalog_count==4);
   g_catalog_count=1; g_catalog_selected=0; g_catalog[0].widget_id="music-player";
   assert(pet_p4_miniapp_catalog_count()==0 && catalog_visible_preferred(0)==-1);
-  assert(pet_p4_miniapp_catalog_capacity()==31);
+  assert(pet_p4_miniapp_catalog_capacity()==40);
   assert(!pet_p4_miniapp_catalog_move(1));
   g_catalog[0].widget_id="upcoming-todos";assert(pet_p4_miniapp_catalog_count()==0 && !catalog_item_visible(&g_catalog[0]));
   g_catalog_count=0; assert(catalog_visible_index(0)==-1);
-  assert(pet_p4_miniapp_catalog_capacity()==32);
+  assert(pet_p4_miniapp_catalog_capacity()==40);
+  for (size_t i=0;i<40;++i) g_catalog[i].widget_id="visible";
+  assert(!catalog_has_room_for(g_catalog,40,"another-visible"));
+  g_catalog[40].widget_id="music-player";
+  g_catalog[41].widget_id="upcoming-todos";
+  g_catalog_count=42;
+  assert(pet_p4_miniapp_catalog_count()==40);
+  assert(catalog_visible_index(39)==39 && catalog_visible_index(40)==-1);
+  assert(!catalog_has_room_for(g_catalog,42,"another-visible"));
+  g_catalog[39]=g_catalog[41];
+  assert(catalog_has_room_for(g_catalog,41,"another-visible"));
 }
 ''')
     exe = tmp_path / "catalog"

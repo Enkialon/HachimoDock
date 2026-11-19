@@ -349,6 +349,14 @@ test("bridge restart failure reports the committed assignment rather than replay
   assert.equal(f.storage.get(ACTIVE_APPEARANCE_KEY), "new-avatar");
 });
 
+test("an unhealthy bridge response preserves the submitted USB assignment", async t => {
+  const f = fixture(t, { bridge: { running: false } });
+  await assert.rejects(() => f.run(), error => error.committedAssignment?.agentId === "claude-code");
+  assert.equal(f.count("dispatch_remote_cli_binding"), 1);
+  assert.equal(f.count("ensure_bridge_runtime"), 1);
+  assert.equal(f.storage.get(ACTIVE_APPEARANCE_KEY), "new-avatar");
+});
+
 
 test("follow carries the pre-transfer connection and never adopts a reconnected native generation", async t => {
   let nativeGeneration = USB.connectionId, received;

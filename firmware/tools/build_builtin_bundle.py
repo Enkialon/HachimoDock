@@ -28,6 +28,7 @@ DATA_SOURCE_PATH = RUNTIME_ROOT / "main" / "pet_p4_builtin_components_data.c"
 # One ordered catalog for factory resources and OTA bootstrap metadata.
 COMPONENT_CONFIG = json.loads((RUNTIME_ROOT / "factory-config.json").read_text())["components"]
 BUILTIN_IDS = tuple(COMPONENT_CONFIG["ids"])
+FACTORY_WASM_IDS = frozenset(COMPONENT_CONFIG.get("factoryWasmIds", ()))
 
 def component_root(component_id: str) -> Path:
     key = "firmwareOnlyPackagesDir" if component_id in COMPONENT_CONFIG.get("firmwareOnlyIds", ()) else "packagesDir"
@@ -68,13 +69,15 @@ def read_component_wasm(package: Path, widget: dict) -> bytes | None:
     if expected is None and not path.exists():
         return None
     data = path.read_bytes()
-    if not (8 <= len(data) <= 65536 and data.startswith(b"\x00asm\x01\x00\x00\x00")
+    if not (8 <= len(data) <= 192 * 1024 and data.startswith(b"\x00asm\x01\x00\x00\x00")
             and hashlib.sha256(data).hexdigest() == expected):
         raise ValueError(f"invalid built-in WASM: {path}")
     return data
 
 
 def render_bundle() -> str:
+    if not FACTORY_WASM_IDS.issubset(BUILTIN_IDS):
+        raise ValueError("factoryWasmIds must refer to built-in packages")
     components = []
     for component_id in BUILTIN_IDS:
         package = component_root(component_id)
@@ -83,6 +86,8 @@ def render_bundle() -> str:
             raise ValueError(f"component id mismatch: {package}")
         widget, external = bootstrap_widget(read_json(package / "runtime" / "widget.json"))
         wasm = read_component_wasm(package, widget)
+        if component_id in FACTORY_WASM_IDS and wasm is None:
+            raise ValueError(f"factory WASM package has no module: {component_id}")
         sprites = compile_component_sprites(package, widget)
         components.append(
             {
@@ -157,7 +162,10 @@ def render_data_source(bundle: str, previous=None, encoder=None) -> str:
         if raw[offset:offset+len(payload)] != payload or not 0 < len(payload) <= 32768:
             raise ValueError("built-in package slice invalid or exceeds 32 KiB")
         slices.append((offset, len(payload)))
-        index.append({"id": package["id"], "resourcePackage": package.get("resourcePackage", False)})
+        entry = {"id": package["id"], "resourcePackage": package.get("resourcePackage", False)}
+        if package["id"] in FACTORY_WASM_IDS:
+            entry["factoryWasm"] = True
+        index.append(entry)
         cursor = offset + len(payload)
     if raw[cursor:] not in (b']}\0', b']}\n\0'):
         raise ValueError("invalid built-in bundle terminator")
@@ -175,6 +183,10 @@ def render_data_source(bundle: str, previous=None, encoder=None) -> str:
     modules, lookup = [], []
     for package in json.loads(bundle)["components"]:
         if package["widget"].get("hachiWasm"):
+            # The factory storage image and PC bundle provide the full package.
+            # Leave these modules out of the limited OTA application slots.
+            if package["id"] in FACTORY_WASM_IDS:
+                continue
             wasm = read_component_wasm(component_root(package["id"]), package["widget"])
             name = "wasm_" + package["id"].replace("-", "_")
             compressed = encode(name, wasm)

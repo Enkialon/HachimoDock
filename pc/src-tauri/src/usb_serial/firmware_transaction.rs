@@ -8,6 +8,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::time::Duration;
 
 // Protocol-schema-6 firmware fixes the OTA idle-clock race and advertises a
@@ -59,6 +60,8 @@ pub struct FirmwareImageInfo {
     pub version: String,
     pub project_name: String,
     pub bytes: u64,
+    #[serde(skip)]
+    pub sha256: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -345,6 +348,7 @@ pub(crate) fn inspect_firmware_image(
         version: descriptor.version,
         project_name: descriptor.project_name,
         bytes: firmware.len() as u64,
+        sha256: Sha256::digest(&firmware).into(),
     })
 }
 
@@ -381,16 +385,18 @@ pub(super) fn evaluate_firmware_validation(
         .and_then(Value::as_str)
         .unwrap_or_default();
 
+    if !original_version.is_empty()
+        && !original_partition.is_empty()
+        && original_partition != expected_partition
+        && version == original_version
+        && partition == original_partition
+    {
+        return Err(crate::firmware_rollback::ROLLED_BACK);
+    }
     if version != expected_version {
-        if version == original_version {
-            return Err("ota_rollback");
-        }
         return Err("ota_version_mismatch");
     }
     if partition != expected_partition {
-        if partition == original_partition {
-            return Err("ota_rollback");
-        }
         return Err("ota_partition_mismatch");
     }
 
@@ -409,6 +415,23 @@ pub(super) fn evaluate_firmware_validation(
 mod ack_rejection_tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn rollback_requires_a_new_boot_of_the_prior_version_and_partition() {
+        let mut diagnostics = json!({
+            "bootCount": 4,
+            "runtime": {"firmware": "1.0.0", "runningPartition": "ota_0", "imageState": "valid"}
+        });
+        let evaluate = |data: &Value| {
+            evaluate_firmware_validation(data, "2.0.0", "ota_1", "1.0.0", "ota_0", 4)
+        };
+        assert!(matches!(evaluate(&diagnostics), Ok(None)));
+        diagnostics["bootCount"] = json!(6);
+        assert_eq!(evaluate(&diagnostics).unwrap_err(), crate::firmware_rollback::ROLLED_BACK);
+        diagnostics["runtime"]["runningPartition"] = json!("ota_1");
+        assert_eq!(evaluate(&diagnostics).unwrap_err(), "ota_version_mismatch");
+    }
+
     #[test]
     fn chunk_timeout_progress_must_prove_exact_transfer_and_boundary() {
         let before = json!({"active":true,"transferId":"tx","expectedBytes":512,

@@ -171,6 +171,7 @@
           "lan_agent_pair_status",
           "lan_device_status",
           "lan_follow_agent",
+          "lan_sync_appearance",
           "lan_agent_sessions",
           "lan_agent_discover",
           "lan_agent_pair_confirm",

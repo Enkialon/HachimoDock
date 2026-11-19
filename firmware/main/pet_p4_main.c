@@ -57,6 +57,7 @@
 #include "pet_p4_wdt_deadlock.h"
 #include "pet_p4_input.h"
 #include "pet_p4_miniapp.h"
+#include "pet_p4_private_feed.h"
 #include "pet_p4_media.h"
 #include "pet_p4_ota.h"
 #include "pet_p4_protocol.h"
@@ -1613,10 +1614,9 @@ static void run_lan_control(uint32_t token) {
   const bool storage = pet_p4_miniapp_storage_lane_enter();
   g_protocol_storage_command_entered = storage;
   pet_p4_lan_control_run(&g_state, token, storage &&
-    !g_state.asset_transfer_active && !pet_p4_appearance_active() &&
-    !pet_p4_appearance_mutation_blocked() && !pet_p4_diagnostics_reboot_pending() &&
-    !pet_p4_ota_active() && !g_state.approval_active &&
-    !pet_p4_conversation_active(&g_state) && pet_p4_audio_master_idle());
+    !pet_p4_diagnostics_reboot_pending() && !pet_p4_ota_active() &&
+    !g_state.approval_active && !pet_p4_conversation_active(&g_state) &&
+    pet_p4_audio_master_idle());
   if (storage) {
     const bool released = pet_p4_miniapp_storage_lane_leave();
     configASSERT(released);
@@ -2090,6 +2090,9 @@ static void boot_catalog_with_animation(bool display_ready, unsigned long long *
 }
 
 void app_main(void) {
+#if PET_P4_SYSTEM_WIFI
+  pet_private_storage_init();
+#endif
   pet_boot_dma_link_anchor();
   (void)pet_boot_trace_begin();
   pet_p4_boot_memory_checkpoint(PET_MEMORY_BOOT_ENTRY);
@@ -2427,8 +2430,8 @@ void app_main(void) {
       &&!pet_p4_ota_transfer_active()&&!pet_p4_audio_conversation_active(),
       instrument_effect,instrument_ambience);
     pet_bubble_pixels_maintain(now_ms,
-      pet_p4_audio_active() || pet_p4_audio_playback_active() || pet_p4_audio_music_active()
-      || pet_p4_audio_conversation_active() || pet_p4_ota_active() || g_state.asset_transfer_active);
+      pet_p4_audio_active() || pet_p4_audio_playback_active() || pet_p4_audio_stream_playing() || pet_p4_audio_music_active()
+      || pet_p4_ota_active() || g_state.asset_transfer_active, pet_p4_audio_conversation_active());
     pet_bubble_need_t need;
     if(pet_bubble_pixels_next_need(now_ms,&need)){
       /* Send the same bounded text used for the pixel key. */
@@ -2443,6 +2446,8 @@ void app_main(void) {
           && cJSON_AddStringToObject(payload, "version", need.version)
           && cJSON_AddStringToObject(payload, "text", need.text)
           && cJSON_AddNumberToObject(payload, "style", need.style)
+          && cJSON_AddBoolToObject(payload, "glyphCells", need.glyph_cells)
+          && cJSON_AddBoolToObject(payload, "bodyMasks", need.body_mask)
           && cJSON_AddNumberToObject(payload, "page", need.page)) {
         char *line = cJSON_PrintUnformatted(notice);
         if (line) {

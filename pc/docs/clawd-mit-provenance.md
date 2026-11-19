@@ -53,6 +53,12 @@ The local permission and state hooks were adapted to authenticate with the deskt
 These files have since received substantial Pet Manager-specific changes, but
 their source lineage must continue to retain the upstream MIT notice.
 
+The Windows compatibility patch moves directory creation
+inside the existing error handling in `hooks/server-config.js`. Its reviewed
+file SHA-256 is `ef0cf30891573cfbeababec510d679ec04fdd63471869545e8146097e4d972b2`.
+The patch adds no code from a new upstream revision. The MIT-era base and its
+attribution above continue to apply.
+
 ## Current runtime reachability
 
 The Clawd-derived layer is not documentation-only:

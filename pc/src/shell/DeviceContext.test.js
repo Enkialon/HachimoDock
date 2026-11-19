@@ -212,12 +212,12 @@ test("P4 reachability prefers USB and uses authenticated Wi-Fi when USB disconne
   assert.equal(pairedWifiTarget({ ...status, wifiConnected: false }), null);
   assert.equal(pairedWifiTarget({ ...status, bootId: "" }), null);
   const wifi = pairedWifiTarget(status);
-  const wifiCapabilities = { trustedVolume: true, controlTrusted: true, wirelessOta: true, componentDelivery: true, panelControl: true };
+  const wifiCapabilities = { trustedVolume: true, controlTrusted: true, wirelessOta: true, componentDelivery: true, appearanceCapacity: 8388608, panelControl: true };
   assert.deepEqual(wifi, { boardDeviceId: status.boardDeviceId, bootId: status.bootId,
-    address: "", firmware: "", bundledFirmwareVersion: "", wifiConnected: true,
-    clockSynchronized: false, rebootSupported: false, wirelessRealtime: false,
+    address: "", firmware: "", bundledFirmwareVersion: "", bundledFirmwareRollbackBlocked: false, wifiConnected: true,
+    clockSynchronized: false, rebootSupported: false, wirelessRealtime: false, wirelessVoiceInput: false,
     trustedVolume: false, controlTrusted: false, wirelessOta: false, componentDelivery: false,
-    inputDoublePress: false, systemSettings: false, panelControl: false });
+    appearanceCapacity: 0, inputDoublePress: false, systemSettings: false, panelControl: false });
   assert.deepEqual(pairedWifiTarget({ ...status, ...wifiCapabilities }), { ...wifi, ...wifiCapabilities });
   assert.deepEqual(deriveDeviceReachability({ usb, wifi }), connected);
   assert.deepEqual(deriveDeviceReachability({ usb: { connected: false }, wifi }), {
@@ -232,6 +232,7 @@ test("Wi-Fi status reconciliation preserves version and recovery information", (
   assert.equal(old.address, status.address);
   assert.equal(old.firmware, status.firmware);
   assert.equal(old.bundledFirmwareVersion, status.bundledFirmwareVersion);
+  assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, bundledFirmwareRollbackBlocked: true })), false);
   assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status })), true);
   assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, firmware: status.bundledFirmwareVersion })), false);
   assert.equal(pairedWifiTargetsEqual(old, pairedWifiTarget({ ...status, address: "192.168.1.13" })), false);
@@ -349,4 +350,14 @@ test("USB identity retains native decimal u64 and verified boot IDs without loca
  assert.equal(usbStatusSnapshotsEqual(before,normalizeUsbStatusPayload({...raw,connectionId:"18446744073709551614"})),false);
  assert.equal(usbStatusSnapshotsEqual(before,normalizeUsbStatusPayload({...raw,bootId:"8899aabbccddeeff"})),false);
  assert.equal(usbStatusSnapshotsEqual(before,normalizeUsbStatusPayload(raw)),true);
+});
+
+
+test("supported Wi-Fi follows always verify the native pack before following the Agent", () => {
+  const flow = source.slice(source.indexOf("const applyWifiDesktopPet"), source.indexOf("const applyDesktopPet"));
+  assert.ok(flow.indexOf('invoke("lan_sync_appearance"') < flow.indexOf('invoke("lan_follow_agent"'));
+  assert.match(flow, /\["alreadyActive", "activated", "uploaded"\]\.includes\(outcome\)/);
+  const follow = source.slice(source.indexOf("const followAgent"), source.indexOf("const cancelAppearanceSync"));
+  assert.match(follow, /if \(wifi\.appearanceCapacity\) \{\s*return applyWifiDesktopPet\(agentId, appearance, \{ follow: true \}\)/);
+  assert.doesNotMatch(follow, /appearance\?\.id !== currentDisplay\.appearance/);
 });

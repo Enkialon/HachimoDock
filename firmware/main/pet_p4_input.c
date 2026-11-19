@@ -813,6 +813,10 @@ static void queue_event(
 }
 
 static void queue_button_flags(pet_p4_input_control_t control, uint8_t flags) {
+#if PET_P4_SYSTEM_WIFI
+  if (flags & PET_P4_BUTTON_EVENT_LONG_PRESS) pet_p4_lan_voice_button(control, true);
+  if (flags & PET_P4_BUTTON_EVENT_UP) pet_p4_lan_voice_button(control, false);
+#endif
   if (flags & PET_P4_BUTTON_EVENT_DOWN) queue_event(control, PET_P4_INPUT_GESTURE_DOWN, 0);
   if (flags & PET_P4_BUTTON_EVENT_SHORT_PRESS) queue_event(control, PET_P4_INPUT_GESTURE_SHORT_PRESS, 0);
   if (flags & PET_P4_BUTTON_EVENT_LONG_PRESS) {
@@ -1040,6 +1044,11 @@ static void send_input_event(
     : (binding ? binding->action : "disabled");
   char *line;
 #if PET_P4_SYSTEM_WIFI
+  if (state && !handled_locally && !strcmp(resolved_action, "page_enter") &&
+      !pet_p4_state_usb_client_connected(state, (uint64_t)(esp_timer_get_time() / 1000)) &&
+      pet_p4_lan_voice_confirm((uint64_t)(esp_timer_get_time() / 1000))) {
+    return;
+  }
   if (state && !strcmp(resolved_action, "realtime_chat") &&
       pet_p4_lan_realtime_press(state, event->ts_ms, (uint64_t)(esp_timer_get_time() / 1000))) {
     return;
@@ -1163,6 +1172,12 @@ static bool handle_approval_input(
     /* A voice hold that began before the modal must not leave capture running
      * now that its release is swallowed by the modal. */
     state->session_voice_active = false;
+#if PET_P4_SYSTEM_WIFI
+    if (state->session_voice_lan_button) {
+      state->session_voice_lan_button = 0;
+      pet_p4_lan_voice_cancel();
+    } else
+#endif
     (void) pet_p4_audio_capture_stop();
   }
   if (event->gesture != PET_P4_INPUT_GESTURE_SHORT_PRESS) return true;
@@ -1566,6 +1581,17 @@ static void dispatch_binding_event(
     handled_locally = state && strcmp(state->screen_page, "main") == 0 && physical_button && tap
       && pet_p4_native_voice_key_tap(binding->value);
   }
+#if PET_P4_SYSTEM_WIFI
+  if (state && binding && !handled_locally && !strcmp(binding->action, "voice_ptt") &&
+      !strcmp(gesture, "hold_start") &&
+      !pet_p4_state_usb_client_connected(state, (uint64_t)(esp_timer_get_time() / 1000))) {
+    if (pet_p4_lan_voice_press(state, event->control, (uint64_t)(esp_timer_get_time() / 1000))) {
+      state->session_voice_lan_button = event->control + 1u;
+      state->session_voice_active = true;
+    }
+    return;
+  }
+#endif
   if (binding && strcmp(binding->action, "voice_ptt") == 0) {
     if (strcmp(gesture, "hold_end") == 0) {
       if (state) state->session_voice_active = false;
@@ -1856,7 +1882,15 @@ void pet_p4_input_process(
     pet_p4_miniapp_activation_guard(state && !strcmp(state->screen_page, "components")
       && !pet_p4_conversation_active(state));
 #if PET_P4_SYSTEM_WIFI
-    if (keyboard_input(&event)) continue;
+    const bool keyboard_owns = keyboard_input(&event);
+    if (state && state->session_voice_lan_button == event.control + 1u &&
+        (event.gesture == PET_P4_INPUT_GESTURE_HOLD_END || event.gesture == PET_P4_INPUT_GESTURE_UP)) {
+      if (state->approval_active || keyboard_owns) pet_p4_lan_voice_cancel();
+      state->session_voice_lan_button = 0;
+      state->session_voice_active = false;
+      continue;
+    }
+    if (keyboard_owns) continue;
 #endif
     /* The pending DSH approval owns every physical event while it is visible. */
     if (handle_approval_input(state, send_line, ctx, &event)) {

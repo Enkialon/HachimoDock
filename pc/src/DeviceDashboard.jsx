@@ -784,10 +784,12 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
   // Native signaling now runs off the UI thread. Keep start/stop ordering
   // across auto-rearm, button configuration and manual toggles.
   const audioSignalQueueRef = useRef(Promise.resolve());
-  const sendAudioBridgeSignal = useCallback((input) => {
+  const sendAudioBridgeSignal = useCallback(({ wifiTarget, ...input }) => {
     const pending = audioSignalQueueRef.current
       .catch(() => {})
-      .then(() => invoke("audio_bridge_signal", input));
+      .then(() => wifiTarget
+        ? wifiDeviceControl(invoke, wifiTarget, input.action === "start" ? "enableMicrophone" : "disableMicrophone")
+        : invoke("audio_bridge_signal", input));
     audioSignalQueueRef.current = pending.catch(() => {});
     return pending;
   }, []);
@@ -851,26 +853,28 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
   const wifiInputScope = wifiControlReady ? `${wifi.boardDeviceId}:${wifi.bootId}` : "";
   const wifiInputScopeRef = useRef(wifiInputScope);
   wifiInputScopeRef.current = wifiInputScope;
-  const voiceTarget = voiceRuntimeTarget(usb, selectedAgentId);
+  const voiceTarget = voiceRuntimeTarget(usb, selectedAgentId, wifi);
+  const voiceOnWifi = voiceTarget.kind === "wifi";
+  const p4VoiceRuntime = isP4Runtime || voiceOnWifi;
   const voiceTargetKeyRef = useRef(voiceTarget.key);
   // Update during render: an old Promise may settle before effect cleanup.
   voiceTargetKeyRef.current = voiceTarget.key;
-  const p4VoiceRow = isP4Runtime
+  const p4VoiceRow = p4VoiceRuntime
     ? preferredVoiceRow(P4_BUTTON_CONTROL_ROWS, voiceConfig.buttonActions, voiceConfig.trigger)
     : null;
-  const runtimeVoiceEnabled = isP4Runtime
+  const runtimeVoiceEnabled = p4VoiceRuntime
     ? voiceConfig.enabled && Boolean(p4VoiceRow)
     : voiceConfig.enabled;
-  const activeVoiceTriggerId = isP4Runtime
+  const activeVoiceTriggerId = p4VoiceRuntime
     ? p4VoiceRow?.voiceTriggerId || P4_DEFAULT_VOICE_TRIGGER
     : voiceConfig.trigger;
   const runtimeVoiceConfig = useMemo(
-    () => isP4Runtime
+    () => p4VoiceRuntime
       ? { ...voiceConfig, enabled: runtimeVoiceEnabled, trigger: activeVoiceTriggerId }
       : voiceConfig,
-    [activeVoiceTriggerId, isP4Runtime, runtimeVoiceEnabled, voiceConfig],
+    [activeVoiceTriggerId, p4VoiceRuntime, runtimeVoiceEnabled, voiceConfig],
   );
-  const runtimeVoiceTriggerOptions = isP4Runtime
+  const runtimeVoiceTriggerOptions = p4VoiceRuntime
     ? P4_VOICE_BUTTON_OPTIONS
     : VOICE_BUTTON_OPTIONS.filter((option) => option.id === "encoder_button.hold");
   const selectedVoiceTrigger = runtimeVoiceTriggerOptions.find((option) => option.id === activeVoiceTriggerId)
@@ -1125,7 +1129,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     };
   }, []);
 
-  // Poll voice-runtime. Only after exact USB handshake; never infer legacy from !P4.
+  // Poll only after reading the connected device's identity and capability.
   useEffect(() => {
     voiceDispatch({type:"set_voice_runtime",value:{mode:"waiting_device",running:false,
       message:"正在等待设备握手确认",agentId:"",targetKey:voiceTarget.key}});
@@ -1183,11 +1187,13 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     return () => { retired = true; };
   }, [keyboardActive, wifi, wifiInputScope]);
 
-  const applyButtonConfigOverWifi = useCallback(async () => {
+  const applyButtonConfigOverWifi = useCallback(async (configOverride = null) => {
     if (!wifiInputScope) return;
     const revision = ++buttonConfigRevisionRef.current;
     const current = () => wifiInputScope === wifiInputScopeRef.current && revision === buttonConfigRevisionRef.current;
-    const requested = resolveButtonConfigForRuntime(voiceConfigRef.current, P4_RUNTIME_ID);
+    const requested = resolveButtonConfigForRuntime(
+      configOverride?.buttonActions ? configOverride : voiceConfigRef.current, P4_RUNTIME_ID,
+    );
     setVoiceConfigOtaState({ pending: true, message: "正在同步并核对设备按钮配置…" });
     try {
       const readback = await dispatchBoardButtonConfig({
@@ -1314,63 +1320,60 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
 
   const updateVoiceTrigger = useCallback(async (trigger) => {
     buttonConfigRevisionRef.current += 1;
-    const next = applyVoiceTriggerForRuntime(voiceConfig, trigger, usb.runtime);
+    const next = applyVoiceTriggerForRuntime(voiceConfig, trigger, buttonPanelRuntime);
     saveVoiceConfigToStorage(next);
     setVoiceConfig(next);
     setVoiceConfigDirty(true);
     setVoiceConfigOtaState({
       pending: false,
-      tone: usb.connected ? "" : "warning",
-      message: usb.connected
+      tone: voiceOnWifi || usb.connected ? "" : "warning",
+      message: voiceOnWifi || usb.connected
         ? "正在切换语音输入的长按按钮并同步到设备..."
-        : "语音输入按键已保存到客户端；连接 USB 后同步到板端才会生效。",
+        : "语音输入按键已保存到客户端，连接支持语音输入的设备后可同步。",
     });
-    if (usb.connected) {
-      await applyVoiceConfigOverUsb(next);
-    }
-  }, [applyVoiceConfigOverUsb, usb.connected, usb.runtime, voiceConfig]);
+    if (voiceOnWifi) await applyButtonConfigOverWifi(next);
+    else if (usb.connected) await applyVoiceConfigOverUsb(next);
+  }, [applyButtonConfigOverWifi, applyVoiceConfigOverUsb, buttonPanelRuntime, usb.connected, voiceConfig, voiceOnWifi]);
 
   const updateVoiceEnabled = useCallback(async (enabled) => {
     buttonConfigRevisionRef.current += 1;
-    const next = applyVoiceEnabledForRuntime(voiceConfig, enabled, usb.runtime);
+    const next = applyVoiceEnabledForRuntime(voiceConfig, enabled, buttonPanelRuntime);
     saveVoiceConfigToStorage(next);
     setVoiceConfig(next);
     setVoiceConfigDirty(true);
     setVoiceConfigOtaState({
       pending: false,
-      tone: usb.connected ? "" : "warning",
-      message: usb.connected
-        ? enabled
-          ? "正在启用语音输入并同步到设备..."
-          : "正在关闭语音输入并同步到设备..."
-        : "已保存到客户端；连接 USB 后同步到板端才会生效。",
+      tone: voiceOnWifi || usb.connected ? "" : "warning",
+      message: voiceOnWifi || usb.connected
+        ? "正在同步按键语音设置…"
+        : "按键语音设置已保存到客户端，连接支持语音输入的设备后可同步。",
     });
-    if (usb.connected) {
-      await applyVoiceConfigOverUsb(next);
-    }
-  }, [applyVoiceConfigOverUsb, usb.connected, usb.runtime, voiceConfig]);
+    if (voiceOnWifi) await applyButtonConfigOverWifi(next);
+    else if (usb.connected) await applyVoiceConfigOverUsb(next);
+  }, [applyButtonConfigOverWifi, applyVoiceConfigOverUsb, buttonPanelRuntime, usb.connected, voiceConfig, voiceOnWifi]);
 
   useEffect(() => {
     if (
-      !isP4Runtime
-      || !usb.connected
-      || !p4TargetBoardDeviceId
-      || buttonConfigHydratedFor !== p4TargetBoardDeviceId
-      || !runtimeVoiceEnabled
+      !runtimeVoiceEnabled
+      || (!voiceOnWifi && (!isP4Runtime || !usb.connected || !p4TargetBoardDeviceId
+        || buttonConfigHydratedFor !== p4TargetBoardDeviceId))
     ) return undefined;
     let cancelled = false;
+    const wifiTarget = voiceOnWifi ? wifi : null;
+    const runtimeKey = voiceTarget.key;
+    const current = () => !cancelled && voiceTargetKeyRef.current === runtimeKey;
 
     const rearmDeviceVoice = async () => {
       try {
         const bridgeRuntime = await ensureBridgeRuntime();
-        if (cancelled) return;
+        if (!current()) return;
         if (bridgeRuntime?.running === false) {
           throw new Error(bridgeRuntime?.message || "本地 Bridge 未启动");
         }
         const voiceRuntime = await invoke("ensure_device_voice_runtime", {
           input: { interactive: false },
         });
-        if (cancelled) return;
+        if (!current()) return;
         if (voiceRuntime?.deferred) {
           if (!cancelled) {
             voiceDispatch({
@@ -1387,17 +1390,18 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
           throw new Error(voiceRuntime?.message || "设备录音识别通道未就绪");
         }
         const audio = await sendAudioBridgeSignal({
+          wifiTarget,
           boardDeviceId: p4TargetBoardDeviceId,
           expectedConnectionId: usb.connectionId,
           action: "start",
           voiceButton: activeVoiceTriggerId,
         });
-        if (!audio?.usbSent) throw new Error(audio?.usbError || "设备麦克风信令未通过 USB 送达");
-        if (!cancelled) {
+        if (!wifiTarget && !audio?.usbSent) throw new Error(audio?.usbError || "设备麦克风信令未通过 USB 送达");
+        if (current()) {
           voiceDispatch({ type: "set_audio_bridge_state", enabled: true, ok: true, message: "设备麦克风已自动恢复" });
         }
       } catch (error) {
-        if (!cancelled) {
+        if (current()) {
           voiceDispatch({ type: "set_audio_bridge_state", enabled: false, ok: false, message: `设备麦克风自动恢复失败: ${error}` });
         }
       }
@@ -1416,6 +1420,9 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     sendAudioBridgeSignal,
     usb.connected,
     usb.connectionId,
+    voiceOnWifi,
+    voiceTarget.key,
+    wifi,
   ]);
 
   // ---------- Audio bridge toggle ----------
@@ -1424,7 +1431,8 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     const targetKey=voiceTarget.key;
     const current=()=>voiceTargetKeyRef.current===targetKey;
     if(voiceTarget.kind==="waiting")return;
-    const targetBoardDeviceId = usb.boardDeviceId;
+    const wifiTarget = voiceOnWifi ? wifi : null;
+    const targetBoardDeviceId = wifiTarget?.boardDeviceId || usb.boardDeviceId;
     voiceDispatch({ type: "set_audio_bridge_pending", value: true });
     try {
       if (!targetBoardDeviceId) throw new Error("未找到可用的板子 ID，请先完成设备绑定。");
@@ -1433,29 +1441,31 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
         if (!current()) return;
         if (bridgeRuntime?.running === false) throw new Error(bridgeRuntime?.message || "本地 Bridge 未启动，无法下发板子音频信令。");
         const voiceRuntime = await invoke(
-          isP4Runtime ? "ensure_device_voice_runtime" : "ensure_voice_runtime",
+          p4VoiceRuntime ? "ensure_device_voice_runtime" : "ensure_voice_runtime",
         );
         if (!current()) return;
         if (!voiceRuntime?.running) throw new Error(voiceRuntime?.message || "voice-service 未启动，无法接入板子音频。");
       }
       if (!current()) return;
       const res = await sendAudioBridgeSignal({
+        wifiTarget,
         boardDeviceId: targetBoardDeviceId,
         expectedConnectionId: usb.connectionId,
         action,
         voiceButton: activeVoiceTriggerId,
       });
       if (!current()) return;
-      const transports = res?.usbSent ? "USB" : "";
-      voiceDispatch({ type: "set_audio_bridge_state", enabled: requestedEnabled, ok: true, message: `已通过 ${transports || "USB"} 下发到板端` });
+      if (!wifiTarget && !res?.usbSent) throw new Error(res?.usbError || "设备麦克风信令未通过 USB 送达");
+      const transport = wifiTarget ? "Wi-Fi" : "USB";
+      voiceDispatch({ type: "set_audio_bridge_state", enabled: requestedEnabled, ok: true, message: `已通过 ${transport} 同步到设备` });
     } catch (err) {
       if (!current()) return;
       voiceDispatch({ type: "set_audio_bridge_state", enabled: !requestedEnabled, ok: false, message: `${action === "start" ? "启动" : "关闭"}板子音频失败: ${err}` });
     }
-  }, [voiceTarget.key, activeVoiceTriggerId, binding.boardDeviceId, isP4Runtime, onlineBoardDeviceId, sendAudioBridgeSignal, usb.boardDeviceId, usb.connectionId]);
+  }, [voiceTarget.key, activeVoiceTriggerId, p4VoiceRuntime, sendAudioBridgeSignal, usb.boardDeviceId, usb.connectionId, voiceOnWifi, wifi]);
 
   const resumeDeviceVoiceAfterCredentialAccess = useCallback(() => {
-    if (!isP4Runtime || !runtimeVoiceEnabled || !usb.connected || !p4TargetBoardDeviceId) {
+    if (!runtimeVoiceEnabled || (!voiceOnWifi && (!isP4Runtime || !usb.connected || !p4TargetBoardDeviceId))) {
       return undefined;
     }
     return toggleAudioBridge("start");
@@ -1465,6 +1475,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     runtimeVoiceEnabled,
     toggleAudioBridge,
     usb.connected,
+    voiceOnWifi,
   ]);
 
   // This controller stays mounted across tabs; VoiceAssistantPanel does not.
@@ -1738,6 +1749,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
             selectedAgentId,
             deviceOnline: Boolean(usb.connected || wifi),
             wifiConnected: Boolean(wifi),
+            voiceOnWifi,
             voiceRuntimeTargetKey: voiceTarget.key,
             voiceRuntimeTargetReady: voiceTarget.kind !== "waiting",
           }}

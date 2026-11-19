@@ -10,6 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_real_selection_parser_preserves_active_and_restores_visible_id(tmp_path):
     protocol = (ROOT/'main/pet_p4_protocol.c').read_text()
     miniapp = (ROOT/'main/pet_p4_miniapp.c').read_text()
+    commit_errors = [
+        line for line in (ROOT/'main/pet_p4_miniapp.h').read_text().splitlines()
+        if line.startswith('#define PET_P4_WIDGET_COMMIT_')
+    ]
+    assert len(commit_errors) == 3
     native = (ROOT/'main/pet_p4_usb_native.c').read_text()
     code = r'''
 #include <assert.h>
@@ -24,7 +29,7 @@ def test_real_selection_parser_preserves_active_and_restores_visible_id(tmp_path
 #include "pet_p4_storage_lane.h"
 #include "pet_p4_center_layout.h"
 #define PET_P4_MINIAPP_WIDGET_ID_MAX 48
-#define PET_P4_MINIAPP_CATALOG_MAX 30
+#include "pet_p4_catalog_profile.h"
 #define PET_WIDGET_TRACE_SCOPE(name,kind) ((void)0)
 #define PET_WIDGET_TRACE_OPERATION(name,kind) int name=0
 #define PET_WTRACE_COMMIT 1
@@ -94,7 +99,7 @@ static bool send_catalog_admin(pet_p4_runtime_state_t*s,const char*t,const cJSON
 static cJSON *response;
 static void capture(const char*line,void*ctx){(void)ctx;assert(!response);response=cJSON_ParseWithOpts(line,NULL,true);assert(response);}
 '''
-    for name in ('catalog_item_visible','catalog_entry_visible','catalog_entry_matches','catalog_filtered_index','catalog_visible_index',
+    for name in ('catalog_id_visible','catalog_item_visible','catalog_visible_count','catalog_entry_visible','catalog_entry_matches','catalog_filtered_index','catalog_visible_index',
                  'pet_p4_miniapp_catalog_recovery_blocked','pet_p4_miniapp_catalog_count',
                  'pet_p4_miniapp_catalog_capacity','pet_p4_miniapp_catalog_selected',
                  'catalog_get_filtered','pet_p4_miniapp_catalog_get','catalog_select_id_durable',
@@ -110,6 +115,7 @@ static void pet_p4_native_usb_send_json_line(const char*line,void*ctx){(void)lin
     for name in ('native_route_context','pet_p4_native_usb_route_current'):
         code += function(native,name)+'\n'
     code += function(protocol,'asset_phase_send_current')+'\n'
+    code += '\n'.join(commit_errors)+'\n'
     for name in ('send_topic_payload','send_protocol_ack','send_widget_ack',
                  'pet_p4_widget_inventory','send_widget_inventory','handle_widget_topic','pet_p4_protocol_source_valid'):
         code += function(protocol,name)+'\n'
@@ -141,7 +147,26 @@ static void ack(bool ok,const char*request,const char*code){
  if(request)assert(!strcmp(json_string(p,"requestId"),request));
  if(code)assert(!strcmp(json_string(p,"code"),code));
 }
+static void check_commit_ack(bool ok,const char*phase,const char*message,const char*code){
+ cJSON_Delete(response);response=NULL;
+ cJSON*request=cJSON_Parse("{\"index\":2}");assert(request);
+ send_widget_ack(capture,NULL,"same-transfer",phase,request,ok,message);
+ cJSON_Delete(request);
+ assert(!strcmp(json_string(response,"topic"),"widget-install-ack"));
+ cJSON*p=payload();
+ assert(!strcmp(json_string(p,"transferId"),"same-transfer"));
+ assert(!strcmp(json_string(p,"phase"),phase));
+ assert(cJSON_GetObjectItemCaseSensitive(p,"index")->valueint==2);
+ assert(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(p,"ok"))==ok);
+ assert(!strcmp(json_string(p,"msg"),message));
+ assert(!strcmp(json_string(p,"errorCode"),code));
+}
 int main(void){
+ check_commit_ack(false,"commit",PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED,"commit_storage_deferred");
+ check_commit_ack(false,"commit",PET_P4_WIDGET_COMMIT_AUDIO_BUSY,"commit_audio_busy");
+ check_commit_ack(false,"commit",PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED,"commit_storage_interrupted");
+ check_commit_ack(false,"commit","audio or component storage is busy","");
+ check_commit_ack(false,"chunk",PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED,"");
  assert(pet_storage_lane_configure(&selection_lane,storage_unlock,storage_lock,storage_owner,NULL));
  assert(pet_storage_lane_enter(&selection_lane));
  inventory("user-a",1);size_t original=g_catalog_selected;

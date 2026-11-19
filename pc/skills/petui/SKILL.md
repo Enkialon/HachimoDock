@@ -11,6 +11,14 @@ description: Generate, validate, and publish ESP32-P4 desktop-pet games, tools, 
 
 进入「组件中心」会自动维护 PetUI 技能和命令入口。使用用户目录下的 `.claw-pet/authoring/petui`（Windows 使用同目录的 `petui.cmd`）构建、校验、打包和发布。路径含空格时加引号。构建可使用本机 Python，无可用 Python 时由 Rust 调用随包编译器。校验、打包与本地发布均使用 Rust。按工具版本缓存编译、运行自检；`petui doctor` 可查看诊断。
 
+有设备诊断文件时，用 `petui data-link <runtime/widget.json> <diagnostics.json>` 离线核对该数据源的 USB 和 Wi-Fi 接收计数与时效。按 [实时数据验收](references/live-data.md#离线核对接收证据) 选定板卡和启动范围。
+
+## 设备独立运行
+
+- 设备可以直接取得的数据、执行的动作和维护的状态，由设备负责。把首次配置、正常运行、断网恢复和重启恢复做成设备端的完整流程。
+- 仅当数据或动作必须来自电脑本机时，使用 PC 提供器及共用的 USB／配对 Wi-Fi 连接。组件说明明确写出依赖的是哪种电脑数据或应用。
+- 公开 HTTPS、带 Bearer Token 的 HTTPS JSON 和只读 MQTT TLS 使用设备 Wi-Fi 数据宿主。私有数据源需协商 `widgetPrivateFeed=p4-private-feed-v1`，组件内提示连接服务账号。匿名 MQTT 声明 `connection.type="mqtt-public"`，须协商 `widgetPublicMqtt=p4-public-mqtt-v1`，打开即订阅。参见 [设备联网约定](references/wifi-data.md#设备私有数据源)。
+
 ## 统一组件包
 
 - 先读 [hachiapp.md](references/hachiapp.md)。根据需求在包内使用声明式运行时或有界 WASM，向用户交付同一种文件格式。
@@ -77,7 +85,7 @@ description: Generate, validate, and publish ESP32-P4 desktop-pet games, tools, 
    - 需要连续向前的随机平台和跟随镜头时，使用同一 motion 中的 `track` 扩展，另核验 `widgetPlatformTrack=p4-platform-track-v1`；不能用每次落台重置角色位置冒充连续前进。
    - 有目标、玩家输入、即时反馈、局面变化和回合结算时，使用 `game`。
    - 以计时、提醒、追踪、展示、查询或控制为主要价值时，使用 `tool`。
-   - 展示行情等实时数据时，另读 [references/live-data.md](references/live-data.md)，确认 PC 数据源与设备能力；组件只订阅数据，不自行联网。需要登录态的数据（如 `github.me`）走 PC 鉴权提供器，令牌只在 PC；接口未确认的源（如 `codex.usage`）不得假装可用。
+   - 展示行情等实时数据时，按 [实时数据约定](references/live-data.md) 选择设备直接 HTTPS、PC 经 USB 推送或 PC 经受信 Wi-Fi 推送。PC 快照共用一个 `data.source` 声明。设备直连使用 [设备 HTTPS 约定](references/wifi-data.md) 的能力与公开端点。鉴权来源如 `github.me` 由 PC 提供器处理，令牌留在 PC。接口未确认的 `codex.usage` 保持停用。
    - 把设备当快捷键面板向电脑发组合键时，另读 [references/hotkeys.md](references/hotkeys.md)，使用宿主服务 `hotkeys` 的白名单组合键与场景声明；发送默认关闭，由用户在 PC 开启。
    - 维护城市天气应用时，另读 [references/location-forecast.md](references/location-forecast.md)，使用包内声明式接口、字段映射、城市与文案；宿主只解释受控能力，不运行包内代码。
    - 分类知识库或长文阅读工具另读 [references/knowledge-library.md](references/knowledge-library.md)，知识和来源在 PC 资源包中，设备按页读取；校验数量、长度、随机不重复与授权，不用重复段落凑字数。

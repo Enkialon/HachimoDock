@@ -39,7 +39,10 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
   assert.match(source, /const canFollow = Boolean\(usb\?\.connected \|\| wifi\)/);
   assert.match(source, /disabled=\{syncing \|\| !canFollow\}/);
   assert.match(source, /followAgent\(agentId, appearance/);
-  assert.match(source, /通过 Wi-Fi 切换时，设备继续使用当前形象/);
+  assert.match(source, /当前固件仅支持通过 Wi-Fi 切换跟随，设备继续使用当前形象/);
+  assert.match(source, /将核对设备上的内置/);
+  assert.match(source, /设备缺少该形象时才传输素材/);
+  assert.match(source, /设备形象待确认/);
 
   const unavailableRule = extractCssRule(styles, ".channel-row.is-undetected");
   assert.match(unavailableRule, /border-style:\s*dashed/);
@@ -113,7 +116,10 @@ test("Follow confirmation describes appearance handling for the active connectio
   assert.match(source, /function FollowAgentConfirmModal\s*\(/);
   assert.match(source, /确认跟随/);
   assert.match(source, /同步「\$\{appearanceName\}」到设备/);
-  assert.match(source, /通过 Wi-Fi 切换时，设备继续使用当前形象/);
+  assert.match(source, /当前固件仅支持通过 Wi-Fi 切换跟随，设备继续使用当前形象/);
+  assert.match(source, /将核对设备上的内置/);
+  assert.match(source, /设备缺少该形象时才传输素材/);
+  assert.match(source, /设备形象待确认/);
 });
 
 test("USB appearance sync progress stays inline and survives dashboard tab unmounts", () => {
@@ -129,7 +135,7 @@ test("USB appearance sync progress stays inline and survives dashboard tab unmou
   assert.match(source, /aria-valuenow=\{syncProgress\.indeterminate \? undefined : syncProgress\.percent\}/);
   assert.match(source, /cancelAppearanceSync/);
   assert.match(source, /handleCancelAppearanceSync/);
-  assert.match(source, /aria-label="中断 USB 形象传输"/);
+  assert.match(source, /aria-label="中断形象传输"/);
   assert.match(source, /variant="danger"/);
   assert.match(source, /中断传输/);
 
@@ -145,7 +151,7 @@ test("USB appearance sync progress stays inline and survives dashboard tab unmou
 
 test("Follow-only switches are not presented as appearance transfers", () => {
   // Same appearance on the device: no bytes move, so no percent and no abort.
-  assert.match(source, /const followOnly = appearance\.id === currentDisplay\.appearance\?\.id/);
+  assert.match(source, /const followOnly = !wifi && appearance\.id === currentDisplay\.appearance\?\.id/);
   assert.match(source, /syncProgress\.followOnly \? "正在切换跟随" : "正在切换形象"/);
   assert.match(source, /\{!syncProgress\.followOnly && <Button/);
   assert.match(source, /text: "正在确认…"/);

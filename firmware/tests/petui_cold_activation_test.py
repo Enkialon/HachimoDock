@@ -22,7 +22,7 @@ def test_cold_activation_queue_prepare_publish_cancel_and_faults(tmp_path):
         end = source.index("\n}\n", start) + 3
         return source[start:end]
     code = "\n".join(function(signature) for signature in (
-        "static bool catalog_item_visible(", "static bool catalog_entry_visible(",
+        "static bool catalog_id_visible(", "static bool catalog_item_visible(", "static bool catalog_entry_visible(",
         "static bool catalog_entry_matches(", "static int catalog_filtered_index(",
         "static int catalog_visible_index(", "bool pet_p4_miniapp_catalog_select(")) + code
     slot = source[source.index("typedef struct {\n  uint64_t serial;"):

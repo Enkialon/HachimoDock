@@ -415,7 +415,9 @@ fn pump(
                         .try_send(Input::Pcm(reader.frame[HEADER..].to_vec(), Some(speech)))
                         .map_err(|_| io::ErrorKind::OutOfMemory)?;
                 }
-                Record::Audio { vad: None } => return Err(io::ErrorKind::InvalidData.into()),
+                Record::Audio { vad: None } | Record::VoiceReady => {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
                 Record::PlaybackDrained => {
                     let turn = u32::from_be_bytes(
                         reader.frame[HEADER..]

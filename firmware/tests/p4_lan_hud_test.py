@@ -251,6 +251,7 @@ def test_actual_rtc_worker_releases_audio_on_usb_takeover(tmp_path):
 #include "pet_p4_lan_realtime_audio.h"
 #define LAN_TAG_SIZE 16
 #define LAN_IO_US 1000
+#define LAN_VOICE_OFFER_BYTES 20
 #define ESP_OK 0
 #define ESP_ERR_NO_MEM 1
 #define MBEDTLS_CIPHER_ID_AES 1
@@ -269,7 +270,7 @@ static atomic_uint rtc_wire_last_exit;
 static pet_lan_hud_t rtc_hud;
 static int rtc_hud_mux;
 static uint32_t rtc_hud_generation;
-static struct {int fd;uint32_t generation;uint8_t handshake_key[16],media_key[16];
+static struct {int fd;uint32_t generation,ptt;uint8_t handshake_key[16],media_key[16];
   int capture_lock;unsigned head,count;uint8_t queue[8][640];} rtc_wire;
 static unsigned mode, starts,stops,closed,deleted,offers,selects;
 static int64_t clock_us;
@@ -288,6 +289,11 @@ static bool rtc_hud_offer(const uint8_t*b){offers++;return pet_lan_hud_offer(&rt
 static int pet_device_wifi_suspend_power_save(void){return 0;}
 static void pet_device_wifi_restore_power_save(int p){(void)p;}
 static void rtc_wire_tap(void){}
+static void rtc_wire_ptt(int fd, mbedtls_gcm_context *g, uint8_t *wire, uint8_t *body,
+                         uint32_t *rx, uint32_t *tx, uint32_t generation) {
+  (void)fd; (void)g; (void)wire; (void)body; (void)rx; (void)tx; (void)generation;
+  assert(!"RTC compatibility test must not enter PTT");
+}
 static int pet_p4_audio_wifi_start(void(*tap)(void),void*c,pet_p4_audio_wifi_session_t*s){(void)tap;(void)c;starts++;*s=1;if(mode==1)atomic_store(&usb_client_active,true);return 0;}
 static bool pet_p4_audio_wifi_live(pet_p4_audio_wifi_session_t s){return s==1;}
 static int pet_p4_audio_wifi_stop(pet_p4_audio_wifi_session_t s){assert(s==1);stops++;return 0;}

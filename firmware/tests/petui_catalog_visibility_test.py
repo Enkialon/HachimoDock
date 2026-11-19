@@ -5,7 +5,8 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def test_hidden_legacy_entry_cannot_be_the_removal_fallback(tmp_path):
     code=(ROOT/'main/pet_p4_miniapp.c').read_text()
-    helpers=code[code.index('static bool catalog_item_visible('):code.index('static bool catalog_entry_visible(')]
+    helpers=(code[code.index('static bool catalog_id_visible('):code.index('static size_t catalog_visible_count(')]
+             + code[code.index('static int catalog_visible_preferred_in('):code.index('static bool catalog_entry_visible(')])
     source=tmp_path/'visible.c';exe=tmp_path/'visible'
     source.write_text('''#include <stdbool.h>
 #include <stddef.h>

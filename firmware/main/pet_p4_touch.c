@@ -62,6 +62,7 @@ static bool g_app_stroke;
 #if PET_P4_SYSTEM_WIFI
 enum { TOUCH_GENERAL, TOUCH_SETTINGS_ENTRY, TOUCH_SETTINGS_PAGE };
 static atomic_int g_touch_context;
+static bool g_account_stroke;
 #endif
 
 void pet_p4_touch_health(pet_p4_touch_health_t *out) {
@@ -219,6 +220,9 @@ static esp_err_t identify_register_touch(void) {
   return err;
 }
 
+#if PET_P4_COLD_INIT_SIZE && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 esp_err_t pet_p4_touch_init(void) {
   if (g_ready) return ESP_OK;
   g_address = 0;
@@ -557,6 +561,25 @@ void pet_p4_touch_process(
       && pet_p4_miniapp_slicing_active();
     bool application = state && !pet_p4_conversation_active(state) && !strcmp(state->screen_page,"app")
       && pet_p4_miniapp_pointer_active();
+#if PET_P4_SYSTEM_WIFI
+    if (sample.has_pointer && sample.pointer.kind == PET_P4_POINTER_DOWN) {
+      g_account_stroke = state && !strcmp(state->screen_page, "app") &&
+        pet_account_button_hit(sample.pointer.x, sample.pointer.y) &&
+        !pet_p4_conversation_active(state) && !pet_p4_miniapp_activation_pending() &&
+        pet_p4_miniapp_private_feed(NULL, NULL);
+    }
+    if (g_account_stroke) {
+      if (sample.has_gesture && sample.gesture.gesture == PET_P4_TOUCH_TAP &&
+          pet_account_button_hit(sample.gesture.x, sample.gesture.y) &&
+          state && !strcmp(state->screen_page, "app") && !pet_p4_conversation_active(state) &&
+          !pet_p4_miniapp_activation_pending()) {
+        (void)pet_settings_open(state, sample.gesture.ts_ms);
+      }
+      if (sample.has_pointer && (sample.pointer.kind == PET_P4_POINTER_UP ||
+                                 sample.pointer.kind == PET_P4_POINTER_CANCEL)) g_account_stroke = false;
+      continue;
+    }
+#endif
     bool captured = g_test_stroke;
     if (sample.has_pointer) {
       if (sample.pointer.kind == PET_P4_POINTER_DOWN) g_test_stroke = test;

@@ -71,6 +71,9 @@ endif()
 message(STATUS "P4 build identity: ${PET_P4_BUILD_ID}, protocol schema ${PET_P4_PROTOCOL_SCHEMA}, UART ${PET_P4_UART_BAUD}")
 project(pet_manager_p4_runtime)
 
+include("${CMAKE_CURRENT_LIST_DIR}/tools/h264_pre_v3.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/tools/h264_simd.cmake")
+
 if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
   # Size-optimize network/configuration and peripheral control libraries.
   # Audio DSP, media decoders, pixel loops and VM execution keep their profile.

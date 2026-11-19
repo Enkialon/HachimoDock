@@ -9,6 +9,7 @@
  */
 
 #include "pet_p4_diagnostics.h"
+#include "pet_p4_widget_data.h"
 #include "pet_p4_lcd.h"
 #include "pet_p4_device_wifi.h"
 #include "bsp/display.h"
@@ -311,6 +312,11 @@ static void add_lcd_scanout(cJSON *runtime) {
   }
 }
 #endif
+static void add_widget_data_snapshot(cJSON *payload) {
+  cJSON *streams = pet_p4_widget_data_diagnostics(esp_timer_get_time() / 1000ULL);
+  if (streams && !cJSON_AddItemToObject(payload, "widgetData", streams)) cJSON_Delete(streams);
+}
+
 __attribute__((optimize("Oz")))
 static char *prepare_status(
   const cJSON *request,
@@ -818,6 +824,7 @@ static char *prepare_status(
 #endif
   cJSON_AddItemToObject(payload, "runtime", runtime);
 
+  add_widget_data_snapshot(payload);
   return prepare_topic("diagnostics/status", payload);
 }
 
@@ -862,6 +869,7 @@ cJSON *pet_p4_diagnostics_lan_snapshot(const pet_p4_runtime_state_t *state) {
   cJSON_AddBoolToObject(audio, "musicActive", pet_p4_audio_music_active());
   cJSON_AddBoolToObject(audio, "conversationActive", pet_p4_audio_conversation_active());
   pet_p4_audio_add_completion_counters(audio);
+  add_widget_data_snapshot(payload);
   return payload;
 }
 #endif

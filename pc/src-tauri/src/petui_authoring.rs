@@ -17,6 +17,8 @@ use std::{
 
 #[path = "petui_sprite.rs"]
 mod sprite;
+#[path = "petui_data_link.rs"]
+mod data_link;
 
 static PREPARE: Mutex<()> = Mutex::new(());
 const MAX_PACKAGE_BYTES: usize = 7 * 1024 * 1024;
@@ -686,6 +688,11 @@ pub(super) fn cli(args: &[OsString]) -> Result<String, String> {
             serde_json::to_string(&entry).map_err(|e|e.to_string())
         }
         [command] if command == "tool-info" => Ok(json!({"version":env!("CARGO_PKG_VERSION"),"protocol":2,"target":target()}).to_string()),
+        [command, args @ ..] if command == "data-link" => {
+            let [runtime, report, scope @ ..] = args else { return Err(data_link::USAGE.into()); };
+            data_link::run(Path::new(runtime), Path::new(report), scope)
+        }
+        [command, args @ ..] if command == "feed-credential" => crate::lan_agent::private_feed::cli(args),
         [command] if command == "doctor" => {
             let resources = local_resources()?;
             let skill = development_resource(resources.join("skills/petui"), "../skills/petui");
@@ -746,7 +753,7 @@ pub(super) fn cli(args: &[OsString]) -> Result<String, String> {
             }
             Ok(result)
         }
-        _ => Err("用法：petui doctor | build <app.c> <package> <输出.hachiapp> | pack <package> <输出.hachiapp> | sprite <源.png> <精灵.bin> | verify-wasm <组件包> [--trace <game.trace>] | validate <组件包> | publish <组件包>".into()),
+        _ => Err(format!("用法：petui doctor | build <app.c> <package> <输出.hachiapp> | pack <package> <输出.hachiapp> | sprite <源.png> <精灵.bin> | verify-wasm <组件包> [--trace <game.trace>] | validate <组件包> | publish <组件包>\n{}", data_link::USAGE)),
     }
 }
 

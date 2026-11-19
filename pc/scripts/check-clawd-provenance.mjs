@@ -32,7 +32,7 @@ const auditedFiles = new Map([
   ],
   [
     "pc/src-tauri/bridge/hooks/server-config.js",
-    "c2094fd92d7e7452fa86f72a0394e38a07a1bedf9b057f0ce0135d0b36fde066",
+    "ef0cf30891573cfbeababec510d679ec04fdd63471869545e8146097e4d972b2",
   ],
 ]);
 

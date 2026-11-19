@@ -2,9 +2,9 @@
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
 use zeroize::{Zeroize, Zeroizing};
 
-pub(super) const HEADER: usize = 8;
+pub(crate) const HEADER: usize = 8;
 const TAG: usize = 16;
-pub(super) const PCM: usize = 640;
+pub(crate) const PCM: usize = 640;
 pub(super) const MAX_RECORD: usize = HEADER + PCM + TAG;
 const DOWN: u8 = 1;
 const UP: u8 = 2;
@@ -42,11 +42,12 @@ pub(super) fn hud_body(payload: &serde_json::Value) -> Result<Zeroizing<Vec<u8>>
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Record {
+pub(crate) enum Record {
     Audio { vad: Option<bool> },
     Keepalive,
     Close,
     PlaybackDrained,
+    VoiceReady,
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +70,7 @@ fn header(record: Record, sequence: u32) -> [u8; HEADER] {
         Record::Keepalive => (KEEPALIVE, 0, 0),
         Record::Close => (CLOSE, 0, 0),
         Record::PlaybackDrained => (PLAY_END, 0, 4),
+        Record::VoiceReady => (8, 0, 1),
     };
     let mut bytes = [kind, flags, (length >> 8) as u8, length as u8, 0, 0, 0, 0];
     bytes[4..].copy_from_slice(&sequence.to_be_bytes());
@@ -83,6 +85,7 @@ fn parse_uplink(bytes: &[u8; HEADER], sequence: u32) -> Option<(Record, usize)> 
         (KEEPALIVE, 0) => Record::Keepalive,
         (CLOSE, 0) => Record::Close,
         (PLAY_END, 0) => Record::PlaybackDrained,
+        (8, 0) => Record::VoiceReady,
         _ => return None,
     };
     if sequence == u32::MAX || *bytes != header(record, sequence) {
@@ -92,7 +95,7 @@ fn parse_uplink(bytes: &[u8; HEADER], sequence: u32) -> Option<(Record, usize)> 
     Some((record, HEADER + length + TAG))
 }
 
-pub(super) struct LanAudio {
+pub(crate) struct LanAudio {
     key: Option<LessSafeKey>,
     outgoing: u32,
     incoming: u32,
@@ -101,7 +104,7 @@ pub(super) struct LanAudio {
 impl LanAudio {
     /// A single-use audio-only key from the paired handshake on this socket.
     /// Construct only after authenticating the device's admission acknowledgment.
-    pub(super) fn new(key: Zeroizing<[u8; 16]>) -> Self {
+    pub(crate) fn new(key: Zeroizing<[u8; 16]>) -> Self {
         Self {
             key: UnboundKey::new(&aead::AES_128_GCM, key.as_ref())
                 .ok()
@@ -116,7 +119,7 @@ impl LanAudio {
         self.key = None;
     }
 
-    pub(super) fn seal(&mut self, record: Record, pcm: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    pub(crate) fn seal(&mut self, record: Record, pcm: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
         match (record, pcm.len()) {
             (Record::Audio { vad: None }, PCM) | (Record::Keepalive | Record::Close, 0) => {}
             _ => return None,
@@ -187,7 +190,7 @@ impl LanAudio {
     }
 
     /// Size check before a bounded socket read. The header is still unauthenticated.
-    pub(super) fn record_size(&mut self, h: &[u8; HEADER]) -> Option<usize> {
+    pub(crate) fn record_size(&mut self, h: &[u8; HEADER]) -> Option<usize> {
         self.key.as_ref()?;
         if let Some((_, size)) = parse_uplink(h, self.incoming) {
             return Some(size);
@@ -197,7 +200,7 @@ impl LanAudio {
     }
 
     /// On success the PCM remains in the supplied zeroizing buffer.
-    pub(super) fn open(&mut self, wire: &mut Zeroizing<Vec<u8>>) -> Option<Record> {
+    pub(crate) fn open(&mut self, wire: &mut Zeroizing<Vec<u8>>) -> Option<Record> {
         let result = self.open_record(wire);
         if result.is_none() || result == Some(Record::Close) {
             wire.zeroize();

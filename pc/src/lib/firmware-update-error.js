@@ -1,16 +1,30 @@
 /** User-facing OTA outcomes; raw native errors and identifiers stay out of toasts. */
 export function firmwareAlreadyLatest(error) {
  const text=typeof error==='string'?error:String(error?.message||error||'');
- return text==='firmware_already_latest' || /device firmware .* is already newer than or equal to bundled firmware/i.test(text);
+ return text==='firmware_already_latest' || text==='设备固件已是最新版本。' || /device firmware .* is already newer than or equal to bundled firmware/i.test(text);
 }
-export function firmwareUpdateFailureMessage(error) {
+export function firmwareRollback(error) {
+ const text=typeof error==='string'?error:String(error?.message||error||'');
+ return text==='ota_rollback' || text==='firmware_image_rolled_back';
+}
+export function firmwareUpdateFailureMessage(error, { wireless = false } = {}) {
  const text=typeof error==='string'?error:String(error?.message||error||'');
  if(firmwareAlreadyLatest(text))
   return '设备固件已是最新版本。';
+ if(firmwareRollback(text))
+  return '设备回到了升级前的固件。此设备已停用这份更新，请等待新版固件。';
+ if(text==='firmware_rollback_record_unavailable')
+  return '无法读取固件回退记录，尚未写入固件。';
+ if(wireless) {
+  if(text==='无线固件升级正在进行。' || text==='another firmware transfer is active') return '已有固件升级正在进行，请等待设备重启并校验。';
+  if(/授权无线控制|尚未授权/.test(text)) return '请将同一台设备通过 USB 连接一次，授权无线控制后可直接更新。';
+  if(/身份已改变|配对已变更/.test(text)) return '目标设备或配对已变化，请先检查当前连接和固件版本。';
+  if(/启动状态尚未确认|升级结果未确认/.test(text)) return '无线升级结果尚未确认，请先查看设备当前固件版本。';
+  if(/固件校验失败|板型标记不匹配/.test(text)) return '内置固件校验未通过，请核对设备型号和客户端版本。';
+  return '无线升级未完成，请检查设备是否在线并核对当前版本。';
+ }
  if(text==='firmware_board_selection_required')
   return '请先选择设备的实际板型。';
- if(text==='ota_rollback')
-  return '设备重启后回到了升级前的固件。请先保留当前版本，联系支持排查启动失败原因。';
  if(text==='ota_version_mismatch'||text==='ota_partition_mismatch')
   return '设备重启后未运行预期的固件。请先查看设备当前版本。';
  if(text==='ota_image_state_invalid')

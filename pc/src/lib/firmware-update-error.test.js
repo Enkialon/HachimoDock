@@ -22,6 +22,8 @@ test('released native preflight messages distinguish old-partition, chip and sta
 
 test('post-reboot failure messages distinguish rollback from incomplete or mismatched state',()=>{
  assert.match(format('ota_rollback'),/回到了升级前的固件/);
+  assert.match(format('ota_rollback', { wireless: true }),/已停用这份更新/);
+  assert.match(format('firmware_image_rolled_back'),/已停用这份更新/);
  assert.match(format('ota_partition_mismatch'),/未运行预期的固件/);
  assert.match(format('ota_image_state_invalid'),/未通过设备启动验证/);
  assert.match(format('ota_image_state_missing'),/启动状态不完整/);

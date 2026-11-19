@@ -17,8 +17,8 @@ def test_boot_batch_finishes_every_physical_validation_before_each_yield(tmp_pat
     _run_partial_catalog_recovery(tmp_path,True,True)
 
 def _run_partial_catalog_recovery(tmp_path,native_cache,batch=False):
-    code = (ROOT / 'main/pet_p4_miniapp.c').read_text()
-    recovery = code[code.index('static bool recover_catalog_items('):code.index('static bool catalog_item_visible(')]
+    code = (ROOT / 'main/pet_p4_miniapp.c').read_text().replace('__attribute__((optimize("Oz"))) ', '')
+    recovery = code[code.index('static bool recover_catalog_items('):code.index('static bool catalog_id_visible(')]
     validate = code[code.index('static bool catalog_needs_backup_item('):code.index('static bool load_catalog_snapshot(')]
     source = r'''
 #include <stdbool.h>
@@ -216,7 +216,7 @@ int main(void){
 
 
 def test_boot_yield_boundary_is_normal_task_code_after_both_snapshot_loads():
-    code = (ROOT / 'main/pet_p4_miniapp.c').read_text()
+    code = (ROOT / 'main/pet_p4_miniapp.c').read_text().replace('__attribute__((optimize("Oz"))) ', '')
     validate = code[code.index('static bool validate_catalog_snapshot('):code.index('static bool load_catalog_snapshot(')]
     assert validate.count('vTaskDelay(1)') == 1
     assert validate.count('continue;') == 1

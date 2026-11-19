@@ -2124,6 +2124,9 @@ static void asset_phase_capture(const char *line,void *context){
   if(r->invalid)raw_phase_note(r,RAW_PHASE_CAPTURE,"ready_capture_failed");
 }
 static bool asset_phase_send_current(pet_p4_send_line_fn send,void *route){
+#if PET_P4_SYSTEM_WIFI
+  if (send == pet_p4_lan_appearance_reply) return pet_p4_lan_appearance_current(route);
+#endif
   return send!=pet_p4_native_usb_send_json_line||pet_p4_native_usb_route_current(route);
 }
 /* Snapshotted under the state mutex. Build/send the bounded ACK only after
@@ -2344,6 +2347,19 @@ static __attribute__((optimize("Os"))) void handle_asset_topic(pet_p4_runtime_st
   else if(temporary&&result!=PET_APPEARANCE_COMMIT_UNKNOWN){(void)pet_p4_appearance_end(send,route,id,PET_APPEARANCE_SERIAL);state->asset_transfer_active=previous;}
   asset_phase_deliver(state,&io,send,route,&reply,id,phase,path,index,result);
 }
+#if PET_P4_SYSTEM_WIFI
+void pet_p4_handle_lan_appearance(pet_p4_runtime_state_t *state, unsigned phase,
+                                  const cJSON *payload, void *route) {
+  static const char *const topics[] = {
+    "asset/slot-query", "asset/activate", "asset/begin", "asset/chunk", "asset/file", "asset/commit"
+  };
+  if (phase >= sizeof(topics) / sizeof(topics[0])) return;
+  /* Slot 1 may only be erased while the protected factory appearance is active. */
+  if (phase == 2 && g_asset_active_slot != PET_P4_BUILTIN_APPEARANCE_SLOT) return;
+  handle_asset_topic(state, topics[phase], payload, pet_p4_lan_appearance_reply, route);
+}
+#endif
+
 void pet_p4_asset_transfer_cleanup_worker(pet_p4_runtime_state_t *state){
   if(!atomic_exchange_explicit(&g_asset_cleanup_due,false,memory_order_acq_rel))return;
   if(audio_patch_protocol_active()){audio_patch_timeout_worker(state);return;}
@@ -2668,7 +2684,16 @@ static void send_widget_ack(
   if(ok&&phase&&!strcmp(phase,"commit"))cJSON_AddBoolToObject(payload,"unchanged",pet_p4_miniapp_install_unchanged());
 #endif
   if (phase && !strcmp(phase, "status")) pet_p4_miniapp_install_status(request, payload);
-  if (message && message[0]) cJSON_AddStringToObject(payload, "msg", message);
+  if (message && message[0]) {
+    cJSON_AddStringToObject(payload, "msg", message);
+    if (!ok && phase && !strcmp(phase, "commit")) {
+      const char *code = NULL;
+      if (!strcmp(message, PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED)) code = "commit_storage_deferred";
+      else if (!strcmp(message, PET_P4_WIDGET_COMMIT_AUDIO_BUSY)) code = "commit_audio_busy";
+      else if (!strcmp(message, PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED)) code = "commit_storage_interrupted";
+      if (code) cJSON_AddStringToObject(payload, "errorCode", code);
+    }
+  }
   send_topic_payload(send_line, ctx, "widget-install-ack", payload);
 }
 
@@ -3323,7 +3348,7 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
   cJSON_AddBoolToObject(capabilities, "widgetMediaNotice", true);
   cJSON_AddStringToObject(capabilities, "widgetInstrument", "p4-instrument-v1");
   cJSON_AddStringToObject(capabilities, "widgetLyrics", "p4-lrc-v1");
-  cJSON_AddNumberToObject(capabilities, "componentCatalogMax", PET_P4_MINIAPP_CATALOG_MAX);
+  cJSON_AddNumberToObject(capabilities, "componentCatalogMax", PET_P4_MINIAPP_VISIBLE_MAX);
   cJSON_AddItemToArray(widget_games, cJSON_CreateString("blocks"));
   cJSON_AddItemToArray(widget_games, cJSON_CreateString("snake"));
   cJSON_AddItemToArray(widget_games, cJSON_CreateString("flappy"));
@@ -3495,6 +3520,9 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
     cJSON_AddStringToObject(capabilities, "widgetWifiFeed", PET_WIFI_DATA_FEED_CAPABILITY);
     cJSON_AddStringToObject(capabilities, "widgetWifiFeedMap", PET_WIFI_DATA_FEED_MAP_CAPABILITY);
     cJSON_AddStringToObject(capabilities, "widgetWifiFeedHttp", PET_WIFI_FEED_HTTP_CAPABILITY);
+    cJSON_AddStringToObject(capabilities, "widgetPrivateFeed", PET_PRIVATE_FEED_CAPABILITY);
+    cJSON_AddStringToObject(capabilities, "widgetPublicMqtt", "p4-public-mqtt-v1");
+    cJSON_AddBoolToObject(capabilities, "widgetCredentialStorageReady", pet_private_storage_ready());
     cJSON_AddStringToObject(capabilities, "widgetWifiAudio", "p4-wifi-audio-v1");
   }
 #endif
@@ -3533,6 +3561,9 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
   cJSON_AddBoolToObject(capabilities, "protocolAck", true);
   cJSON_AddStringToObject(capabilities, "bubblePixels", "p4-text-alpha-v2");
   cJSON_AddStringToObject(capabilities, "bubblePixelsBoot", pet_bubble_pixels_boot());
+  cJSON_AddBoolToObject(capabilities, "bubbleGlyphCells", true);
+  cJSON_AddBoolToObject(capabilities, "bubbleBodyMasks", true);
+  cJSON_AddBoolToObject(capabilities, "bubbleTitleMasks", true);
   cJSON_AddBoolToObject(capabilities, "screenshot", true);
   cJSON_AddStringToObject(capabilities, "screenshotTransfer", "pull-fnv1a32-v1");
 #if PET_P4_SCREENSHOT_CLOSE_ACK
@@ -4313,8 +4344,8 @@ bool pet_p4_handle_line_with_reply(
         cJSON_AddStringToObject(reply,fields[i],strlen(value)<=64?value:"");
       }
       pet_bubble_pixels_maintain((uint64_t)(esp_timer_get_time()/1000),
-        pet_p4_audio_active() || pet_p4_audio_playback_active() || pet_p4_audio_music_active()
-        || pet_p4_audio_conversation_active() || pet_p4_ota_active() || state->asset_transfer_active);
+        pet_p4_audio_active() || pet_p4_audio_playback_active() || pet_p4_audio_stream_playing() || pet_p4_audio_music_active()
+        || pet_p4_ota_active() || state->asset_transfer_active, pet_p4_audio_conversation_active());
       (void)pet_bubble_pixels_handle_owned(payload,ctx,(uint64_t)(esp_timer_get_time()/1000),reply);
       send_topic_payload(send_line,ctx,"ui/text-pixels/status",reply);
     }

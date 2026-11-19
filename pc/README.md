@@ -1,6 +1,6 @@
 # PC 客户端 / Desktop client
 
-当前源码版本 **0.1.241**，配套固件 **0.7.104-p4-r287 / R287**。如需使用第三方服务，请在应用内配置自己的凭据。
+当前源码版本 **0.1.245**，配套固件 **0.7.107-p4-r292 / R292**。如需使用第三方服务，请在应用内配置自己的凭据。
 
 Pet Manager 用于连接设备、管理形象和组件，以及将 Agent 状态与语音输入同步到桌面小屏。支持 macOS arm64 与 Windows x64。
 
@@ -79,7 +79,7 @@ node --test pc/scripts/test-framework-offline.test.mjs
 
 ## 完整客户端依赖 / Native runtime dependencies
 
-应用打包需要目标平台的可重定位 Node.js 和 FFmpeg 8.1.2、对应许可证与源码。默认会校验准备脚本记录的已审核 FFmpeg 构建哈希。准备方式见 [runtime-dependencies.md](docs/runtime-dependencies.md)。
+应用打包需要目标平台的可重定位 Node.js 和 FFmpeg 8.1.3、对应许可证与源码。默认会校验准备脚本记录的已审核 FFmpeg 构建哈希。准备方式见 [runtime-dependencies.md](docs/runtime-dependencies.md)。
 
 ```sh
 npm run prepare:desktop

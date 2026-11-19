@@ -1,4 +1,4 @@
-import { BUBBLE_FONT_FAMILY, ensureBubbleFont, createBubbleCanvas } from "./bubble-font.js";
+import { BUBBLE_FONT_FAMILY, BUBBLE_FONT_REVISION, ensureBubbleFont, createBubbleCanvas } from "./bubble-font.js";
 export { BUBBLE_FONT_FAMILY } from "./bubble-font.js";
 // Wire geometry matches the device's session card; images contain alpha only.
 export const BUBBLE_STYLES = Object.freeze({
@@ -168,7 +168,7 @@ export function renderBubblePixels(style, text, createCanvas = createBubbleCanva
   const canvas = createCanvas(); canvas.width = spec.width; canvas.height = spec.height;
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw Error("Canvas text rendering is unavailable");
-  const font = bold => `${bold ? 700 : 500} ${spec.px}px ${BUBBLE_FONT_FAMILY}`;
+  const font = bold => `${bold && style !== 1 ? 700 : 500} ${spec.px}px ${BUBBLE_FONT_FAMILY}`;
   const measure = (value, bold) => { context.font = font(bold); return context.measureText(value).width; };
   context.textBaseline = "alphabetic";
   const lines = wrapBubbleRuns(parseBubbleMarkdown(text), measure,
@@ -205,6 +205,37 @@ export function renderBubblePixels(style, text, createCanvas = createBubbleCanva
     checksum: bubbleChecksum(bytes), data: btoa(binary) };
 }
 
+// The device owns wrapping, baselines and advances. Send one lookup table
+// for the entire text, so turning a page never requires another raster.
+export function renderBubbleGlyphCells(style, text, createCanvas = createBubbleCanvas) {
+  if (!BUBBLE_STYLES[style] || encoder.encode(text).length > 511) throw Error("Invalid bubble text");
+  const points = [...new Set(Array.from(text, ch => ch.codePointAt(0)))].filter(cp =>
+    cp >= 0x20 && (cp < 0xd800 || cp > 0xdfff)).sort((a, b) => a - b);
+  if (!points.length) throw Error("No drawable glyphs");
+  const canvas = createCanvas(); canvas.width = 16; canvas.height = 18;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw Error("Canvas text rendering is unavailable");
+  context.font = `500 16px ${BUBBLE_FONT_FAMILY}`;
+  context.textBaseline = "alphabetic";
+  context.fillStyle = "white";
+  const bytes = new Uint8Array(points.length * 40);
+  const records = new DataView(bytes.buffer);
+  for (const [index, cp] of points.entries()) {
+    const start = index * 40;
+    records.setUint32(start, cp, true);
+    context.clearRect(0, 0, 16, 18);
+    context.fillText(String.fromCodePoint(cp), 0, 15, cp < 0x2300 ? 10 : 16);
+    const rgba = context.getImageData(0, 0, 16, 18).data;
+    for (let i = 0; i < 16 * 18; i++) {
+      if (rgba[i * 4 + 3] >= 128) bytes[start + 4 + (i >> 3)] |= 0x80 >> (i & 7);
+    }
+  }
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return { id: bubblePixelKey(style, text), style, glyphCells: true, pageSizes: [bytes.length],
+    pageIndex: 0, pageCount: 1, checksum: bubbleChecksum(bytes), data: btoa(binary) };
+}
+
 export function collectBubbleTexts(topic, payload, { includeDeferred = false } = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return [];
   const requests = new Map();
@@ -213,7 +244,7 @@ export function collectBubbleTexts(topic, payload, { includeDeferred = false } =
     if (text) requests.set(bubblePixelKey(style, text), { style, text });
   };
   const pair = (title, body, titleLimit = 127, bodyLimit = 511, bodyStyle = 4) => {
-    add(1, title, titleLimit); add(bodyStyle, body, bodyLimit);
+    add(1, title, titleLimit); add(bodyStyle, body, bodyStyle === 4 ? Math.min(bodyLimit, 383) : bodyLimit);
   };
   const first = (...keys) => keys.map(key => payload?.[key]).find(value => typeof value === "string" && value);
 
@@ -265,8 +296,28 @@ export async function startBubblePixelService({ listen, invoke, render = renderB
   // The real renderer cannot advertise readiness or rasterize system fallback.
   // Injected test/embedding renderers own their font preparation.
   if (render === renderBubblePixels) await ensureBubbleFont();
-  let stopped = false, busy = false, peer = "", timer = null, epoch = 0, inflightOwner = "";
+  let stopped = false, busy = false, peer = "", timer = null, epoch = 0, inflightOwner = "", inflightPeer = "";
   const pending = new Map(), desired = new Map(), cooldown = new Map();
+  // Cache pixels only, never delivery/ACK state or lifecycle tokens. The format
+  // is part of the key even when the protocol text hash is unchanged.
+  const rasters = new Map(); let rasterBytes = 0;
+  async function raster(request) {
+    const key = `${BUBBLE_FONT_REVISION}:${request.glyphCells ? "cells" : request.bodyMasks ? "body24" : "page"}:${request.style}:${request.page || 0}:${bubblePixelKey(request.style, request.text)}`;
+    const cached = rasters.get(key);
+    if (cached) { rasters.delete(key); rasters.set(key, cached); return cached.image; }
+    let image = request.glyphCells ? renderBubbleGlyphCells(request.style, request.text)
+      : await render(request.style, request.text, undefined, request.page || 0);
+    if (request.bodyMasks) image = { ...image, bodyMasks: true };
+    const bytes = typeof image.data === "string" ? Math.ceil(image.data.length * 3 / 4) : 0;
+    if (!stopped && bytes > 0 && bytes <= 32769) {
+      while (rasters.size >= 12 || rasterBytes + bytes > 256 * 1024) {
+        const oldest = rasters.keys().next().value;
+        rasterBytes -= rasters.get(oldest).bytes; rasters.delete(oldest);
+      }
+      rasters.set(key, { image, bytes }); rasterBytes += bytes;
+    }
+    return image;
+  }
   const schedule = () => {
     if (!stopped && !busy && !timer && pending.size) timer = setTimer(pump, interval);
   };
@@ -277,15 +328,16 @@ export async function startBubblePixelService({ listen, invoke, render = renderB
     if (stopped || busy || !pending.size) return;
     busy = true;
     const [owner, job] = pending.entries().next().value; // FIFO owners, never LIFO.
-    pending.delete(owner); inflightOwner = owner;
+    pending.delete(owner); inflightOwner = owner; inflightPeer = job.peer;
     try {
       if (!current(job) || now() >= job.deadline) return;
       const request = job.requests[job.next];
       if (!request) return;
-      const image = await render(request.style, request.text, undefined, request.page || 0);
+      const image = await raster(request);
       // Rendering may be async in a host embedding; every await is an invalidation boundary.
       if (!current(job) || now() >= job.deadline) return;
       await invoke("usb_send_bubble_pixels", { frame: { ...image,
+        ...(job.wifi ? { wifi: true } : {}),
         boardDeviceId: job.boardDeviceId, connectionId: job.connectionId,
         bootId: job.bootId, rendererId: instance, owner: job.owner, version: job.version } });
       if (!current(job)) return;
@@ -300,20 +352,35 @@ export async function startBubblePixelService({ listen, invoke, render = renderB
           && job.attempts < 2 && now() < job.deadline) {
         job.attempts++; pending.set(owner, job);
       } else if (current(job)) cooldown.set(owner, now() + 5000);
-    } finally { busy = false; inflightOwner = ""; schedule(); }
+    } finally { busy = false; inflightOwner = ""; inflightPeer = ""; schedule(); }
   }
   const unlisten = await listen("usb-bubble-render", ({ payload: event }) => {
     if (stopped || event?.rendererId !== instance || !/^[0-9a-f]{16}$/.test(event.bootId || "")
         || typeof event.connectionId !== "string" || !/^[1-9][0-9]*$/.test(event.connectionId)
         || !/^[0-9a-f]{16}$/.test(event.owner || "") || !/^[0-9a-f]{16}$/.test(event.version || "")) return;
-    const nextPeer = `${event.boardDeviceId}:${event.connectionId}:${event.bootId}:${instance}`;
+    const nextPeer = `${event.wifi ? "wifi" : "usb"}:${event.boardDeviceId}:${event.connectionId}:${event.bootId}:${instance}`;
     if (nextPeer !== peer) { peer = nextPeer; epoch++; pending.clear(); desired.clear(); cooldown.clear(); }
     if (event.retired) { desired.delete(event.owner); pending.delete(event.owner); cooldown.delete(event.owner); return; }
     const prior = desired.get(event.owner);
+    // LAN announces versions without eagerly rendering: only authenticated
+    // device misses schedule images. Still invalidate an in-flight old version.
+    if (event.demandOnly && !event.need) {
+      if (prior?.version !== event.version) {
+        pending.delete(event.owner); cooldown.delete(event.owner);
+        desired.set(event.owner, { version: event.version });
+        while (desired.size > 12) {
+          const oldest = desired.keys().next().value;
+          desired.delete(oldest); pending.delete(oldest); cooldown.delete(oldest);
+        }
+      }
+      return;
+    }
     if (event.need && prior && prior.version !== event.version) return;
     if (event.need && ((cooldown.get(event.owner) || 0) > now() || pending.has(event.owner)
-        || (busy && inflightOwner === event.owner))) return;
-    if (prior?.version === event.version && !event.need) return;
+        || (busy && inflightOwner === event.owner && inflightPeer === peer))) return;
+    if (prior?.version === event.version && !event.need && !event.prefetchBody) return;
+    if (event.prefetchBody && !event.need && prior?.version === event.version && (pending.has(event.owner)
+        || (busy && inflightOwner === event.owner && inflightPeer === peer))) return;
     let requests = event.topic === "device/need" && typeof event.payload?.text === "string"
       ? [{ style: event.need?.style, text: event.payload.text, page: 0 }]
       : collectBubbleTexts(event.topic, event.payload, { includeDeferred: Boolean(event.need) });
@@ -321,7 +388,14 @@ export async function startBubblePixelService({ listen, invoke, render = renderB
       if (!Number.isInteger(event.need.page) || event.need.page < 0
           || event.need.page >= (BUBBLE_STYLES[event.need.style]?.maxPages || 0)) return;
       requests = requests.filter(r => r.style === event.need.style
-        && bubblePixelKey(r.style, r.text) === event.need.id).map(r => ({ ...r, page: event.need.page }));
+        && bubblePixelKey(r.style, r.text) === event.need.id).map(r => ({ ...r, page: event.need.page,
+          glyphCells: event.need.glyphCells === true, bodyMasks: event.need.bodyMasks === true }));
+      if (event.need.bodyMasks && (event.need.glyphCells || ![2, 4].includes(event.need.style))) return;
+    } else if (event.prefetchBody && event.bodyMasks) {
+      // Prefetch a changed title and the first body page. The receiver also
+      // requests the exact title on a cache miss, including after eviction.
+      requests = requests.filter(r => [2, 4].includes(r.style) || (r.style === 1 && event.prefetchTitle))
+        .map(r => ({ ...r, page: 0, bodyMasks: r.style !== 1 }));
     }
     if (!requests.length) return;
     const job = { ...event, peer, epoch, requests, next: 0, attempts: 0,
@@ -337,7 +411,7 @@ export async function startBubblePixelService({ listen, invoke, render = renderB
   catch (error) { stopped = true; clearTimer(timer); unlisten(); throw error; }
   return () => {
     if (stopped) return;
-    stopped = true; epoch++; clearTimer(timer); pending.clear(); desired.clear(); cooldown.clear(); unlisten();
+    stopped = true; epoch++; clearTimer(timer); pending.clear(); desired.clear(); cooldown.clear(); rasters.clear(); rasterBytes = 0; unlisten();
     void invoke("usb_bubble_pixels_ready", { ready: false, instance }).catch(() => {});
   };
 }

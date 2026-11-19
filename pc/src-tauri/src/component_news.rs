@@ -856,7 +856,7 @@ pub(crate) fn seed_verified_acceptance_report(id:&str,path:&std::path::Path,cont
         crate::voice_chat_settings::configure_storage_dir(std::env::var("P4_SERVICE_CONFIG").unwrap().into()).unwrap();
         crate::llm_network::configure_storage_dir(std::env::var("P4_SERVICE_CONFIG").unwrap().into()).unwrap();
         let started=std::time::Instant::now();
-        let declared:crate::app_services::Declaration=serde_json::from_str(include_str!("../../builtin-clawpkgs/daily-news/pc/application.json")).unwrap();
+        let declared:crate::app_services::Declaration=serde_json::from_str(include_str!("../../optional-clawpkgs/daily-news/pc/application.json")).unwrap();
         let output=std::path::PathBuf::from(std::env::var("PET_NEWS_REPORT").unwrap());
         let root=output.parent().unwrap().join("daily-generation-public");std::fs::create_dir_all(root.join("daily-news")).unwrap();configure_cache(root);
         let result=tauri::async_runtime::block_on(async{tokio::time::timeout(Duration::from_secs(420),generate_daily("daily-news",topics(&declared.content).unwrap(),Default::default())).await});

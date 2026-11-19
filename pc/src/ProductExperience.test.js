@@ -202,7 +202,7 @@ test("Tauri release resources are target-specific and package only audited LGPL 
   assertResource(macosConfig.bundle.resources, "generated-runtime/ffmpeg.LICENSE", "tools/ffmpeg.LICENSE");
   assertResource(macosConfig.bundle.resources, "generated-runtime/ffmpeg.README", "tools/ffmpeg.README");
   assertResource(macosConfig.bundle.resources, "generated-runtime/ffmpeg.SOURCE.txt", "tools/ffmpeg.SOURCE.txt");
-  assertResource(macosConfig.bundle.resources, "generated-runtime/ffmpeg-8.1.2.tar.xz", "tools/source/ffmpeg-8.1.2.tar.xz");
+  assertResource(macosConfig.bundle.resources, "generated-runtime/ffmpeg-8.1.3.tar.xz", "tools/source/ffmpeg-8.1.3.tar.xz");
   assert.equal(macosConfig.bundle.macOS.signingIdentity, "-");
   assert.match(packageJson.scripts["build:mac:local"], /sign:mac:local/);
   assert.match(packageJson.scripts["build:mac:local"], /tauri build --bundles app,dmg --ci/);
@@ -241,7 +241,7 @@ test("Tauri release resources are target-specific and package only audited LGPL 
   assertResource(windowsConfig.bundle.resources, "generated-runtime/ffmpeg.LICENSE", "tools/ffmpeg.LICENSE");
   assertResource(windowsConfig.bundle.resources, "generated-runtime/ffmpeg.README", "tools/ffmpeg.README");
   assertResource(windowsConfig.bundle.resources, "generated-runtime/ffmpeg.SOURCE.txt", "tools/ffmpeg.SOURCE.txt");
-  assertResource(windowsConfig.bundle.resources, "generated-runtime/ffmpeg-8.1.2.tar.xz", "tools/source/ffmpeg-8.1.2.tar.xz");
+  assertResource(windowsConfig.bundle.resources, "generated-runtime/ffmpeg-8.1.3.tar.xz", "tools/source/ffmpeg-8.1.3.tar.xz");
   assertResource(windowsConfig.bundle.resources, "generated-runtime/zlib.LICENSE", "tools/zlib.LICENSE");
   assertResource(resources, "../skills/petui", "skills/petui");
 
@@ -308,7 +308,7 @@ test("Tauri release resources are target-specific and package only audited LGPL 
   assert.match(prepareScript, /PET_MANAGER_FFMPEG_SOURCE_ARCHIVE/);
   assert.match(prepareScript, /PET_MANAGER_ZLIB_LICENSE/);
   assert.match(prepareScript, /auditedFfmpegBinarySha256/);
-  assert.match(prepareScript, /ffmpeg-8\.1\.2\.tar\.xz/);
+  assert.match(prepareScript, /ffmpeg-8\.1\.3\.tar\.xz/);
   assert.match(prepareScript, /x86_64-w64-mingw32-objdump/);
   assert.doesNotMatch(prepareScript, /ffmpegStaticRelease|eugeneware|martin-riedl/);
   assert.match(prepareScript, /Git LFS 指针/);
@@ -348,7 +348,7 @@ test("Tauri release resources are target-specific and package only audited LGPL 
   assert.match(ffmpeg, /find_executable\("ffmpeg", &\[\]\)/);
   assert.match(crossInstaller, /windowsFfmpeg/);
   assert.match(crossInstaller, /tools["', ]+ffmpeg\.exe/);
-  assert.match(crossInstaller, /ffmpeg-8\.1\.2\.tar\.xz/);
+  assert.match(crossInstaller, /ffmpeg-8\.1\.3\.tar\.xz/);
   assert.match(
     crossInstaller,
     /join\(\s*stageRoot,\s*"firmware",\s*"esp32-p4",\s*"firmware\.bin",\s*\)/,

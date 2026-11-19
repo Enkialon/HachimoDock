@@ -49,8 +49,8 @@ function writeRuntimeConfig(port) {
   const dir = path.dirname(RUNTIME_CONFIG_PATH);
   const tmpPath = path.join(dir, `.runtime.${process.pid}.${Date.now()}.tmp`);
   const body = JSON.stringify({ app: CLAWD_SERVER_ID, port: safePort }, null, 2);
-  fs.mkdirSync(dir, { recursive: true });
   try {
+    fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(tmpPath, body, "utf8");
     fs.renameSync(tmpPath, RUNTIME_CONFIG_PATH);
     return true;

@@ -101,7 +101,7 @@ def test_real_install_delete_abort_before_catalog_and_stop_on_publish_failure(tm
     original=Path.write_text
     def write(path,source,*args,**kwargs):
         if path.name=='mutation.c':
-            source='#define PET_P4_CAPABILITY_EXT 1\n'+source
+            source='#define PET_P4_EVENTS 1\n'+source
             source=source.replace('int counter,button_count;','int cext;int counter,button_count;')
             source=source.replace('assert(held&&!critical);critical=1;','assert(!critical);critical=1;')
             marker='static void widget_install_stage_reset('

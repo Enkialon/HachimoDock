@@ -16,11 +16,13 @@ static void render_settings_page(const pet_settings_view_t *settings) {
   if (settings->screen == PET_SETTINGS_HOME) {
     draw_text_line_vcenter("系统设置", 139, 16, 54, 450, ink, 2, true);
     static const char *const labels[] = {"WIFI 配置", "电脑配对", "时区设置", "蓝牙键盘"};
-    for (unsigned i=0;i<4;++i) {
-      int y=103+88*i;
-      fill_round_rect_outline(24,y,592,72,17,panel,settings->selected==i?accent:outline);
-      draw_text_line_vcenter(labels[i],42,y,72,502,ink,2,true);
-      draw_text_center(">",587,y+24,27,accent,2);
+    const unsigned count = 4;
+    const int step = pet_settings_home_step(settings);
+    for (unsigned i = 0; i < count; ++i) {
+      int y = 103 + step * (int)i;
+      fill_round_rect_outline(24, y, 592, step - 16, 17, panel, settings->selected == i ? accent : outline);
+      draw_text_line_vcenter(labels[i], 42, y, step - 16, 502, ink, 2, true);
+      draw_text_center(">", 587, y + (step - 16) / 3, 27, accent, 2);
     }
     return;
   }
@@ -84,9 +86,35 @@ static void render_settings_page(const pet_settings_view_t *settings) {
     return;
   }
 
-  if (settings->screen == PET_SETTINGS_PASSWORD) {
-    draw_text_line_vcenter("输入密码", 139, 16, 54, 450, ink, 2, true);
-    draw_text_line_vcenter(settings->target.ssid, 27, 71, 29, 586, muted, 1, true);
+  if (settings->screen == PET_SETTINGS_FEED) {
+    draw_text_line_vcenter("连接服务账号", 139, 16, 54, 450, ink, 2, true);
+    draw_text_line_vcenter(settings->feed_host, 25, 90, 48, 590, ink, 1, true);
+    draw_text_line_vcenter(settings->feed_target, 25, 144, 40, 590, muted, 1, true);
+    const char *status = !settings->feed_can_save ? "设备安全存储尚未配置" :
+      settings->request_busy ? "操作失败，请重试" :
+      settings->feed_result == PET_PRIVATE_BUSY ? "正在保存" :
+      settings->feed_result == PET_PRIVATE_SET ? "已保存" :
+      settings->feed_result == PET_PRIVATE_ABSENT ? "已清除" :
+      settings->feed_result == PET_PRIVATE_STORAGE_ERROR ? "凭证存储已满或不可用" :
+      "授权后在此组件查看私人数据";
+    draw_text_line_vcenter(status, 25, 200, 44, 590, accent, 1, true);
+    if (settings->feed_can_save) {
+      static const char *const actions[] = {"连接账号", "移除授权"};
+      for (unsigned i = 0; i < 2; ++i) {
+        int y = 280 + 70 * (int)i;
+        fill_round_rect_outline(24, y, 592, 58, 13, panel, settings->selected == i ? accent : outline);
+        draw_text_center(actions[i], 320, y + 20, 540, ink, 1);
+      }
+    }
+    return;
+  }
+
+  if (settings->screen == PET_SETTINGS_PASSWORD || settings->screen == PET_SETTINGS_FEED_ENTRY) {
+    const bool feed = settings->screen == PET_SETTINGS_FEED_ENTRY;
+    const char *label = !feed ? "输入密码" : settings->feed_username ? "服务账号" :
+        settings->feed_kind == PET_PRIVATE_MQTT ? "服务密码" : "输入 Token";
+    draw_text_line_vcenter(label, 139, 16, 54, 450, ink, 2, true);
+    draw_text_line_vcenter(feed ? settings->feed_host : settings->target.ssid, 27, 71, 29, 586, muted, 1, true);
     fill_round_rect_outline(24, 102, 592, 43, 12, panel, outline);
     if (settings->password_length) {
       char masked[35];
@@ -95,9 +123,9 @@ static void render_settings_page(const pet_settings_view_t *settings) {
       memset(masked, '*', length);
       masked[length] = 0;
       draw_text_line_vcenter(masked, 39, 102, 43, 455, ink, 1, true);
-    } else draw_text_line_vcenter("密码", 39, 102, 43, 455, muted, 1, true);
+    } else draw_text_line_vcenter(label, 39, 102, 43, 455, muted, 1, true);
     if (settings->short_password)
-      draw_text_line_vcenter("至少 8 位", 496, 102, 43, 100, accent, 1, true);
+      draw_text_line_vcenter(feed ? "请核对后重试" : "至少 8 位", 455, 102, 43, 140, accent, 1, true);
     else if (settings->request_busy)
       draw_text_line_vcenter("请稍候", 496, 102, 43, 100, accent, 1, true);
     for (unsigned row = 0; row < PET_SETTINGS_KEY_ROWS; ++row) {
@@ -115,7 +143,8 @@ static void render_settings_page(const pet_settings_view_t *settings) {
           connect ? accent : (focused || mode_selected) ? faint : panel,
           (focused || mode_selected) ? accent : outline);
         char ascii[2];
-        const char *key = pet_settings_key_label(settings->keyboard, row, col, ascii);
+        const char *key = feed && connect ? (settings->feed_username ? "下一步" : "保存") :
+          pet_settings_key_label(settings->keyboard, row, col, ascii);
         draw_text_center(key, x + (width - PET_SETTINGS_KEY_GAP) / 2, y + (row == 4 ? 20 : 14),
                          width - PET_SETTINGS_KEY_GAP - 4, connect ? panel : ink, row == 4 ? 1 : 2);
       }

@@ -255,8 +255,8 @@ for (const notice of ["ffmpeg.LICENSE", "ffmpeg.README", "ffmpeg.SOURCE.txt", "z
 }
 mkdirSync(join(stageRoot, "tools", "source"), { recursive: true });
 copyFileSync(
-  join(tauriRoot, "generated-runtime", "ffmpeg-8.1.2.tar.xz"),
-  join(stageRoot, "tools", "source", "ffmpeg-8.1.2.tar.xz"),
+  join(tauriRoot, "generated-runtime", "ffmpeg-8.1.3.tar.xz"),
+  join(stageRoot, "tools", "source", "ffmpeg-8.1.3.tar.xz"),
 );
 copyTree(
   join(repositoryRoot, "pc", "skills", "petui"),
@@ -288,7 +288,7 @@ const requiredResources = [
   join(stageRoot, "tools", "ffmpeg.README"),
   join(stageRoot, "tools", "ffmpeg.SOURCE.txt"),
   join(stageRoot, "tools", "zlib.LICENSE"),
-  join(stageRoot, "tools", "source", "ffmpeg-8.1.2.tar.xz"),
+  join(stageRoot, "tools", "source", "ffmpeg-8.1.3.tar.xz"),
   ...Object.keys(JSON.parse(readFileSync(join(
     tauriRoot, "bridge", "packages", "clawd-backend-service", "package.json",
   ), "utf8")).dependencies || {}).map((name) => join(

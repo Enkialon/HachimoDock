@@ -111,12 +111,17 @@ static bool restore_bitmap_glyphs(void){
     if (!size) continue;
     uint8_t *glyph = pet_font_bitmap + offset;
     memcpy(columns, glyph, size);
-    size_t destination = 0;
-    for (size_t row = 0; row < height; row++) {
-      for (size_t source = row; source < width * height; source += height, destination++) {
-        const unsigned value = (columns[source / 8] >> (7 - source % 8)) & 1U;
-        const unsigned shift = 7 - destination % 8;
-        glyph[destination / 8] = (glyph[destination / 8] & ~(1U << shift)) | (value << shift);
+    size_t source = 0;
+    for (size_t left = 0; left < width; left += PET_FONT_GLYPH_STRIP_WIDTH) {
+      const size_t remaining = width - left;
+      const size_t strip = remaining < PET_FONT_GLYPH_STRIP_WIDTH ? remaining : PET_FONT_GLYPH_STRIP_WIDTH;
+      for (size_t row = 0; row < height; row++) {
+        size_t destination = row * width + left;
+        for (size_t x = 0; x < strip; x++, source++, destination++) {
+          const unsigned bit = (columns[source / 8] >> (7 - source % 8)) & 1U;
+          const unsigned shift = 7 - destination % 8;
+          glyph[destination / 8] = (glyph[destination / 8] & ~(1U << shift)) | (bit << shift);
+        }
       }
     }
   }

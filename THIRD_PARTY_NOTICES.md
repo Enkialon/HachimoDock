@@ -37,12 +37,12 @@ This file records third-party notices for source code incorporated into
 HachimoDock. It does not replace the license selected for HachimoDock's own
 code, firmware, documentation, or media assets.
 
-## FFmpeg 8.1.2 — LGPL-2.1-or-later
+## FFmpeg 8.1.3 — LGPL-2.1-or-later
 
 - Project: <https://ffmpeg.org/>
-- Source release: <https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz>
+- Source: signed upstream tag [n8.1.3](https://github.com/FFmpeg/FFmpeg/releases/tag/n8.1.3). The bundled archive preserves the upstream snapshot in XZ format.
 - Source SHA-256:
-  `464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c`
+  `99b393871f64a2d860587bcf0f9bdbf68b28693100b51c9dfdf3f37b604896a9`
 - License: GNU Lesser General Public License, version 2.1 or later
 
 Pet Manager desktop packages include a separately invoked FFmpeg executable.

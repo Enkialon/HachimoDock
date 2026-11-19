@@ -3,6 +3,7 @@
 #include "pet_p4_audio.h"
 #include "pet_p4_audio_volume.h"
 #include "pet_p4_input.h"
+#include "pet_p4_lan_bubble.inc"
 
 __attribute__((optimize("Oz"), noinline))
 static bool lan_panel_valid_input(const cJSON *request) {
@@ -40,6 +41,8 @@ static cJSON *lan_panel_run(unsigned action, const cJSON *request, pet_p4_runtim
   const char *error = NULL;
   char storage_error[160] = {0};
   switch (action) {
+    case PET_LAN_PANEL_TEXT_PIXELS:
+      return lan_bubble_run(request, state, admitted);
     case PET_LAN_PANEL_WRITE_INPUT:
       if (!admitted) error = "device busy; input configuration was not written";
       else if (!pet_p4_input_handle_config(request, false, NULL, NULL)) error = "device rejected input configuration";
@@ -52,6 +55,14 @@ static cJSON *lan_panel_run(unsigned action, const cJSON *request, pet_p4_runtim
       else if (pet_p4_input_reset_config() != ESP_OK) error = "could not restore default input configuration";
       else return pet_p4_input_config_state(NULL, state->board_device_id);
       break;
+    case PET_LAN_PANEL_ENABLE_MICROPHONE:
+    case PET_LAN_PANEL_DISABLE_MICROPHONE: {
+      const bool enable = action == PET_LAN_PANEL_ENABLE_MICROPHONE;
+      if (!admitted) error = "device busy; microphone setting was not changed";
+      else if (pet_p4_audio_wifi_ptt_enable(enable) != ESP_OK) error = "device microphone unavailable";
+      else if (!enable) pet_p4_lan_voice_cancel();
+      break;
+    }
     case PET_LAN_PANEL_READ_VOLUME: {
       pet_audio_volume_status_t volume;
       if (pet_audio_volume_get(&volume) != ESP_OK || !volume.confirmed) {

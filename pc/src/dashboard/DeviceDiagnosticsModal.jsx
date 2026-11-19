@@ -48,6 +48,20 @@ const RESET_LABELS = {
   jtag: "JTAG 复位",
 };
 
+function widgetDataEvidence(streams) {
+  if (!streams || typeof streams !== "object" || Array.isArray(streams)) return null;
+  const counters = Object.entries(streams).filter(([source, stream]) =>
+    /^[a-z0-9._-]{1,47}$/.test(source) && stream?.received === true
+      && typeof stream.fresh === "boolean"
+      && [stream.usbCount, stream.wifiCount].every(count => Number.isSafeInteger(count) && count >= 0),
+  );
+  return {
+    widgetData: Object.fromEntries(counters.map(([source, { received, fresh, usbCount, wifiCount }]) =>
+      [source, { received, fresh, usbCount, wifiCount }],
+    )),
+  };
+}
+
 function Metric({ label, value, tone = "" }) {
   return (
     <div className="device-diagnostics-modal__metric" data-tone={tone || undefined}>
@@ -145,6 +159,18 @@ export default function DeviceDiagnosticsModal({
   };
 
   if (!open) return null;
+  const evidence = widgetDataEvidence(report?.widgetData);
+  const copyWidgetDataEvidence = async () => {
+    if (!evidence) return;
+    setError("");
+    setNotice("");
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(evidence, null, 2));
+      setNotice("组件数据链路诊断已复制。");
+    } catch {
+      setError("无法复制组件数据链路诊断。");
+    }
+  };
   const runtime = report?.runtime || {};
   const touchHealth = runtime.touchHealth || {};
   const touchReady = runtime.touchReady === true ? "已就绪" : runtime.touchReady === false ? "未就绪" : "未提供状态";
@@ -191,6 +217,11 @@ export default function DeviceDiagnosticsModal({
               {report?.lastResetWasFault && <AlertTriangle size={14} />}
               最近复位：{resetReason}
             </span>
+            {evidence && (
+              <button type="button" className="btn-secondary btn-sm" onClick={copyWidgetDataEvidence} disabled={pending}>
+                复制组件数据链路
+              </button>
+            )}
             <button type="button" className="icon-btn" onClick={loadDiagnostics} disabled={pending} title="刷新诊断">
               {pending ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}
             </button>

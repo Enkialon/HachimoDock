@@ -442,9 +442,10 @@ test("board audio enable starts local runtimes and targets the active board", ()
   assert.match(source, /const targetBoardDeviceId = onlineBoardDeviceId \|\| usb\.boardDeviceId \|\| binding\.boardDeviceId;/);
   assert.match(source, /if \(action === "start"\) \{[\s\S]*ensureBridgeRuntime\(\)/);
   assert.match(source, /ensure_device_voice_runtime/);
-  assert.match(source, /isP4Runtime \? "ensure_device_voice_runtime" : "ensure_voice_runtime"/);
+  assert.match(source, /p4VoiceRuntime \? "ensure_device_voice_runtime" : "ensure_voice_runtime"/);
   assert.match(source, /boardDeviceId: targetBoardDeviceId/);
-  assert.match(source, /\[voiceTarget\.key, activeVoiceTriggerId, binding\.boardDeviceId, isP4Runtime, onlineBoardDeviceId, sendAudioBridgeSignal, usb\.boardDeviceId, usb\.connectionId\]/);
+  assert.match(source, /wifiTarget\?\.boardDeviceId \|\| usb\.boardDeviceId/);
+  assert.match(source, /wifiDeviceControl\(invoke, wifiTarget, input\.action === "start" \? "enableMicrophone" : "disableMicrophone"\)/);
   assert.match(rust, /fn ensure_device_voice_runtime\s*\(/);
   assert.match(rust, /pc_audio::built_in_stt_status\(\)/);
   assert.match(rust, /pc_microphone_enabled = action == "start" && !p4_usb_connected/);
@@ -453,7 +454,7 @@ test("board audio enable starts local runtimes and targets the active board", ()
 
   const panelSource = readSource("dashboard/VoiceAssistantPanel.jsx");
   assert.match(panelSource, /audioBlockingReason/);
-  assert.match(panelSource, /使用设备麦克风录音并通过 USB 转发/);
+  assert.match(panelSource, /使用设备麦克风录音并通过 \$\{voiceTransport\} 转发/);
   assert.match(panelSource, /disabled=\{[\s\S]*?audioBridgePending[\s\S]*?audioBlockingReason[\s\S]*?voiceConfig\.enabled/);
   assert.doesNotMatch(panelSource, /disabled=\{state\.audioBridgePending \|\| !!blockingReason\}/);
 });
@@ -545,16 +546,16 @@ test("P4 reconnect automatically rearms device microphone relay without PC captu
   const source = readSource("DeviceDashboard.jsx");
 
   assert.match(source, /const rearmDeviceVoice = async \(\) =>/);
-  assert.match(source, /const bridgeRuntime = await ensureBridgeRuntime\(\);\s*if \(cancelled\) return;/);
+  assert.match(source, /const bridgeRuntime = await ensureBridgeRuntime\(\);\s*if \(!current\(\)\) return;/);
   assert.match(source, /invoke\("ensure_device_voice_runtime"\)/);
-  assert.match(source, /input: \{ interactive: false \},\s*\}\);\s*if \(cancelled\) return;/);
+  assert.match(source, /input: \{ interactive: false \},\s*\}\);\s*if \(!current\(\)\) return;/);
   assert.match(source, /input: \{ interactive: false \}/);
   assert.match(source, /if \(voiceRuntime\?\.deferred\)/);
   assert.match(source, /subscribeAsrCredentialUpdates\(window, resumeDeviceVoiceAfterCredentialAccess\)/);
   assert.match(source, /message: "设备麦克风已自动恢复"/);
   assert.match(source, /voiceButton: activeVoiceTriggerId/);
   assert.match(source, /buttonConfigHydratedFor !== p4TargetBoardDeviceId/);
-  assert.match(source, /\|\| !runtimeVoiceEnabled/);
+  assert.match(source, /if \(\s*!runtimeVoiceEnabled/);
 });
 
 test("Button-selected conversations are temporary and bound to status and input routing", () => {
@@ -946,20 +947,21 @@ test("voice bus polling self-heals the managed bridge after a local port failure
   );
   assert.match(
     rust,
-    /pid\.filter\(\|candidate\| process_exists\(\*candidate\)\)[\s\S]*wait_for_bridge_ready\(DEFAULT_BRIDGE_PORT, 6, 250\)/,
+    /pid\.filter\(\|candidate\| process_exists\(\*candidate\)\)[\s\S]*wait_for_bridge_ready\(DEFAULT_BRIDGE_PORT, existing_pid, 6, 250\)/,
   );
   assert.match(
     rust,
     /managed bridge \{existing_pid\} is alive but unresponsive; replacing it[\s\S]*stop_managed_bridge/,
   );
   assert.match(rust, /probe_agent_bus_running\(DEFAULT_AGENT_BUS_PORT\)/);
+  assert.match(rust, /fn wait_for_bridge_ready[\s\S]*?if !managed_runtime::is_live\(pid\) \{\s*return false;/);
   assert.match(rust, /GET \/agent\/health HTTP\/1\.1/);
 });
 
 test("P4 voice polling waits for identity and delegates to the target-bound poller", () => {
   const source = readSource("DeviceDashboard.jsx");
   const helper = readSource("dashboard/voice-runtime-target.js");
-  assert.match(source, /voiceRuntimeTarget\(usb, selectedAgentId\)/);
+  assert.match(source, /voiceRuntimeTarget\(usb, selectedAgentId, wifi\)/);
   assert.match(source, /voiceTargetKeyRef\.current = voiceTarget\.key/);
   assert.match(source, /createVoiceRuntimePoller/);
   assert.match(source, /isCurrent:.*voiceTargetKeyRef\.current===voiceTarget\.key/);

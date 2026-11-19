@@ -1,4 +1,5 @@
 """Actual production scale2 C preview; shows the retained 199-glyph limitation."""
+import hashlib
 from pathlib import Path
 import subprocess
 from p4_font_test import font
@@ -13,6 +14,8 @@ def render(tmp, source, label):
     code=code.replace('return data;', 'return g->format==2?native_data:data;')
     code=code.replace('static lv_font_glyph_dsc_t current;', 'static const lv_font_t pet_p4_font_cn_32={36,6,bitmap};\nstatic lv_font_glyph_dsc_t current,native;\nstatic bool pet_p4_font_native32_has_glyph(uint32_t cp){(void)cp;return native.adv_w>0;}')
     code=code.replace('*g=current;return true;', '*g=f==&pet_p4_font_cn_32?native:current;return true;')
+    # All title characters in this fixture exist locally, including the 16px fallbacks.
+    code += '\nstatic bool draw_bubble_cell(uint32_t cp,int x,int y,uint16_t color,bool medium){abort();}\n'
     for n in ('blend_rgb565','app_clip_contains','blend_px','glyph_alpha_at','scaled_glyph_dsc','scaled_glyph_baseline','draw_lvgl_glyph','glyph_visual_bounds','glyph_width'):
         code+=function(source,n)
     code+='\nint main(int argc,char**argv){assert(argc==4);uint8_t raw[554086],big[30579];FILE*f=fopen(argv[1],"rb");assert(f&&fread(raw,1,sizeof raw,f)==sizeof raw);fclose(f);f=fopen(argv[2],"rb");assert(f&&fread(big,1,sizeof big,f)==sizeof big);fclose(f);for(int i=0;i<480*180;i++)pixels[i]=0xffff;int x=12,y=8;\n'
@@ -36,11 +39,12 @@ def render(tmp, source, label):
 
 def test_mixed_scale2_pixels_preserved(tmp_path):
     current=(ROOT/'main/pet_p4_renderer.c').read_text()
-    baseline=subprocess.check_output(['git','show','HEAD:firmware/main/pet_p4_renderer.c'],cwd=ROOT,text=True)
-    assert render(tmp_path,current,'after')==render(tmp_path,baseline,'before')
+    # RGB565 reference from the renderer before remote bubble glyph support.
+    expected = '749baea66eb84df74cc534a19bd49b11f1ea5bde4754ae03525650e8e1d95854'
+    assert hashlib.sha256(render(tmp_path,current,'after')).hexdigest() == expected
 
 if __name__=='__main__':
-    import argparse, tempfile, zipfile, hashlib, json
+    import argparse, tempfile, zipfile, json
     from PIL import Image,ImageDraw,ImageFont
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--official-zip',type=Path,required=True);a=p.parse_args()
     a.output.mkdir(exist_ok=True,parents=True)

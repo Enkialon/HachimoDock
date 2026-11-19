@@ -13,14 +13,16 @@ def cached_cards(tmp_path_factory):
     source = (ROOT / 'main/pet_p4_renderer.c').read_text()
     helpers = r'''
 #define PET_P4_SESSION_QUEUE_MAX 8
+#define PET_P4_AGENT_MAX 64
+#define PET_P4_SESSION_QUEUE_ID_MAX 128
 typedef struct {char id[32],title[192],content[384],state[32];} pet_p4_session_queue_item_t;
-typedef struct {unsigned session_queue_count,current_session_index;bool session_voice_active;pet_p4_session_queue_item_t session_queue[8];} pet_p4_runtime_state_t;
+typedef struct {unsigned session_queue_count,current_session_index;bool session_voice_active;char current_session_agent[64];pet_p4_session_queue_item_t session_queue[8];} card_state_t;
 static pet_p4_runtime_state_t cards;
 static bool g_session_overlay_cache_valid, cache_available=true;
 static uint64_t g_session_overlay_signature,g_session_text_refresh_ms;
 static unsigned selections,rebuilds,copies,local_views,direct_draws;
 static void renderer_bubble_select(const char *owner,unsigned style,const char *title,const char *body,uint64_t now,pet_bubble_text_view_t *out){
- pet_bubble_pixels_select(owner,style,title,body,now,out);
+ pet_bubble_pixels_select(owner,style,title,body,now,out,NULL);
  selections++;if(!out->pixels)local_views++;
 }
 '''
@@ -42,6 +44,7 @@ static void copy_session_overlay_cache(void){copies++;}
 static void draw_session_queue_working_markers(const pet_p4_runtime_state_t*s,unsigned long long now){(void)s;(void)now;}
 '''
     helpers += function(source, 'draw_session_queue')
+    helpers = helpers.replace('pet_p4_runtime_state_t', 'card_state_t')
     original = Path.write_text
 
     def write(path, data, *args, **kwargs):

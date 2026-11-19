@@ -47,34 +47,95 @@ def test_h264_render_uses_private_replay_buffer():
     assert "MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT" in start
 
 
-def test_wifi6_v3_wide_luma_filter_routes_all_columns_to_the_edge_filter(tmp_path):
-    config = (ROOT / 'platformio.ini').read_text()
-    wifi6_v3 = config.split('[env:esp32_p4_wifi6_system_settings_v3]', 1)[1].split('\n[', 1)[0]
-    assert '-DPET_P4_H264_HOR_LUMA_EDGE_FALLBACK=1' in wifi6_v3
-    assert '-Wl,--wrap=espFilterHorLuma_bS123' in wifi6_v3
-    assert '-DPET_P4_H264_PANIC_TRACE=1' in wifi6_v3
-    assert '-DPET_P4_H264_SERIAL_DECODE=1' in wifi6_v3
-    assert '-Wl,--wrap=h264bsdAlloc' in wifi6_v3
+def test_wifi6_targets_use_same_scalar_deblocking_and_serial_decode(tmp_path):
+    from configparser import ConfigParser
+    config = ConfigParser(interpolation=None, strict=False)
+    config.read(ROOT / 'platformio.ini')
+    for board_family in ('v1', 'v3'):
+        section = config[f'env:esp32_p4_wifi6_system_settings_{board_family}']
+        assert '${wifi6_h264_decode.build_flags}' in section['build_flags'].split()
+    flags = config['wifi6_h264_decode']['build_flags'].split()
+    for flag in ('H264_SCALAR_HOR_LUMA', 'H264_SERIAL_DECODE', 'H264_PANIC_TRACE'):
+        assert f'-DPET_P4_{flag}=1' in flags
+    for symbol in ('h264bsdAlloc', 'espFilterHorLuma_bS123', 'espFilterHorLumaEdge',
+                   'espFilterHorLumaCross_bS123', 'espFilterHorLumaEdgeCross'):
+        assert f'-Wl,--wrap={symbol}' in flags
 
     renderer = (ROOT / 'main/pet_p4_renderer.c').read_text()
-    wrapper = renderer.split('#if PET_P4_H264_HOR_LUMA_EDGE_FALLBACK\n', 1)[1].split('#endif', 1)[0]
+    assert '#if PET_P4_H264_SCALAR_HOR_LUMA\n#include "pet_p4_h264_deblock.inc"' in renderer
     source = tmp_path / 'luma.c'
-    source.write_text('#include <stdint.h>\n#include <assert.h>\n#define IRAM_ATTR\n' + wrapper + r'''
-static uint8_t pixels[16];
-static uint32_t alpha = 27, beta = 8;
-static unsigned columns;
-void espFilterHorLumaEdge(uint8_t *p, uint32_t *a, uint32_t *b, uint32_t tc0, uint32_t stride) {
-  assert(p == pixels + columns && a == &alpha && b == &beta && tc0 == 3 && stride == 640);
-  columns += 4;
+    source.write_text(r'''
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#define IRAM_ATTR
+#include "pet_p4_h264_deblock.inc"
+
+enum { STRIDE = 21, ROWS = 6 };
+static uint8_t image[ROWS * STRIDE];
+static uint8_t split_p[3 * STRIDE], split_q[3 * STRIDE];
+static uint32_t alpha = 20, beta = 12;
+
+static void reset(void) {
+  const uint8_t samples[ROWS] = {100, 104, 102, 112, 110, 115};
+  for (unsigned i = 0; i < STRIDE; ++i) {
+    for (unsigned row = 0; row < ROWS; ++row) image[row * STRIDE + i] = samples[row];
+    for (unsigned row = 0; row < 3; ++row) {
+      split_p[row * STRIDE + i] = samples[row];
+      split_q[row * STRIDE + i] = samples[3 + row];
+    }
+  }
 }
+
+static void check(const uint8_t *p, const uint8_t *q, unsigned start, unsigned count) {
+  const uint8_t original[ROWS] = {100, 104, 102, 112, 110, 115};
+  const uint8_t filtered[ROWS] = {100, 103, 106, 108, 111, 115};
+  for (unsigned i = 0; i < STRIDE; ++i) {
+    const uint8_t *expected = (i >= start && i < start + count) ? filtered : original;
+    for (unsigned row = 0; row < 3; ++row) {
+      assert(p[row * STRIDE + i] == expected[row]);
+      assert(q[row * STRIDE + i] == expected[row + 3]);
+    }
+  }
+}
+
 int main(void) {
-  __wrap_espFilterHorLuma_bS123(pixels, &alpha, &beta, 3, 640);
-  assert(columns == 16);
+  reset();
+  __wrap_espFilterHorLuma_bS123(&image[3 * STRIDE + 1], &alpha, &beta, 2, STRIDE);
+  check(image, image + 3 * STRIDE, 1, 16);
+  reset();
+  __wrap_espFilterHorLumaEdge(&image[3 * STRIDE + 3], &alpha, &beta, 2, STRIDE);
+  check(image, image + 3 * STRIDE, 3, 4);
+  reset();
+  __wrap_espFilterHorLumaCross_bS123(split_q + 2, &split_p[2 * STRIDE + 2], &alpha, &beta, 2, STRIDE);
+  check(split_p, split_q, 2, 16);
+  reset();
+  __wrap_espFilterHorLumaEdgeCross(split_q + 5, &split_p[2 * STRIDE + 5], &alpha, &beta, 2, STRIDE);
+  check(split_p, split_q, 5, 4);
+  reset();
+  alpha = 10;
+  __wrap_espFilterHorLuma_bS123(&image[3 * STRIDE + 1], &alpha, &beta, 2, STRIDE);
+  check(image, image + 3 * STRIDE, 0, 0);
+  reset();
+  alpha = 20;
+  beta = 2;
+  __wrap_espFilterHorLuma_bS123(&image[3 * STRIDE + 1], &alpha, &beta, 2, STRIDE);
+  check(image, image + 3 * STRIDE, 0, 0);
+  beta = 12;
+  const uint8_t opposite[ROWS] = {115, 110, 112, 102, 104, 100};
+  const uint8_t opposite_filtered[ROWS] = {115, 111, 108, 106, 103, 100};
+  for (unsigned row = 0; row < ROWS; ++row) image[row * STRIDE] = opposite[row];
+  __wrap_espFilterHorLumaEdge(image + 3 * STRIDE, &alpha, &beta, 2, STRIDE);
+  for (unsigned row = 0; row < ROWS; ++row) assert(image[row * STRIDE] == opposite_filtered[row]);
+  const uint8_t black_edge[ROWS] = {0, 8, 0, 0, 0, 0};
+  for (unsigned row = 0; row < ROWS; ++row) image[row * STRIDE] = black_edge[row];
+  __wrap_espFilterHorLumaEdge(image + 3 * STRIDE, &alpha, &beta, 2, STRIDE);
+  assert(image[2 * STRIDE] == 1 && image[3 * STRIDE] == 0);
 }
 ''')
     binary = tmp_path / 'luma'
     subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-fsanitize=address,undefined',
-                    str(source), '-o', str(binary)], check=True)
+                    '-I', str(ROOT / 'main'), str(source), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
 
 

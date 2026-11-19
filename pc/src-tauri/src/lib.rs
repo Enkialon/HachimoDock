@@ -53,11 +53,13 @@
  */
 
 mod startup_policy;
+mod workbuddy_paths;
 mod startup_supervision;
 mod dsh_approval;
 mod dsh_auth;
 mod bridge_capability;
 mod dsh_desktop;
+mod dsh_paths;
 mod dsh_windows_acl;
 mod clawpkg;
 mod wasm_audio;
@@ -125,6 +127,7 @@ mod component_library;
 mod devin_cloud;
 mod secure_config;
 mod lan_agent;
+mod firmware_rollback;
 mod wireless_ota;
 #[cfg(target_os = "macos")]
 mod desktop_takeover_macos;
@@ -814,6 +817,7 @@ async fn write_workbuddy_voice_test_draft(text: String, app: tauri::AppHandle) -
         let capture_id = id.as_str();
         let connection_id = "";
         let boot_id = "";
+        let wireless_route = None;
         let target = P4SessionBinding { agent_id: "workbuddy".into(), ..P4SessionBinding::default() };
         let session_queue_empty_at_start = true;
         let use_current_visible_session = true;
@@ -824,6 +828,7 @@ async fn write_workbuddy_voice_test_draft(text: String, app: tauri::AppHandle) -
         capture_id: capture_id.to_string(),
         connection_id: connection_id.to_string(),
         boot_id: boot_id.to_string(),
+        wireless_route,
         target,
         session_queue_empty_at_start,
         use_current_visible_session: AtomicBool::new(use_current_visible_session),
@@ -929,6 +934,7 @@ struct DeviceVoiceContext {
     capture_id: String,
     connection_id: String,
     boot_id: String,
+    wireless_route: Option<lan_agent::voice::Route>,
     target: P4SessionBinding,
     session_queue_empty_at_start: bool,
     use_current_visible_session: AtomicBool,
@@ -1211,6 +1217,9 @@ fn device_voice_target_is_current(context: &DeviceVoiceContext) -> bool {
     if context.cancelled.load(Ordering::SeqCst) || !context.lifecycle.admission_open() {
         return false;
     }
+    if let Some(route) = &context.wireless_route {
+        return route.is_current() && resolve_usb_inject_agent_id() == context.target.agent_id;
+    }
     if !context.connection_id.is_empty() {
         let manager = context.emitter.state::<usb_serial::UsbSerialManager>();
         let status = manager.status();
@@ -1350,6 +1359,7 @@ fn emit_device_voice_transcript(
         .unwrap_or(None);
     let mut event = serde_json::json!({
         "utteranceId": context.utterance_id,
+        "transport": if context.wireless_route.is_some() { "wifi" } else { "usb" },
         "captureId": context.capture_id,
         "connectionId": context.connection_id,
         "bootId": context.boot_id,
@@ -1914,8 +1924,12 @@ fn confirm_pending_device_voice_draft(topic: &str, payload: &serde_json::Value) 
     let Some(context) = context else {
         return false;
     };
-    if payload.get("voiceUtteranceId").and_then(serde_json::Value::as_str)
-        .is_some_and(|id| id != context.utterance_id) { return false; }
+    let requested = payload.get("voiceUtteranceId").and_then(serde_json::Value::as_str);
+    if requested.is_some_and(|id| id != context.utterance_id)
+        || (context.wireless_route.is_some() && requested != Some(context.utterance_id.as_str()))
+    {
+        return false;
+    }
     if !context.draft_ready.load(Ordering::SeqCst)
         && context.final_requested.load(Ordering::SeqCst)
         && input_event_matches_device_voice_confirm(topic, payload, &context.board_device_id, true, context.cancelled.load(Ordering::SeqCst)) {
@@ -2312,8 +2326,17 @@ fn start_device_voice_context(
     connection_id: &str,
     boot_id: &str,
     session_queue_empty_at_start: bool,
+    wireless_route: Option<lan_agent::voice::Route>,
 ) {
-    let target = device_voice_target_snapshot(board_device_id);
+    let target = if wireless_route.is_some() {
+        P4SessionBinding {
+            board_device_id: board_device_id.to_string(),
+            agent_id: resolve_usb_inject_agent_id(),
+            ..P4SessionBinding::default()
+        }
+    } else {
+        device_voice_target_snapshot(board_device_id)
+    };
     // Publish the capture before doing any desktop work. The USB reader can
     // then drain incoming PCM into the existing bounded pending queue.
     let use_current_visible_session = voice_needs_current_composer(
@@ -2326,6 +2349,7 @@ fn start_device_voice_context(
         capture_id: capture_id.to_string(),
         connection_id: connection_id.to_string(),
         boot_id: boot_id.to_string(),
+        wireless_route,
         target,
         session_queue_empty_at_start,
         use_current_visible_session: AtomicBool::new(use_current_visible_session),
@@ -2897,6 +2921,10 @@ fn push_device_voice_chunk(chunk: usb_audio::ValidatedUsbAudioChunk) {
     {
         return;
     }
+    push_device_voice_pcm(&context, chunk.sequence, chunk.pcm);
+}
+
+fn push_device_voice_pcm(context: &Arc<DeviceVoiceContext>, sequence: u64, pcm: Vec<u8>) {
     if context.final_handled.load(Ordering::SeqCst) { return; }
     let dsh = context.target.agent_id == "deepseek-harness";
     if dsh && !device_voice_round_is_current(&context) {
@@ -2908,26 +2936,26 @@ fn push_device_voice_chunk(chunk: usb_audio::ValidatedUsbAudioChunk) {
         if input.closed || context.cancelled.load(Ordering::SeqCst)
             || context.final_handled.load(Ordering::SeqCst)
             || context.final_requested.load(Ordering::SeqCst) { return Ok(()); }
-        if chunk.sequence != input.next_sequence {
+        if sequence != input.next_sequence {
             input.discard();
             return Err("当前语音分片顺序不一致；本段已丢弃，请重新按住说话".into());
         }
         input.next_sequence += 1;
         if let Some(recognizer) = input.recognizer.as_ref() {
-            return recognizer.push_pcm(&chunk.pcm);
+            return recognizer.push_pcm(&pcm);
         }
-        if input.pending_bytes.saturating_add(chunk.pcm.len()) > DSH_PENDING_PCM_BYTES
+        if input.pending_bytes.saturating_add(pcm.len()) > DSH_PENDING_PCM_BYTES
             || input.pending_pcm.len() >= DSH_PENDING_PCM_CHUNKS {
             input.discard();
             return Err("输入准备超过当前语音缓冲上限；本段已丢弃，请重新按住说话".into());
         }
-        input.pending_bytes += chunk.pcm.len();
-        input.pending_pcm.push(chunk.pcm);
+        input.pending_bytes += pcm.len();
+        input.pending_pcm.push(pcm);
         Ok(())
     })();
     let push_error = pushed.err();
     if let Some(error) = push_error {
-        let error = format!("云端音频分片 {} 发送失败: {error}", chunk.sequence);
+        let error = format!("云端音频分片 {sequence} 发送失败: {error}");
         if let Ok(mut streaming_error) = context.streaming_error.lock() {
             *streaming_error = error.clone();
         }
@@ -2952,11 +2980,15 @@ fn finish_device_voice_context(completed: usb_audio::CompletedUsbAudio) {
         // A late completion has no authority over a newer active capture.
         return;
     }
+    finish_device_voice_capture(&context, !completed.pcm.is_empty());
+}
+
+fn finish_device_voice_capture(context: &Arc<DeviceVoiceContext>, has_pcm: bool) {
     // A normal early Final/draft must survive a later audio/end. Likewise a
     // prior Error/Cancelled remains this round's first terminal cause.
     if context.final_handled.load(Ordering::SeqCst) || context.cancelled.load(Ordering::SeqCst) { return; }
-    record_device_voice_timing(&context, "audio_end", !completed.pcm.is_empty());
-    if completed.pcm.is_empty() {
+    record_device_voice_timing(context, "audio_end", has_pcm);
+    if !has_pcm {
         fail_device_voice_context(&context, "设备没有返回可识别的麦克风音频");
         return;
     }
@@ -3514,6 +3546,7 @@ fn handle_incoming_usb_message(
                     event["connectionId"].as_str().unwrap_or_default(),
                     event["bootId"].as_str().unwrap_or_default(),
                     audio_begin_session_queue_empty(&payload),
+                    None,
                 );
             } else if event["ok"] == false {
                 let active = active_device_voice_context()
@@ -6059,7 +6092,7 @@ fn ensure_bridge_runtime_blocking(
     // stop it before replacement if it remains unhealthy.
     if !running {
         if let Some(existing_pid) = pid.filter(|candidate| process_exists(*candidate)) {
-            running = wait_for_bridge_ready(DEFAULT_BRIDGE_PORT, 6, 250);
+            running = wait_for_bridge_ready(DEFAULT_BRIDGE_PORT, existing_pid, 6, 250);
             if !running {
                 eprintln!(
                     "[bridge-runtime] managed bridge {existing_pid} is alive but unresponsive; replacing it"
@@ -6084,14 +6117,15 @@ fn ensure_bridge_runtime_blocking(
     };
 
     if !running {
-        (running, pid) =
-            launch_bridge_runtime(&node_path, &bridge_assets, &profile, &runtime_paths)?;
+        let launch = launch_bridge_runtime(&node_path, &bridge_assets, &profile, &runtime_paths)?;
+        (running, pid) = (launch.pid.is_some(), launch.pid);
         mode = if running { "ready" } else { "error" };
         message = if running {
             format!("bridge 已启动，正在发布到 {}。", build_topic_base(&profile))
         } else {
             format!(
-                "bridge 已尝试启动，但 Bridge 或 Agent Bus 健康检查未通过。日志：{}",
+                "Bridge 已尝试启动。{} 日志：{}",
+                launch.failure.unwrap_or("本地服务健康检查未通过。"),
                 runtime_paths.log_path.display()
             )
         };
@@ -6106,8 +6140,9 @@ fn ensure_bridge_runtime_blocking(
                 stop_managed_bridge(&runtime_paths.pid_path);
                 stop_process_on_port(DEFAULT_BRIDGE_PORT);
                 thread::sleep(Duration::from_millis(250));
-                (running, pid) =
+                let launch =
                     launch_bridge_runtime(&node_path, &bridge_assets, &profile, &runtime_paths)?;
+                (running, pid) = (launch.pid.is_some(), launch.pid);
                 mode = if running { "ready" } else { "error" };
                 message = if running {
                     format!(
@@ -6116,7 +6151,8 @@ fn ensure_bridge_runtime_blocking(
                     )
                 } else {
                     format!(
-                        "bridge 已尝试自愈重启，但进程未能连接本地状态端口。日志：{}",
+                        "Bridge 已尝试重新启动。{} 日志：{}",
+                        launch.failure.unwrap_or("本地服务健康检查未通过。"),
                         runtime_paths.log_path.display()
                     )
                 };
@@ -7303,9 +7339,8 @@ fn detect_mimocode() -> DetectedAgent {
     }
 }
 
-fn workbuddy_config_dir(home: &Path) -> PathBuf {
-    std::env::var("WORKBUDDY_CONFIG_DIR").ok().filter(|s| !s.trim().is_empty())
-        .map(|s| PathBuf::from(s.trim())).unwrap_or_else(|| home.join(".workbuddy"))
+fn workbuddy_config_dir(home: &Path) -> Result<PathBuf, String> {
+    workbuddy_paths::config_dir(home)
 }
 
 fn devin_config_dir(home: &Path) -> PathBuf {
@@ -7333,8 +7368,8 @@ fn detect_workbuddy() -> DetectedAgent {
         apps.push(PathBuf::from(dir).join(if cfg!(windows) { "WorkBuddy.exe" } else { "WorkBuddy" }));
     }
     let app = apps.into_iter().find(|p| p.exists());
-    let detected = app.is_some() || root.is_dir();
-    let ready = detected && root.is_dir();
+    let ready = root.as_ref().is_ok_and(|path| path.is_dir());
+    let detected = app.is_some() || ready;
     DetectedAgent {
         id: "workbuddy".into(), label: "WorkBuddy".into(), detected, ready,
         status: if ready { "ready" } else if detected { "needs_setup" } else { "not_found" }.into(),
@@ -7342,7 +7377,7 @@ fn detect_workbuddy() -> DetectedAgent {
             else if detected { "已安装 WorkBuddy；请先启动一次，再重新扫描并启用状态跟随" }
             else { "未检测到 WorkBuddy" }.into(),
         command_path: app.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
-        config_path: root.join("settings.json").to_string_lossy().into_owned(),
+        config_path: root.map(|path| path.join("settings.json").to_string_lossy().into_owned()).unwrap_or_default(),
         activity_path: String::new(), can_sync_hook: ready,
     }
 }
@@ -7560,12 +7595,13 @@ fn find_dsh_cli(home: Option<&Path>, app_path: Option<&Path>) -> Option<PathBuf>
 }
 
 fn find_dsh_profile_dir(home: Option<&Path>) -> Option<PathBuf> {
-    let profile = home?.join(".dsh").join("profiles").join("desktop");
+    let profile = dsh_paths::profile_dir(home, env::var_os("DSH_HOME").as_deref(), &env::current_dir().ok()?)?;
     profile.is_dir().then_some(profile)
 }
 
 fn detect_dsh() -> DetectedAgent {
-    detect_dsh_with_home(get_home_dir().ok().as_deref())
+    let home = dsh_paths::user_home(cfg!(windows), env::var_os("HOME").as_deref(), env::var_os("USERPROFILE").as_deref());
+    detect_dsh_with_home(home.as_deref())
 }
 
 fn detect_dsh_with_home(home: Option<&Path>) -> DetectedAgent {
@@ -8002,7 +8038,8 @@ fn usb_bubble_pixels_ready(
     } else {
         None
     };
-    let changed = usb_manager.set_bubble_renderer(&instance, sink);
+    let changed = usb_manager.set_bubble_renderer(&instance, sink.clone());
+    if changed { lan_agent::bubble_pixels::set_renderer(&instance, sink); }
     if ready && !changed { return Err("Invalid bubble renderer instance".into()); }
     Ok(())
 }
@@ -8019,7 +8056,11 @@ async fn usb_send_bubble_pixels(
     let lease = manager.reserve_bubble_worker(&frame)?;
     tauri::async_runtime::spawn_blocking(move || {
         let _lease = lease;
-        manager.send_bubble_pixels(frame)
+        if frame.wifi {
+            lan_agent::bubble_pixels::send(&manager, frame)
+        } else {
+            manager.send_bubble_pixels(frame)
+        }
     })
     .await
     .map_err(|_| "BUBBLE_FALLBACK: worker stopped".to_string())?
@@ -8288,6 +8329,7 @@ struct BundledFirmwareInfo {
     board_model: Option<&'static str>,
     current_version: String,
     version: String,
+    rollback_blocked: bool,
 }
 
 async fn resolve_bundled_firmware(
@@ -8325,22 +8367,24 @@ async fn resolve_bundled_firmware(
         if !board.image_version_matches(&info.version) {
             return Err("内置固件的板型标记不匹配".into());
         }
-        Ok::<_, String>((path, info.version))
+        Ok::<_, String>((path, info))
     };
-    let (path, version) = if let Some(board) = board {
-        let (path, version) = inspect(board)?;
-        (Some(path), version)
+    let (path, version, rollback_blocked) = if let Some(board) = board {
+        let (path, info) = inspect(board)?;
+        let directory = firmware_rollback::directory(&app_handle.path().app_data_dir().map_err(|e| e.to_string())?);
+        let blocked = firmware_rollback::is_blocked(&directory, expected_board_device_id, &info.sha256)?;
+        (Some(path), info.version, blocked)
     } else {
         // Without a board identity we can still rule out updates if neither
         // compatible image is newer. There is no write path for this result.
-        let (_, wifi6) = inspect(usb_serial::P4BoardModel::Wifi6)?;
-        let (_, pico) = inspect(usb_serial::P4BoardModel::Pico)?;
+        let wifi6 = inspect(usb_serial::P4BoardModel::Wifi6)?.1.version;
+        let pico = inspect(usb_serial::P4BoardModel::Pico)?.1.version;
         let newest = if compare_firmware_versions(&wifi6, &pico)? == VersionOrdering::Less {
             pico
         } else {
             wifi6
         };
-        (None, newest)
+        (None, newest, false)
     };
     let status = manager.status();
     if !matches_connection(&status) {
@@ -8359,6 +8403,7 @@ async fn resolve_bundled_firmware(
         board_model: board.map(usb_serial::P4BoardModel::as_str),
         current_version: status.firmware,
         version,
+        rollback_blocked,
     }))
 }
 
@@ -8390,12 +8435,15 @@ async fn run_usb_firmware_update(
     let reconnect_manager = manager.clone();
     let reconnect_app = app_handle.clone();
     let reconnect_board_device_id = expected_board_device_id.clone();
+    let rollback_directory = firmware_rollback::directory(&app_handle.path().app_data_dir().map_err(|e| e.to_string())?);
     tauri::async_runtime::spawn_blocking(move || {
+        let _update = firmware_rollback::start_update()?;
         manager.update_firmware(
             &firmware_path,
             &expected_board_device_id,
             expected_connection_id.as_deref(),
             confirmed_board_model.as_deref(),
+            Some(&rollback_directory),
             |bytes_sent, bytes_total, stage| {
                 let percent = if bytes_total == 0 {
                     0
@@ -9212,7 +9260,15 @@ fn sync_widget_skills(src: &Path, home: &Path) -> Result<InstallWidgetSkillResul
 
     for target in SKILL_TARGETS {
         let home_subdir = if target.agent == "WorkBuddy" {
-            workbuddy_config_dir(home)
+            match workbuddy_config_dir(home) {
+                Ok(path) => path,
+                Err(reason) => {
+                    skipped.push(SkillSkipEntry {
+                        agent: target.agent.into(), home_dir: target.home_dir.into(), reason,
+                    });
+                    continue;
+                }
+            }
         } else if target.agent == "Devin" {
             devin_config_dir(home)
         } else {
@@ -12372,6 +12428,7 @@ pub fn run() {
             lan_agent::lan_agent_pair_status,
             lan_agent::lan_device_status,
             lan_agent::lan_follow_agent,
+            lan_agent::appearance::lan_sync_appearance,
             lan_agent::lan_volume_request,
             lan_agent::lan_volume_result,
             lan_agent::lan_bluetooth_keyboard_config,
@@ -13139,7 +13196,7 @@ fn write_launch_script(
         shell_quote(&DEFAULT_BRIDGE_PORT.to_string())
     );
     let script = format!(
-        "#!/bin/sh\nset -eu\nunset NODE_OPTIONS\nmkdir -p {logs_dir}\nBRIDGE_ROOT=''\nfor candidate in {bridge_root_candidates}; do\n  if [ -f \"$candidate/{entry_relative_path}\" ]; then\n    BRIDGE_ROOT=\"$candidate\"\n    break\n  fi\ndone\nif [ -z \"$BRIDGE_ROOT\" ]; then\n  printf '%s\\n' 'bridge resources not found in any detected local path' >> {log_path}\n  exit 1\nfi\ncd \"$BRIDGE_ROOT/{workspace_relative_path}\"\nexport PATH={search_path}\nexport NODE_PATH=\"$BRIDGE_ROOT/{workspace_relative_path}/node_modules${{NODE_PATH:+:$NODE_PATH}}\"\n{codex_cli_export}{claude_cli_export}export MQTT_URL={mqtt_url}\nexport MQTT_USERNAME={mqtt_username}\nexport MQTT_PASSWORD={mqtt_password}\nexport STATUS_NAMESPACE={namespace}\nexport STATUS_DEVICE_ID={device_id}\nexport STATUS_BRIDGE_LOCAL_STATE_DIR={local_state_dir}\nexport CLAWD_BRIDGE_PORT={bridge_port}\nexport AGENT_BUS_PORT={agent_bus_port}\nexport CLAWD_ENABLED_AGENTS={enabled_agents}\nexport CLAWD_SELECTED_AGENT_ID={selected_agent_id}\nexport CLAWD_DEVIN_CLOUD_ENABLED={devin_cloud_enabled}\nexport CLAWD_ENABLE_CLAUDE_LOG_MONITOR={claude_enabled}\nexport CLAWD_SYNC_HOOKS={claude_enabled}\nexport CLAWD_ENABLE_CODEX_MONITOR={codex_enabled}\nexport CLAWD_CODEX_SESSION_DIR={codex_session_dir}\nexport OPENCLAW_ENABLE={openclaw_enabled}\nexport CLAWD_ENABLE_MIMOCODE={mimocode_enabled}\nexec {node_path} \"$BRIDGE_ROOT/{entry_relative_path}\" >> {log_path} 2>&1\n",
+        "#!/bin/sh\nset -eu\nunset NODE_OPTIONS\nmkdir -p {logs_dir}\nBRIDGE_ROOT=''\nfor candidate in {bridge_root_candidates}; do\n  if [ -f \"$candidate/{entry_relative_path}\" ]; then\n    BRIDGE_ROOT=\"$candidate\"\n    break\n  fi\ndone\nif [ -z \"$BRIDGE_ROOT\" ]; then\n  printf '%s\\n' 'bridge resources not found in any detected local path' >> {log_path}\n  exit 1\nfi\ncd \"$BRIDGE_ROOT/{workspace_relative_path}\"\nexport PATH={search_path}\nexport NODE_PATH=\"$BRIDGE_ROOT/{workspace_relative_path}/node_modules${{NODE_PATH:+:$NODE_PATH}}\"\n{codex_cli_export}{claude_cli_export}export MQTT_URL={mqtt_url}\nexport MQTT_USERNAME={mqtt_username}\nexport MQTT_PASSWORD={mqtt_password}\nexport STATUS_NAMESPACE={namespace}\nexport STATUS_DEVICE_ID={device_id}\nexport STATUS_BRIDGE_LOCAL_STATE_DIR={local_state_dir}\nexport CLAWD_BRIDGE_PORT={bridge_port}\nexport AGENT_BUS_PORT={agent_bus_port}\nexport PET_MANAGER_MANAGED_BRIDGE=1\nexport CLAWD_ENABLED_AGENTS={enabled_agents}\nexport CLAWD_SELECTED_AGENT_ID={selected_agent_id}\nexport CLAWD_DEVIN_CLOUD_ENABLED={devin_cloud_enabled}\nexport CLAWD_ENABLE_CLAUDE_LOG_MONITOR={claude_enabled}\nexport CLAWD_SYNC_HOOKS={claude_enabled}\nexport CLAWD_ENABLE_CODEX_MONITOR={codex_enabled}\nexport CLAWD_CODEX_SESSION_DIR={codex_session_dir}\nexport OPENCLAW_ENABLE={openclaw_enabled}\nexport CLAWD_ENABLE_MIMOCODE={mimocode_enabled}\nexec {node_path} \"$BRIDGE_ROOT/{entry_relative_path}\" >> {log_path} 2>&1\n",
         logs_dir = shell_quote(
             log_path
                 .parent()
@@ -13308,6 +13365,7 @@ $env:STATUS_BRIDGE_LOCAL_STATE_DIR = {local_state_dir}\r\n\
 $env:CLAWD_BRIDGE_PORT = {bridge_port}\r\n\
 $env:CLAWD_BRIDGE_STRICT_PORT = '1'\r\n\
 $env:AGENT_BUS_PORT = {agent_bus_port}\r\n\
+$env:PET_MANAGER_MANAGED_BRIDGE = '1'\r\n\
 $env:CLAWD_ENABLED_AGENTS = {enabled_agents}\r\n\
 $env:CLAWD_SELECTED_AGENT_ID = {selected_agent_id}\r\n\
 $env:CLAWD_DEVIN_CLOUD_ENABLED = {devin_cloud_enabled}\r\n\
@@ -13593,8 +13651,14 @@ fn start_bridge_direct(
 
     let mut command = command_for_host(&node_path);
     command.arg(&entry_path);
+    #[cfg(windows)]
+    let bootstrap = {
+        command.arg("--managed-stdio-capability");
+        bridge_capability::managed::fresh()?
+    };
     command.current_dir(&workspace_root);
     command.env("PET_MANAGER_PARENT_PID", std::process::id().to_string());
+    command.env("PET_MANAGER_MANAGED_BRIDGE", "1");
     command.env_remove("NODE_OPTIONS");
     if let Some(path_env) = merged_host_path(node_dir_for_path(&node_path)) {
         command.env("PATH", path_env);
@@ -13665,7 +13729,7 @@ fn start_bridge_direct(
             "false"
         },
     );
-    command.stdin(Stdio::null());
+    command.stdin(if cfg!(windows) { Stdio::piped() } else { Stdio::null() });
     command.stdout(Stdio::from(stdout));
     command.stderr(Stdio::from(stderr));
     #[cfg(unix)]
@@ -13674,10 +13738,31 @@ fn start_bridge_direct(
     }
     let child = command.spawn().map_err(|error| error.to_string())?;
     #[cfg(windows)]
-    if let Err(error) = assign_child_to_windows_background_job(&child) {
-        eprintln!("[bridge-runtime] {error}");
+    {
+        let mut child = child;
+        if let Err(error) = assign_child_to_windows_background_job(&child) {
+            eprintln!("[bridge-runtime] {error}");
+        }
+        let written = child.stdin.take().is_some_and(|pipe| serde_json::to_writer(pipe, &bootstrap).is_ok());
+        if !written {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err("Bridge 私有启动通道写入失败。".into());
+        }
+        let pid = remember_runtime_child(child, pid_path)?;
+        if let Err(error) = bridge_capability::managed::set(pid, bootstrap) {
+            stop_managed_bridge(pid_path);
+            return Err(error);
+        }
+        return Ok(pid);
     }
+    #[cfg(not(windows))]
     remember_runtime_child(child, pid_path)
+}
+
+struct BridgeLaunch {
+    pid: Option<u32>,
+    failure: Option<&'static str>,
 }
 
 fn launch_bridge_runtime(
@@ -13685,7 +13770,7 @@ fn launch_bridge_runtime(
     bridge_assets: &ResolvedBridgeAssets,
     profile: &BridgeProfileFile,
     runtime_paths: &BridgeRuntimePaths,
-) -> Result<(bool, Option<u32>), String> {
+) -> Result<BridgeLaunch, String> {
     let direct_failure = match start_bridge_direct(
         node_path,
         bridge_assets,
@@ -13694,8 +13779,8 @@ fn launch_bridge_runtime(
         &runtime_paths.pid_path,
     ) {
         Ok(pid) => {
-            if wait_for_bridge_ready(DEFAULT_BRIDGE_PORT, 36, 200) {
-                return Ok((true, Some(pid)));
+            if wait_for_bridge_ready(DEFAULT_BRIDGE_PORT, pid, 36, 200) {
+                return Ok(BridgeLaunch { pid: Some(pid), failure: None });
             }
             let process_state = if process_exists(pid) {
                 "仍在运行但端口未就绪"
@@ -13726,23 +13811,28 @@ fn launch_bridge_runtime(
         node_path,
     )
     .map_err(|error| format!("{direct_failure}；备用启动失败: {error}"))?;
-    if wait_for_bridge_ready(DEFAULT_BRIDGE_PORT, 36, 200) {
-        return Ok((true, Some(fallback_pid)));
+    if wait_for_bridge_ready(DEFAULT_BRIDGE_PORT, fallback_pid, 36, 200) {
+        return Ok(BridgeLaunch { pid: Some(fallback_pid), failure: None });
     }
 
-    let fallback_state = if process_exists(fallback_pid) {
-        "仍在运行但端口未就绪"
-    } else {
-        "已提前退出"
+    let failure = match (
+        probe_bridge_running(DEFAULT_BRIDGE_PORT),
+        probe_agent_bus_running(DEFAULT_AGENT_BUS_PORT),
+    ) {
+        (true, true) => return Ok(BridgeLaunch { pid: Some(fallback_pid), failure: None }),
+        (false, true) => "Bridge 状态服务（23333）未通过健康检查。",
+        (true, false) => "Agent Bus（8181）未通过健康检查。",
+        (false, false) if !process_exists(fallback_pid) => "本地桥接进程在服务就绪前退出。",
+        (false, false) => "Bridge 状态服务（23333）和 Agent Bus（8181）均未通过健康检查。",
     };
     stop_managed_bridge(&runtime_paths.pid_path);
     eprintln!(
         "[bridge-runtime] fallback process {} {}; log={}",
         fallback_pid,
-        fallback_state,
+        failure,
         runtime_paths.log_path.display()
     );
-    Ok((false, None))
+    Ok(BridgeLaunch { pid: None, failure: Some(failure) })
 }
 
 #[cfg(unix)]
@@ -14122,6 +14212,8 @@ fn remember_runtime_child(child: std::process::Child, pid_path: &Path) -> Result
 }
 
 fn stop_managed_bridge(pid_path: &Path) {
+    #[cfg(windows)]
+    bridge_capability::managed::clear();
     if let Some(pid) = read_pid(pid_path) {
         let _ = stop_process(pid);
     }
@@ -14333,15 +14425,12 @@ fn probe_agent_bus_running(port: u16) -> bool {
 
     let mut buffer = [0u8; 2048];
     let mut response = String::new();
-    loop {
+    while response.len() < 8192 {
         match stream.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => {
                 response.push_str(&String::from_utf8_lossy(&buffer[..read]));
-                if response.contains("200 OK")
-                    && response.contains("\"ok\":true")
-                    && response.contains("\"service\":\"agent-session-bus\"")
-                {
+                if agent_bus_health_matches(&response) {
                     return true;
                 }
             }
@@ -14350,6 +14439,24 @@ fn probe_agent_bus_running(port: u16) -> bool {
     }
 
     false
+}
+
+fn agent_bus_health_matches(response: &str) -> bool {
+    let Some((headers, body)) = response.split_once("\r\n\r\n") else {
+        return false;
+    };
+    if !headers.lines().next().is_some_and(|status| {
+        matches!(status.split_whitespace().nth(1), Some("200"))
+    }) {
+        return false;
+    }
+    let Ok(body) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    body["ok"] == true && match body.get("service") {
+        Some(service) => service == "agent-session-bus",
+        None => body.get("adapters").is_some_and(serde_json::Value::is_array),
+    }
 }
 
 fn probe_voice_service_running(port: u16) -> bool {
@@ -14388,12 +14495,17 @@ fn probe_voice_service_running(port: u16) -> bool {
     false
 }
 
-fn wait_for_bridge_ready(port: u16, attempts: usize, sleep_ms: u64) -> bool {
-    for _ in 0..attempts {
+fn wait_for_bridge_ready(port: u16, pid: u32, attempts: usize, sleep_ms: u64) -> bool {
+    for attempt in 0..attempts {
+        if !managed_runtime::is_live(pid) {
+            return false;
+        }
         if probe_bridge_running(port) && probe_agent_bus_running(DEFAULT_AGENT_BUS_PORT) {
             return true;
         }
-        thread::sleep(Duration::from_millis(sleep_ms));
+        if attempt + 1 < attempts {
+            thread::sleep(Duration::from_millis(sleep_ms));
+        }
     }
     false
 }
@@ -14542,6 +14654,27 @@ fn current_timestamp_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn accepts_legacy_and_current_agent_bus_health_without_accepting_unrelated_services() {
+        for body in [
+            r#"{"ok": true, "service": "agent-session-bus"}"#,
+            r#"{"ok":true,"adapters":[],"activeRuns":0}"#,
+        ] {
+            assert!(agent_bus_health_matches(&format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{body}"
+            )));
+        }
+        assert!(!agent_bus_health_matches(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true,\"service\":\"other\",\"adapters\":[]}"
+        ));
+        assert!(!agent_bus_health_matches(
+            "HTTP/1.1 503 Service Unavailable\r\n\r\n{\"ok\":true,\"service\":\"agent-session-bus\"}"
+        ));
+        assert!(!agent_bus_health_matches(
+            "HTTP/1.1 200 OK\r\n\r\n{\"ok\":true}"
+        ));
+    }
 
     #[test]
     fn visible_composer_lookup_failure_is_not_a_target_switch_receipt() {

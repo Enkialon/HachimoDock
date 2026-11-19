@@ -11,6 +11,7 @@ import zlib
 from compress_font_asset import bitmap_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
+STRIP_WIDTH = 4
 
 
 def transform(raw, reverse=False):
@@ -26,11 +27,19 @@ def transform(raw, reverse=False):
         if not size:
             continue
         glyph = f"{int.from_bytes(raw[offset:offset + size], 'big'):0{size * 8}b}"
+        # Store four adjacent columns together. The last strip can be narrower.
+        # Each strip occupies exactly its original number of bits.
+        order = [row * width + x
+                 for left in range(0, width, STRIP_WIDTH)
+                 for row in range(height)
+                 for x in range(left, min(left + STRIP_WIDTH, width))]
         if reverse:
-            pixels = ''.join(glyph[column * height + row]
-                             for row in range(height) for column in range(width))
+            restored = ['0'] * bits
+            for src, dst in enumerate(order):
+                restored[dst] = glyph[src]
+            pixels = ''.join(restored)
         else:
-            pixels = ''.join(glyph[column:bits:width] for column in range(width))
+            pixels = ''.join(glyph[index] for index in order)
         # The tail bits are part of the original bitmap, including padding.
         out[offset:offset + size] = int(pixels + glyph[bits:], 2).to_bytes(size, 'big')
     return bytes(out)
@@ -55,6 +64,7 @@ def main():
         fnv = ((fnv ^ byte) * 16777619) & 0xffffffff
     header = ('/* Generated lossless glyph columns; canonical MiSans data remains unchanged. */\n'
               '#pragma once\n'
+              f'#define PET_FONT_GLYPH_STRIP_WIDTH {STRIP_WIDTH}U\n'
               f'#define PET_FONT_GLYPH_COLUMNS_PACKED_BYTES {len(packed)}U\n'
               f'#define PET_FONT_GLYPH_COLUMNS_ADLER UINT32_C(0x{zlib.adler32(columns):08x})\n'
               f'#define PET_FONT_GLYPH_COLUMNS_RESTORED_FNV UINT32_C(0x{fnv:08x})\n')

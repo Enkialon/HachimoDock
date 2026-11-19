@@ -26,7 +26,7 @@ def transfer(text,data=None,style=4,owner=OWNER,version=VERSION,client=CLIENT,tr
     return [{**base,'phase':'begin','pageSizes':[len(data)],'totalBytes':len(data),'checksum':f'{h:08x}','pageIndex':page,'pageCount':pages}]+[
         {**base,'phase':'chunk','offset':i,'data':base64.b64encode(data[i:i+512]).decode()} for i in range(0,len(data),512)]+[{**base,'phase':'end'}]
 def send(packets,route=1):return [{'payload':p,'ok':True,'route':route} for p in packets]
-def select(title='',body='',pixels=False,now=0,style=4,hold=False):return {'select':{'owner':'view:'+title+body,'title':title,'body':body,'pixels':pixels,'now':now,'style':style,'hold':hold}}
+def select(title='',body='',pixels=False,now=0,style=4,hold=False,owner=None):return {'select':{'owner':owner or 'view:'+title+body,'title':title,'body':body,'pixels':pixels,'now':now,'style':style,'hold':hold}}
 
 @pytest.fixture(scope='module')
 def receiver(tmp_path_factory):
@@ -56,6 +56,17 @@ static inline void *heap_caps_malloc(size_t n,int c){(void)c;if(fail_alloc){fail
 #include <pthread.h>
 #include "pet_p4_bubble_pixels.h"
 int fail_alloc;
+static unsigned gate_mask;
+static uint64_t test_now;
+typedef struct {const char *board_device_id; bool asset_transfer_active;} pet_p4_runtime_state_t;
+static uint64_t clock_ms(void){return test_now;}
+static bool pet_p4_audio_active(void){return (gate_mask&1)!=0;}
+static bool pet_p4_audio_playback_active(void){return (gate_mask&2)!=0;}
+static bool pet_p4_audio_stream_playing(void){return (gate_mask&64)!=0;}
+static bool pet_p4_audio_conversation_active(void){return (gate_mask&4)!=0;}
+static bool pet_p4_ota_active(void){return (gate_mask&8)!=0;}
+static bool pet_p4_audio_music_active(void){return (gate_mask&32)!=0;}
+#include "pet_p4_lan_bubble.inc"
 int mbedtls_base64_decode(unsigned char*out,size_t cap,size_t*n,const unsigned char*in,size_t len){
  const char*a="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";unsigned v=0,bits=0;*n=0;
  for(size_t i=0;i<len;i++){if(in[i]=='=')break;const char*p=strchr(a,in[i]);if(!p)return -1;v=(v<<6)|(unsigned)(p-a);bits+=6;if(bits>=8){bits-=8;if(*n>=cap)return -1;out[(*n)++]=(unsigned char)(v>>bits);}}return 0;}
@@ -74,7 +85,7 @@ static void *race_writer(void *context){
 static void *race_reader(void *unused){
  (void)unused;
  for(unsigned round=0;round<160;round++){
-  pet_bubble_text_view_t view;pet_bubble_pixels_select("race",4,"title","body",0,&view);
+  pet_bubble_text_view_t view;pet_bubble_pixels_select("race",4,"title","body",0,&view,NULL);
   if(view.pixels){assert(pet_bubble_pixels_draw_pinned(&view,1,0,framebuffer+1,0,0,496,0));assert(pet_bubble_pixels_draw_pinned(&view,4,0,framebuffer+1,0,0,496,0));}
   pet_bubble_pixels_release(&view);
  }return NULL;
@@ -88,19 +99,43 @@ int main(int argc,char**argv){
   cJSON*races=cJSON_GetObjectItemCaseSensitive(c,"race");
   if(races){pthread_t writer,reader;assert(!pthread_create(&writer,NULL,race_writer,races));assert(!pthread_create(&reader,NULL,race_reader,NULL));assert(!pthread_join(writer,NULL));assert(!pthread_join(reader,NULL));}
   unsigned route=num(c,"route");if(!route)route=1;
-  cJSON*need=cJSON_GetObjectItemCaseSensitive(c,"need");if(need){pet_bubble_need_t out;bool ok=pet_bubble_pixels_next_need(num(need,"now"),&out);assert(ok==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(need,"ok")));if(ok){assert(out.style==num(need,"style"));assert(out.page==num(need,"page"));}}
-  cJSON*v=cJSON_GetObjectItemCaseSensitive(c,"desire");if(v)pet_bubble_pixels_desire(v,(void*)(uintptr_t)route,str(c,"scope"),num(c,"now"));
-  v=cJSON_GetObjectItemCaseSensitive(c,"maintain");if(v)pet_bubble_pixels_maintain(num(v,"now"),cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pause")));
+  const void *ctx=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"lanRoute"))?PET_BUBBLE_LAN_ROUTE:(void*)(uintptr_t)route;
+  if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"retireLan")))pet_bubble_pixels_retire_route(PET_BUBBLE_LAN_ROUTE);
+  cJSON *lan=cJSON_GetObjectItemCaseSensitive(c,"lan");
+  if(lan){
+   assert(lan_bubble_valid(lan));test_now=num(c,"now");gate_mask=num(c,"gateMask");
+   pet_p4_runtime_state_t state={.board_device_id="board",.asset_transfer_active=(gate_mask&16)!=0};
+   cJSON *reply=lan_bubble_run(lan,&state,cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"admitted")));assert(reply);
+   cJSON *expected=cJSON_GetObjectItemCaseSensitive(c,"reply"),*e;
+   cJSON_ArrayForEach(e,expected){if(!cJSON_Compare(e,cJSON_GetObjectItemCaseSensitive(reply,e->string),true)){fprintf(stderr,"LAN field %s differs\n",e->string);abort();}}
+   if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"noNeed")))assert(!cJSON_GetObjectItemCaseSensitive(reply,"need"));
+   cJSON_Delete(reply);
+  }
+  cJSON*need=cJSON_GetObjectItemCaseSensitive(c,"need");if(need){pet_bubble_need_t out;bool ok=pet_bubble_pixels_next_need(num(need,"now"),&out);assert(ok==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(need,"ok")));if(ok){assert(out.style==num(need,"style"));assert(out.page==num(need,"page"));const char *id=str(need,"id");if(*id)assert(!strcmp(out.id,id));if(cJSON_HasObjectItem(need,"bodyMasks"))assert(out.body_mask==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(need,"bodyMasks")));}}
+  cJSON*v=cJSON_GetObjectItemCaseSensitive(c,"desire");if(v)pet_bubble_pixels_desire(v,ctx,str(c,"scope"),num(c,"now"));
+  v=cJSON_GetObjectItemCaseSensitive(c,"maintain");if(v)pet_bubble_pixels_maintain(num(v,"now"),cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pause")),cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"conversation")));
   if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"failAlloc")))fail_alloc=1;
-  v=cJSON_GetObjectItemCaseSensitive(c,"payload");if(v){cJSON*r=cJSON_CreateObject();bool ok=pet_bubble_pixels_handle_owned(v,(void*)(uintptr_t)route,num(c,"now"),r);if(ok!=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"ok"))){fprintf(stderr,"phase=%s expected=%d got=%d error=%s\n",str(v,"phase"),cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"ok")),ok,str(r,"error"));abort();}cJSON*expected=cJSON_GetObjectItemCaseSensitive(c,"reply");if(expected){cJSON*e;cJSON_ArrayForEach(e,expected)assert(cJSON_Compare(e,cJSON_GetObjectItemCaseSensitive(r,e->string),true));}cJSON_Delete(r);}
-  v=cJSON_GetObjectItemCaseSensitive(c,"select");if(v){assert(!holding);pet_bubble_pixels_select(str(v,"owner"),num(v,"style"),str(v,"title"),str(v,"body"),num(v,"now"),&held);assert(!strcmp(held.title,str(v,"title"))&&!strcmp(held.body,str(v,"body")));assert(held.pixels==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pixels")));holding=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"hold"));if(!holding)pet_bubble_pixels_release(&held);}
+  v=cJSON_GetObjectItemCaseSensitive(c,"payload");if(v){cJSON*r=cJSON_CreateObject();bool ok=pet_bubble_pixels_handle_owned(v,ctx,num(c,"now"),r);if(ok!=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"ok"))){fprintf(stderr,"phase=%s expected=%d got=%d error=%s\n",str(v,"phase"),cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"ok")),ok,str(r,"error"));abort();}cJSON*expected=cJSON_GetObjectItemCaseSensitive(c,"reply");if(expected){cJSON*e;cJSON_ArrayForEach(e,expected)assert(cJSON_Compare(e,cJSON_GetObjectItemCaseSensitive(r,e->string),true));}cJSON_Delete(r);}
+  v=cJSON_GetObjectItemCaseSensitive(c,"select");if(v){assert(!holding);pet_bubble_pixels_select(str(v,"owner"),num(v,"style"),str(v,"title"),str(v,"body"),num(v,"now"),&held,NULL);assert(!strcmp(held.title,str(v,"title"))&&!strcmp(held.body,str(v,"body")));assert(held.pixels==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pixels")));holding=cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"hold"));if(!holding)pet_bubble_pixels_release(&held);}
+  v=cJSON_GetObjectItemCaseSensitive(c,"bodyState");if(v){
+   assert(holding);
+   assert(held.body_pending==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pending")));
+   assert(held.body_mask==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"mask")));
+   assert(held.body_exact==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"exact")));
+   assert(held.body_page==num(v,"page"));
+  }
+  v=cJSON_GetObjectItemCaseSensitive(c,"titleState");if(v){
+   assert(holding);
+   assert(held.title_pending==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pending")));
+   assert(held.title_mask==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"mask")));
+  }
   v=cJSON_GetObjectItemCaseSensitive(c,"drawHeld");if(v){assert(holding);unsigned page=num(v,"page");if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"pinPage")))pet_bubble_pixels_pin_page(&held,page);for(unsigned i=0;i<640*480+2;i++)framebuffer[i]=0xffff;framebuffer[0]=framebuffer[640*480+1]=0xabcd;const cJSON*x=cJSON_GetObjectItemCaseSensitive(v,"x"),*clip=cJSON_GetObjectItemCaseSensitive(v,"clip");bool ok=pet_bubble_pixels_draw_pinned(&held,num(v,"style"),page,framebuffer+1,cJSON_IsNumber(x)?x->valueint:0,0,cJSON_IsNumber(clip)?clip->valueint:496,0);assert(ok==cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(v,"ok")));assert(framebuffer[0]==0xabcd&&framebuffer[640*480+1]==0xabcd);if(ok){assert(framebuffer[1]==num(v,"first"));}cJSON*expected=cJSON_GetObjectItemCaseSensitive(v,"expectedPixels");if(expected){assert(cJSON_GetArraySize(expected)<=640*480);for(int i=0;i<cJSON_GetArraySize(expected);i++)assert(framebuffer[i+1]==cJSON_GetArrayItem(expected,i)->valueint);} }
   if(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(c,"release"))){assert(holding);pet_bubble_pixels_release(&held);holding=false;}
  }
  if (holding) {
   pet_bubble_pixels_release(&held);
  }
- pet_bubble_pixels_maintain(20000,true);
+ pet_bubble_pixels_maintain(20000,true,false);
  cJSON_Delete(commands);
  return 0;
 }

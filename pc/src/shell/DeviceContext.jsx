@@ -1,6 +1,7 @@
 /**
  * [Input] children tree consuming useDeviceContext; Tauri invoke/listen for verified P4 USB status, appearance sync progress, manual serial rescan, bindings, and agents; lib helpers for appearance/agent storage.
- * [Output] Shared device state with verified USB priority and authenticated Wi-Fi reachability, current Agent selection and appearance, and explicit Agent follow over the active transport. Appearance transfers use USB.
+ * [Output] Shared device state with verified USB priority and authenticated Wi-Fi reachability, current Agent selection and appearance, and explicit Agent follow over the active transport. Appearance transfers use the active supported transport.
+ *          Wi-Fi appearance changes use authenticated device-side pack verification.
  *          Saved-persona events refresh the current target immediately; every conversation start reads fresh disk settings.
  *          Current-key usage help is published by the dashboard and consumed across setup surfaces.
  * [Pos] component node in pc/src/shell
@@ -422,16 +423,93 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
 
   const currentDisplay = useMemo(() => {
     const display = deriveCurrentDisplay(agentAppearanceMap, enabledAgents, appearances, agentOptions);
-    if (wifiAppearance && wifiAppearance.boardDeviceId === activeBoardDeviceId) {
+    const verified = wifi && wifiAppearance?.boardDeviceId === wifi.boardDeviceId
+      && wifiAppearance.bootId === wifi.bootId;
+    if (verified) {
       const retained = appearances.find(record => record.id === wifiAppearance.appearanceId);
       if (retained) return { ...display, appearance: retained };
     }
-    return display;
-  }, [agentAppearanceMap, enabledAgents, appearances, agentOptions, activeBoardDeviceId, wifiAppearance]);
+    return wifi?.appearanceCapacity ? { ...display, appearanceUnverified: true } : display;
+  }, [agentAppearanceMap, enabledAgents, appearances, agentOptions, wifi, wifiAppearance]);
   const deviceConnected = usb.connected;
+
+  const applyWifiDesktopPet = useCallback(async (agentId, appearance, { follow = false } = {}) => {
+    if (!wifi?.appearanceCapacity) throw new Error("请更新设备固件后再通过 Wi-Fi 更换形象。");
+    if (!wifi.controlTrusted) throw new Error("请通过 USB 连接同一台设备一次，授权无线控制后即可通过 Wi-Fi 更换形象。");
+    if (!appearance?.id) throw new Error("请选择一个形象。");
+    if (appearanceAssignmentOwnerRef.current) throw new Error(FOLLOW_ASSIGNMENT_BUSY_MESSAGE);
+    const owner = { boardDeviceId: wifi.boardDeviceId, cancelRequested: false };
+    appearanceAssignmentOwnerRef.current = owner;
+    setAppearanceSync({ ...EMPTY_APPEARANCE_SYNC, pending: true, agentId,
+      appearanceId: appearance.id, appearanceName: appearance.name,
+      transport: "wifi", progress: { text: "正在确认设备形象…", indeterminate: true } });
+    let unlisten;
+    let verified = false;
+    try {
+      unlisten = await listen("wifi-appearance-progress", ({ payload }) => {
+        if (appearanceAssignmentOwnerRef.current !== owner || owner.cancelRequested) return;
+        const progress = payload.stage === "activating"
+          ? { text: "正在切换设备上的形象…", indeterminate: true }
+          : payload.stage === "preparing"
+            ? { text: "设备缺少目标形象，正在准备素材传输…", indeterminate: true }
+            : {
+                percent: Math.min(99, Math.floor(payload.bytesSent / payload.bytesTotal * 100)),
+                text: payload.bytesSent === payload.bytesTotal ? "正在校验并激活…" : "正在通过 Wi-Fi 传输形象…",
+              };
+        setAppearanceSync(current => ({ ...current, progress }));
+      });
+      if (owner.cancelRequested) throw new Error(APPEARANCE_SYNC_CANCELLED_MESSAGE);
+      const outcome = await invoke("lan_sync_appearance", { appearanceId: appearance.id,
+        boardDeviceId: wifi.boardDeviceId, bootId: wifi.bootId });
+      if (!["alreadyActive", "activated", "uploaded"].includes(outcome)) {
+        throw new Error("设备形象结果尚未确认，本次未切换 Agent。");
+      }
+      verified = true;
+      const nextMap = assignAppearanceToAgent(agentAppearanceMap, agentId, appearance.id);
+      setWifiAppearance({ boardDeviceId: wifi.boardDeviceId, bootId: wifi.bootId, appearanceId: appearance.id });
+      if (owner.cancelRequested && follow) throw new Error("设备形象已确认，已取消后续的 Agent 跟随切换。");
+      if (follow) {
+        try {
+          await invoke("lan_follow_agent", { boardDeviceId: wifi.boardDeviceId, bootId: wifi.bootId, agentId });
+        } catch {
+          throw new Error("形象已更换，Agent 跟随结果尚未确认，请查看设备当前状态。");
+        }
+        const enabled = new Set([agentId]);
+        setEnabledAgents(enabled);
+        setBridgeSelectedAgentId(agentId);
+        saveEnabledAgents(enabled);
+      }
+      setAgentAppearanceMap(nextMap);
+      saveAgentAppearanceMap(nextMap);
+      if (follow) {
+        try {
+          const runtime = await invoke("ensure_bridge_runtime", { input: { forceRestart: true } });
+          if (runtime?.running !== true) throw new Error("本地桥接服务未就绪");
+        } catch {
+          throw new Error("Wi-Fi 形象和跟随已确认，但本地桥接服务未就绪。");
+        }
+      }
+      const notice = outcome === "alreadyActive" ? `已确认设备正在使用「${appearance.name}」`
+        : outcome === "activated" ? `已切换至设备上的「${appearance.name}」`
+          : `已通过 Wi-Fi 传输并激活「${appearance.name}」`;
+      return { nextMap, notice };
+    } catch (error) {
+      if (!verified) {
+        setWifiAppearance(current => current?.boardDeviceId === owner.boardDeviceId ? null : current);
+      }
+      throw error;
+    } finally {
+      try { unlisten?.(); } catch { /* Keep the device result. */ }
+      if (appearanceAssignmentOwnerRef.current === owner) {
+        appearanceAssignmentOwnerRef.current = null;
+        setAppearanceSync(EMPTY_APPEARANCE_SYNC);
+      }
+    }
+  }, [agentAppearanceMap, wifi]);
 
   const applyDesktopPet = useCallback(
     async (agentId, appearance, options = {}) => {
+      if (wifi) return applyWifiDesktopPet(agentId, appearance, { follow: agentId !== currentDisplay.agentId });
       if (appearanceAssignmentOwnerRef.current) throw new Error(FOLLOW_ASSIGNMENT_BUSY_MESSAGE);
       const { initialProgress, onProgress } = options;
       const syncToken = appearanceSyncTokenRef.current + 1;
@@ -541,12 +619,15 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
         }
       }
     },
-    [agentAppearanceMap, agentOptions, binding, currentDisplay, onlineBoardDeviceId, usb.boardDeviceId, usb.connectionId, usb.bootId],
+    [agentAppearanceMap, agentOptions, applyWifiDesktopPet, binding, currentDisplay, onlineBoardDeviceId, usb.boardDeviceId, usb.connectionId, usb.bootId, wifi],
   );
 
   const followAgent = useCallback(async (agentId, appearance, options) => {
     if (usb.connected) return applyDesktopPet(agentId, appearance, options);
     if (!wifi) throw new Error("请连接 USB，或先与当前设备完成 Wi-Fi 配对。");
+    if (wifi.appearanceCapacity) {
+      return applyWifiDesktopPet(agentId, appearance, { follow: true });
+    }
     if (appearanceAssignmentOwnerRef.current) throw new Error(FOLLOW_ASSIGNMENT_BUSY_MESSAGE);
     const owner = { boardDeviceId: wifi.boardDeviceId };
     appearanceAssignmentOwnerRef.current = owner;
@@ -560,10 +641,12 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
       setBridgeSelectedAgentId(agentId);
       saveEnabledAgents(enabled);
       if (currentDisplay.appearance?.id) {
-        setWifiAppearance({ boardDeviceId: wifi.boardDeviceId, appearanceId: currentDisplay.appearance.id });
+        setWifiAppearance({ boardDeviceId: wifi.boardDeviceId, bootId: wifi.bootId,
+          appearanceId: currentDisplay.appearance.id });
       }
       try {
-        await invoke("ensure_bridge_runtime", { input: { forceRestart: true } });
+        const runtime = await invoke("ensure_bridge_runtime", { input: { forceRestart: true } });
+        if (runtime?.running !== true) throw new Error("本地桥接服务未就绪");
       } catch {
         throw new Error("Wi-Fi 跟随已提交，桌面配置已保存，但本地桥接服务未就绪。");
       }
@@ -574,19 +657,18 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
         setAppearanceSync(EMPTY_APPEARANCE_SYNC);
       }
     }
-  }, [applyDesktopPet, currentDisplay.appearance?.id, usb.connected, wifi]);
+  }, [applyDesktopPet, applyWifiDesktopPet, currentDisplay.appearance?.id, usb.connected, wifi]);
 
   const cancelAppearanceSync = useCallback(async () => {
     if (!appearanceSync.pending || appearanceSync.cancelling) {
       return { requested: false };
     }
     if (appearanceAssignmentOwnerRef.current) appearanceAssignmentOwnerRef.current.cancelRequested = true;
-    setAppearanceSync((current) => ({
+    const text = appearanceSync.transport === "wifi" ? "正在中断 Wi-Fi 形象传输…" : "正在中断 USB 形象传输…";
+    setAppearanceSync(current => ({
       ...current,
       cancelling: true,
-      progress: current.progress
-        ? { ...current.progress, text: "正在中断 USB 形象传输…" }
-        : { text: "正在中断 USB 形象传输…", percent: 0 },
+      progress: { ...current.progress, text },
     }));
     try {
       const result = await invoke("usb_cancel_appearance_sync");
@@ -598,7 +680,7 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
       setAppearanceSync((current) => ({ ...current, cancelling: false }));
       throw error;
     }
-  }, [appearanceSync.cancelling, appearanceSync.pending]);
+  }, [appearanceSync.cancelling, appearanceSync.pending, appearanceSync.transport]);
 
   const saveAgentAppearance = useCallback((agentId, appearanceId) => {
     const nextMap = assignAppearanceToAgent(agentAppearanceMap, agentId, appearanceId);

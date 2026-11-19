@@ -117,9 +117,8 @@ gate=1/2/3/4/5/6/7/8/9 分别表示入口占用/音频/命令所有权/存储准
 
 私有 framework-mixed-acceptance 仅组合已审查的统一程序父级、自动存储缓存及
 带字节校验的 256 字节分段链路，用于联合验收。仍为两条 PROGRAM 租约、燃料
-总额 4096、每轮合计 64 指令；不开放任意外设、媒体或自启动。继承的 33 个目录
-槽只为安装两份测试资源而不删用户内容，回到 32 槽固件前先清理精确自有测试包。
-普通固件不变，不能以配置存在替代实机或声学验收。
+总额 4096、每轮合计 64 指令，外设、媒体和自启动能力仍按各自契约协商。
+验收配置比普通配置多一个可见槽。回到普通固件前，清理验收包并核对可见组件数不超过 40。
 
 私有 render-rotate-probe 对照分块 CPU 旋转与原 PPA 路径，保持逐像素位置、
 RGB565 顺序、现有双缓冲及 LCD 提交/刷新围栏。不新增帧缓存或线程，不改变
@@ -519,9 +518,9 @@ host 快照可带至多 8 个 variables 标量，整数 ±10⁹、字符串最�
 能力限额补充 maxInputTransitions=24、maxLegacyTransitions=12、
 maxSurfaceNodes=32、maxLegacySurfaceNodes=20、maxLegacyWidgetJsonBytes=4095；
 maxTransitions 仍为兼容值 12，不把有条件的扩展上限误报成所有包都可使用。
-`widget/inventory.maxInstalled` 表示该设备实际可容纳的可见组件总数；保留的隐藏旧数据
-仍占用物理槽，必须从这个值扣除，不能让 PC 多报空闲容量。隐藏项不会被自动清除，
-删除当前组件也只回退到同一可见性规则允许的条目。
+`widget/inventory.maxInstalled` 表示该设备实际可容纳的可见组件总数。普通固件
+支持 40 个可见组件，另为旧版音乐播放器和近期待办保留两个物理槽。删除当前组件
+时，设备只从可见条目选择替代项。
 
 0.7.103-p4：内置清单、启动器图片及完整出厂资源统一为 29 项。末尾追加 `decision-capsule`、`answer-book`、`hope-train`；通用 `widgetLocalTools=p4-local-tools-v1` 契约保持不变。OTA 仍保留轻量资源引导与现有用户存档，完整出厂镜像才携带全部图片。
 
@@ -1302,7 +1301,7 @@ normal rendering. The board keeps the committed runtime alive for 5 seconds
 before restart, leaving enough time for the desktop's 3-second commit timeout
 and one idempotent retry to receive the cached commit result.
 
-R195 的默认组件名单由 `factory-config.json` 维护。设备出厂包含 28 项；桌面安装包包含 27 项，`bloomfrog_companion` 仅随设备出厂资源提供。
+默认组件名单由 `factory-config.json` 维护。设备完整出厂镜像和桌面安装包都包含 27 项，按同一顺序展示。消星星、今天吃点什么和成语笺的 WASM 随出厂存储镜像和桌面组件资源分发。设备 OTA 保留已安装的组件和存档。`bloomfrog_companion`（蛙蛙养成）仍可作为选装组件使用。
 中国象棋、2046 和模拟琴键的 WASM 模块随固件压缩携带，首启时由原有组件事务写入并校验；
 出厂 SPIFFS 也预置相同模块。普通组件的完整美术资源仍由出厂或桌面资源提供。
 既有目录升级时保留安装记录、用户修订和存档。OTA 不自动补装用户目录中缺失的组件，
@@ -1706,6 +1705,86 @@ The PC can reuse the legacy Linux runtime speech card fields:
 
 The firmware also accepts `sessionName`/`title` for the title and `text`/`message`
 for the body, so older bridge payloads still render.
+
+### Optional bubble glyph cells
+
+USB advertises `bubbleGlyphCells: true` in `hello.capabilities`. The authenticated
+LAN text-pixel operation advertises `glyphCells: true` in its capabilities reply.
+A compatible host opts in with `textPixels.glyphCells: true` on its ownership
+manifest. The device marks requests for this mode with `glyphCells: true`.
+The existing `ui/text-pixels` transaction retains its boot, client, owner,
+version, text asset ID, byte bounds and checksum. In glyph mode `begin` carries
+`glyphCells: true`, `pageIndex: 0` and `pageCount: 1`.
+
+The asset is an ordered array of 40-byte records. Each record holds one Unicode
+scalar as little-endian `u32` and 36 bytes of row-major, MSB-first 16×18 one-bit
+coverage. Records are strictly increasing, with at most 511 per text asset.
+One asset serves every locally wrapped caption page. The renderer reads a cell
+only for a missing local codepoint and preserves the local advance and baseline.
+Legacy page assets remain valid. Firmware can use them for a wholly unsupported
+text part, while mixed text keeps its resident glyphs and uses a placeholder
+where an older client lacks a codepoint-addressable asset.
+
+### Optional 24 px bubble body masks
+
+USB advertises `bubbleBodyMasks: true` in `hello.capabilities`. The authenticated
+LAN capabilities reply advertises `bodyMasks: true`. A compatible host opts in
+with `textPixels.bodyMasks: true` on its ownership manifest. This can coexist
+with `textPixels.glyphCells: true`.
+
+For styles 2 (BODY, paged) and 4 (BODY_CLIPPED, one page), the device requests
+`bodyMasks: true` and `glyphCells: false`. Render these pages in native 24 px
+MiSans Medium and send the existing 496×54 RLE4 alpha format, with
+`bodyMasks: true` on `begin`. The host may prefetch page zero as soon as the
+corresponding display manifest is accepted. The asset ID, owner, version,
+boot, checksum, page numbering and byte limits are unchanged. Compact bubbles
+retain their existing negotiated format. Titles do too unless the host also
+opts into the independent `titleMasks` capability below.
+
+The Wi-Fi realtime HUD remains on its authenticated audio connection. Register
+its current BODY asset in the full LAN snapshot ownership manifest. When no
+Agent status, speech or sessions need publishing, a paired client can send a
+snapshot with just `source` and the opted-in `textPixels` manifest. This
+refreshes pixel ownership without replacing the Agent display. The HUD and
+manifest can arrive in either order after negotiation. Refresh the manifest
+within the normal LAN lease and retire the conversation owner when it ends.
+
+A new body waits up to 2.5 seconds for its first gray mask. On a text update
+the visible body can retain the previous gray mask for up to 3.2 seconds
+within the same view, title and peer. Successive partials share the deadline.
+After local fallback, the exact mask can replace it once for the current body.
+While the view remains active, its displayed mask stays pinned, and a missing
+caption page keeps the last complete page visible. Cached exact masks can
+display offline. During an open conversation, idle periods can transfer body
+masks. Recording, audio playback, OTA and asset transfer still protect their
+bandwidth.
+
+### Optional 32 px whole-line bubble title masks
+
+USB advertises `bubbleTitleMasks: true` in `hello.capabilities`; the authenticated
+LAN capabilities reply advertises `titleMasks: true`. A compatible host opts in
+with `textPixels.titleMasks: true`. It may combine this with `bodyMasks` and
+`glyphCells`, but the manifest must declare the current style 1 title asset.
+Render that title as native 32 px MiSans Medium in the existing 474×38 RLE4
+page format (`PIXEL_PAGE`, one page). Its need and begin frame have
+`glyphCells: false` and `bodyMasks: false` (false flags may be omitted on begin).
+There is no new title frame flag or wire format. Owner/version/boot checks,
+checksum, stage deadlines, ACKs and byte limits are unchanged.
+
+Title and body draw independently. While a negotiated, currently declared title
+has no complete image, its line remains pending rather than first showing local
+thin text. Slow delivery, dropped chunks, and body updates do not trigger a
+local-title timeout. Only the exact current title may draw; an old title is not
+retained under new text. A complete title can remain visible across body changes
+and manifest renewal, using the existing bounded cache. Unnegotiated, unmanaged
+or offline titles retain local rendering. Old clients retain their existing
+glyph-cell/page behavior.
+
+Idle conversation hold admits negotiated titles just like body masks; actual
+recording, playback, OTA and asset-transfer protection still blocks both. The
+shared need throttle is 350 ms when either mask capability is negotiated.
+Title masks use the existing eight cache slots, 256 KiB cache budget and single
+32 KiB staging allocation; no separate title bitmap pool or font is embedded.
 
 ## Statistics Payload Shape
 
@@ -2564,3 +2643,31 @@ A new interrupt invalidates the previous LCD presentation reference. The
 renderer may resend an otherwise unchanged frame, limited to one such
 retry every 500 ms. The LCD clock and lane configuration are independent
 of this recovery.
+
+## Wi-Fi appearance transfer
+
+An authenticated WiFi6 status request with a single byte of value 1 can
+advertise appearance staging capacity as `ac` in bytes. The empty request
+keeps the legacy status schema and its original size limit. The desktop uses the same prepared appearance pack and the
+same slot and file checks as USB. The Wi-Fi route accepts only slot query,
+activation, begin, chunk, file and commit phases, with the current boot
+identity, authenticated pairing and wireless-control authorization. An
+attached USB client takes priority. A new transfer proves the factory slot
+is active before writing slot 1. The desktop reads the active pack after
+commit and never automatically replays an unconfirmed mutation.
+
+### 设备私有数据源
+
+匿名 MQTT 另协商 `widgetPublicMqtt=p4-public-mqtt-v1`，声明 `connection.type="mqtt-public"` 后使用空认证报文订阅公网 TLS 服务。私人服务在组件内授权。
+
+Wi-Fi 6 握手声明 `widgetPrivateFeed=p4-private-feed-v1`。运行时使用
+`wifi.feed` 和 `connection.type` 为 `bearer` 或 `mqtt`，语义见
+[设备联网约定](../pc/skills/petui/references/wifi-data.md#设备私有数据源)。
+`widgetCredentialStorageReady` 表示设备有可用的硬件保护凭证存储。
+LAN 扩展状态使用 `pf` 表示同一存储状态。
+
+已授予控制权限的配对端可用 LAN 模式 21 配置。请求是 16 字节启动 ID，
+后接操作、数据源类型、组件 ID 长度、URL 长度（大端 u16）、Topic 长度、
+用户名长度、凭证长度（大端 u16）及五个字段。操作 0 查询、1 设置、2 清除；
+非设置操作不带用户名或凭证。响应是单字节状态，从 0 开始分别为拒绝、
+已配置、未配置、设备安全存储不可用、存储错误、写入忙。响应没有凭证数据。

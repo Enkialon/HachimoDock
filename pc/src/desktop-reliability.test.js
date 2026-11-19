@@ -38,7 +38,7 @@ test("persona close paths share dirty protection and accessible dialog focus", (
 });
 
 test("firmware progress survives expected USB disappearance", () => {
-  assert.match(read("./shell/FirmwareUpdateNavItem.jsx"), /pending \|\| disposition === "update"/);
+  assert.match(read("./shell/FirmwareUpdateNavItem.jsx"), /pending \|\| \(!showRollback && \(disposition === "update" \|\| wifiUpdate \|\| requiresBoardChoice\)\)/);
   assert.match(read("./shell/FirmwareUpdateNavItem.jsx"), /currentFirmwareCompletion\(usb, completed\)/);
   assert.match(read("./lib/firmware-version.js"), /completed\?\.boardDeviceId === usb.boardDeviceId && completed.connectionId === usb.connectionId/);
   assert.match(read("./shell/FirmwareUpdateNavItem.jsx"), /validate:"确认版本"/);

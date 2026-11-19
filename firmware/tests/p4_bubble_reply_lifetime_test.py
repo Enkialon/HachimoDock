@@ -42,11 +42,12 @@ static const char *json_string(const cJSON *p, const char *key) {
 static uint64_t esp_timer_get_time(void) { return 0; }
 static bool pet_p4_audio_active(void) { return false; }
 static bool pet_p4_audio_playback_active(void) { return false; }
+static bool pet_p4_audio_stream_playing(void) { return false; }
 static bool pet_p4_audio_conversation_active(void) { return false; }
 static bool pet_p4_audio_music_active(void) { return false; }
 static bool pet_p4_ota_active(void) { return false; }
-static void pet_bubble_pixels_maintain(uint64_t now, bool paused) {
-    assert(!now && !paused);
+static void pet_bubble_pixels_maintain(uint64_t now, bool paused, bool conversation) {
+    assert(!now && !paused && !conversation);
 }
 static bool pet_bubble_pixels_handle_owned(const cJSON *p, void *ctx, uint64_t now, cJSON *reply) {
     (void)ctx;

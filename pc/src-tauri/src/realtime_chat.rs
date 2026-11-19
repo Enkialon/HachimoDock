@@ -38,7 +38,7 @@ mod barge_policy;
 #[path = "realtime_audio_ack.rs"]
 mod audio_ack;
 #[path = "realtime_chat/lan_audio.rs"]
-mod lan_audio;
+pub(crate) mod lan_audio;
 #[path = "realtime_chat/wifi.rs"]
 mod wifi;
 

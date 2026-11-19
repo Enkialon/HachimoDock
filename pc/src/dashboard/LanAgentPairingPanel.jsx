@@ -6,6 +6,7 @@ import "./wifi-pairing.css";
 import { publishLanAgentPairing, readLanAgentPairing } from "./lanAgentPairing.js";
 import { useExitProtection } from "../lib/exit-protection.js";
 import { firmwareUpdateDisposition } from "../lib/firmware-version.js";
+import { firmwareAlreadyLatest, firmwareRollback, firmwareUpdateFailureMessage } from "../lib/firmware-update-error.js";
 
 async function readControlStatus(usbConnected, onStatus) {
   const status = await invoke("lan_device_status");
@@ -31,18 +32,22 @@ export default function LanAgentPairingPanel({ usb, wifi, active = true, mainten
   const [deliveryMessage, setDeliveryMessage] = useState("");
   const [rebootMessage, setRebootMessage] = useState("");
   const [otaMessage, setOtaMessage] = useState("");
+  const [rollbackBoardId, setRollbackBoardId] = useState(null);
   const maintenance = useRef(null);
   const openedMaintenance = useRef(0);
   useEffect(() => {
     if (!active || maintenanceRequest <= openedMaintenance.current || !maintenance.current) return;
     openedMaintenance.current = maintenanceRequest;
     maintenance.current.open = true;
-    maintenance.current.scrollIntoView({ block: "nearest" });
-  }, [active, address, maintenanceRequest]);
+    maintenance.current.querySelector("summary")?.focus({ preventScroll: true });
+    maintenance.current.scrollIntoView({ block: "center" });
+  }, [active, address, maintenanceRequest, wifi?.address]);
   const usbConnected = Boolean(usb?.connected);
   const verifiedWifi = address && wifi?.wifiConnected && wifi.address === address ? wifi : null;
   const deviceStatus = verifiedWifi ?? (localStatus?.address === address ? localStatus : null);
   const firmwareDisposition = firmwareUpdateDisposition(deviceStatus?.firmware, deviceStatus?.bundledFirmwareVersion);
+  const rollbackBlocked = firmwareDisposition !== "latest" && Boolean(deviceStatus &&
+    (deviceStatus.bundledFirmwareRollbackBlocked || rollbackBoardId === deviceStatus.boardDeviceId));
   useEffect(() => {
     if (verifiedWifi && statusError) setStatusError("");
   }, [verifiedWifi, statusError]);
@@ -180,19 +185,24 @@ export default function LanAgentPairingPanel({ usb, wifi, active = true, mainten
     }
   };
   const updateFirmware = async () => {
+    const expectedBoardDeviceId = deviceStatus?.boardDeviceId;
     const expectedBootId = deviceStatus?.bootId;
-    if (!canMutateOverLan || busy || !expectedBootId) return;
+    if (!canMutateOverLan || busy || rollbackBlocked || !expectedBoardDeviceId || !expectedBootId) return;
     setBusy("ota");
     setError("");
     setOtaMessage("");
     try {
-      const version = await invoke("lan_update_bundled_firmware", {expectedBootId});
+      const { version } = await invoke("lan_update_bundled_firmware", {expectedBoardDeviceId, expectedBootId});
       setOtaMessage(`已通过 Wi-Fi 升级至 ${version}。`);
+    } catch (e) {
+      if (firmwareAlreadyLatest(e)) setOtaMessage("设备固件已是最新版本。");
+      else {
+        if (firmwareRollback(e)) setRollbackBoardId(expectedBoardDeviceId);
+        setError(firmwareUpdateFailureMessage(e, { wireless: true }));
+      }
+    } finally {
       try { setDeviceStatus(await invoke("lan_device_status")); }
       catch { setDeviceStatus(null); }
-    } catch (e) {
-      setError(String(e));
-    } finally {
       setBusy("");
     }
   };
@@ -255,24 +265,25 @@ export default function LanAgentPairingPanel({ usb, wifi, active = true, mainten
         </ol>
       </details>
 
-      {address && <details ref={maintenance}>
+      {(address || verifiedWifi || maintenanceRequest > 0) && <details ref={maintenance}>
         <summary>设备维护与配对管理</summary>
-        {(deviceStatus?.rebootSupported || deviceStatus?.wirelessOta || deviceStatus?.componentDelivery) && !deviceStatus.controlTrusted &&
-          <p role="status">连接同一台设备的 USB 后，桌面端会自动授权无线控制。</p>}
+        {firmwareDisposition !== "latest" && (deviceStatus?.rebootSupported || deviceStatus?.wirelessOta || deviceStatus?.componentDelivery) && !deviceStatus.controlTrusted &&
+          <p role="status">通过 USB 连接同一台设备一次以授权无线控制，之后可断开 USB 并更新。</p>}
         <div className="wifi-pairing__actions">
           {canMutateOverLan && deviceStatus?.rebootSupported &&
             <button type="button" className="btn-secondary btn-sm" disabled={!!busy || !deviceStatus.bootId} onClick={rebootDevice}>
               {busy === "reboot" ? "等待设备上线…" : "无线重启"}
             </button>}
-          {canMutateOverLan && deviceStatus?.wirelessOta && firmwareDisposition !== "latest" &&
+          {canMutateOverLan && deviceStatus?.wirelessOta && firmwareDisposition !== "latest" && !rollbackBlocked &&
             <button type="button" className="btn-secondary btn-sm" disabled={!!busy || !deviceStatus.bootId} onClick={updateFirmware}>
               {busy === "ota" ? "正在升级…" : "无线更新固件"}
             </button>}
+          {rollbackBlocked && <span role="status">固件已回退</span>}
           {canMutateOverLan && deviceStatus?.componentDelivery &&
             <button type="button" className="btn-secondary btn-sm" disabled={!!busy} onClick={chooseComponent}>
               {busy === "install" ? "正在安装…" : "无线安装组件"}
             </button>}
-          <button type="button" className="btn-secondary btn-sm" disabled={!!busy} onClick={forget}>忘记本机配对</button>
+          {address && <button type="button" className="btn-secondary btn-sm" disabled={!!busy} onClick={forget}>忘记本机配对</button>}
         </div>
       </details>}
       {rebootMessage && <p role="status">{rebootMessage}</p>}

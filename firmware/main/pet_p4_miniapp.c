@@ -194,7 +194,7 @@ static bool g_program_slice_admitted=true; /* main parent, model-lock serialized
 #define MINIAPP_CATALOG_GENERATION_COUNT 2
 #define MINIAPP_PACKAGE_GENERATION_COUNT 2
 #define MINIAPP_CATALOG_VERSION 3
-#define MINIAPP_CATALOG_JSON_MAX 16384
+#define MINIAPP_CATALOG_JSON_MAX (32 * 1024)
 
 #ifndef PET_P4_BUILD_ID
 #define PET_P4_BUILD_ID "unknown-build"
@@ -1217,7 +1217,7 @@ static bool parse_name_array(
   return true;
 }
 
-static bool parse_pages(miniapp_runtime_t *runtime, const cJSON *pages, char *error, size_t error_size) {
+static bool __attribute__((optimize("Oz"))) parse_pages(miniapp_runtime_t *runtime, const cJSON *pages, char *error, size_t error_size) {
   const cJSON *item;
   if (!pages) {
     runtime->current_page = -1;
@@ -3274,7 +3274,7 @@ static bool wasm_declaration_valid(const cJSON *root, const pet_p4_miniapp_sprit
   return true;
 }
 
-static bool parse_runtime_impl(
+static bool __attribute__((optimize("Oz"))) parse_runtime_impl(
   miniapp_runtime_t *runtime,
   const char *widget_id,
   const char *widget_json,
@@ -3547,14 +3547,15 @@ static bool parse_runtime_impl(
   }
 
   if (data) {
-    static const char *const data_keys[] = {"source", "page_var", "select_var", "filters", "refresh_action", "url", "response_map", "http"};
+    static const char *const data_keys[] = {"source", "page_var", "select_var", "filters", "refresh_action", "url", "response_map", "http", "connection"};
     const char *source = json_string(data, "source");
     const cJSON *response_map = cJSON_GetObjectItemCaseSensitive(data, "response_map");
     const cJSON *http = cJSON_GetObjectItemCaseSensitive(data, "http");
+    const cJSON *connection = cJSON_GetObjectItemCaseSensitive(data, "connection");
     const bool wifi_feed = !strcmp(source, "wifi.feed");
     if (!strncmp(source, "wifi.feed.", sizeof("wifi.feed.") - 1) ||
-        (!wifi_feed && (cJSON_HasObjectItem(data, "url") || response_map || http))) {
-      set_error(error, error_size, "data.url, data.response_map and data.http require wifi.feed"); goto fail;
+        (!wifi_feed && (cJSON_HasObjectItem(data, "url") || response_map || http || connection))) {
+      set_error(error, error_size, "data source options require wifi.feed"); goto fail;
     }
     int page_var = find_var(parsed, json_string(data, "page_var"));
     bool data_rows_keys=cJSON_HasObjectItem(data,"select_var")||cJSON_HasObjectItem(data,"filters")||cJSON_HasObjectItem(data,"refresh_action");
@@ -3599,8 +3600,8 @@ static bool parse_runtime_impl(
     }
     if (wifi_feed) {
 #if PET_P4_SYSTEM_WIFI
-      if (!pet_wifi_data_feed_init(&parsed->wifi_feed, widget_id, json_string(data, "url"), response_map, http)) {
-        set_error(error, error_size, "wifi.feed needs a public HTTPS URL and valid optional response_map/http"); goto fail;
+      if (!pet_wifi_data_feed_init(&parsed->wifi_feed, widget_id, json_string(data, "url"), response_map, http, connection)) {
+        set_error(error, error_size, "invalid wifi.feed URL, connection, response_map or http"); goto fail;
       }
       source = parsed->wifi_feed.source;
 #else
@@ -5346,6 +5347,19 @@ bool pet_p4_miniapp_side_axis(int horizontal){
   miniapp_runtime_unlock();return active;
 }
 
+#if PET_P4_SYSTEM_WIFI
+bool pet_p4_miniapp_private_feed(pet_private_feed_t *feed, pet_wifi_endpoint_t *endpoint) {
+  miniapp_runtime_lock();
+  const bool found = g_runtime.active && pet_feed_requires_account(g_runtime.wifi_feed.private.kind);
+  if (found) {
+    if (feed) *feed = g_runtime.wifi_feed.private;
+    if (endpoint) *endpoint = g_runtime.wifi_feed.endpoint;
+  }
+  miniapp_runtime_unlock();
+  return found;
+}
+#endif
+
 void pet_p4_miniapp_host_process(uint64_t now_ms,bool visible,bool pc_connected){
   char media_source[48]="";
 #if PET_P4_SYSTEM_WIFI
@@ -5389,8 +5403,11 @@ void pet_p4_miniapp_host_process(uint64_t now_ms,bool visible,bool pc_connected)
 #if PET_P4_SYSTEM_WIFI
   const char *wifi_source = NULL;
   pet_wifi_data_feed_t wifi_feed = {0};
-  if (visible && g_runtime.active) {
+  if (g_runtime.active && g_runtime.wifi_feed.source[0]) {
+    /* The catalog restores the selected component at boot. Its Wi-Fi feed
+     * can take over without switching away from the pet home screen. */
     wifi_feed = g_runtime.wifi_feed;
+  } else if (visible && g_runtime.active) {
     if (g_runtime.wifi_news) {
       wifi_source = PET_WIFI_DATA_NEWS;
       if (pet_device_wifi_online() || wifi_news_available(now_ms, true)) id[0] = 0;
@@ -6641,7 +6658,7 @@ static bool catalog_needs_backup_item(const miniapp_catalog_item_t *backup,
       || backup->sprites_checksum != item->sprites_checksum;
 }
 
-static bool validate_catalog_snapshot(miniapp_catalog_snapshot_t *snapshot,
+static bool __attribute__((optimize("Oz"))) validate_catalog_snapshot(miniapp_catalog_snapshot_t *snapshot,
     const miniapp_catalog_snapshot_t *recover_for, unsigned *physical_loads) {
   miniapp_runtime_t *runtime;
   char error[128] = {0};
@@ -6698,7 +6715,7 @@ static bool validate_catalog_snapshot(miniapp_catalog_snapshot_t *snapshot,
   return complete;
 }
 
-static bool load_catalog_snapshot(
+static bool __attribute__((optimize("Oz"))) load_catalog_snapshot(
   uint8_t file_generation,
   miniapp_catalog_snapshot_t *snapshot
 ) {
@@ -7858,9 +7875,26 @@ static bool recover_catalog_items(miniapp_catalog_snapshot_t *latest,
   return changed;
 }
 
+static bool catalog_id_visible(const char *id) {
+  return strcmp(id, "music-player") != 0
+      && strcmp(id, "upcoming-todos") != 0; /* Merged into the notes workspace. */
+}
+
 static bool catalog_item_visible(const miniapp_catalog_item_t *item) {
-  return strcmp(item->widget_id, "music-player") != 0
-      && strcmp(item->widget_id, "upcoming-todos") != 0; /* Merged into the notes workspace. */
+  return catalog_id_visible(item->widget_id);
+}
+
+static size_t catalog_visible_count(const miniapp_catalog_item_t *items, size_t count) {
+  size_t visible = 0;
+  for (size_t i = 0; i < count; ++i) {
+    if (catalog_item_visible(&items[i])) ++visible;
+  }
+  return visible;
+}
+
+static bool catalog_has_room_for(const miniapp_catalog_item_t *items, size_t count, const char *id) {
+  return count < PET_P4_MINIAPP_CATALOG_MAX &&
+      (!catalog_id_visible(id) || catalog_visible_count(items, count) < PET_P4_MINIAPP_VISIBLE_MAX);
 }
 /* One visibility policy for navigation and transactional fallback. The input
  * array may be the uncommitted next catalog; never consult stale global slots. */
@@ -8431,21 +8465,13 @@ bool pet_p4_miniapp_resource_repair_active(void) {
 }
 
 size_t pet_p4_miniapp_catalog_count(void) {
-  size_t count;
   miniapp_runtime_lock();
-  count = 0;
-  for (size_t i = 0; i < g_catalog_count; ++i) if (catalog_entry_visible(i)) ++count;
+  const size_t count = catalog_visible_count(g_catalog, g_catalog_count);
   miniapp_runtime_unlock();
   return count;
 }
 size_t pet_p4_miniapp_catalog_capacity(void) {
-  /* Retained hidden data still consumes a storage slot. Report the visible
-   * capacity to clients that only receive the visible inventory projection. */
-  size_t hidden=0;
-  miniapp_runtime_lock();
-  for(size_t i=0;i<g_catalog_count;i++)if(!catalog_entry_visible(i))++hidden;
-  miniapp_runtime_unlock();
-  return PET_P4_MINIAPP_CATALOG_MAX-hidden;
+  return PET_P4_MINIAPP_VISIBLE_MAX;
 }
 
 size_t pet_p4_miniapp_catalog_selected(void) {
@@ -9324,6 +9350,15 @@ typedef bool (*widget_commit_live_fn)(void *);
 static bool install_commit_fenced(const cJSON *payload, char *error, size_t error_size,
                                   widget_commit_live_fn live, void *context);
 
+static bool widget_commit_audio_busy(void) {
+  if (storage_audio_busy()) return true;
+  /* Short sound effects and audio startup can already hold a realtime
+   * reservation before the normal capture/playback flags are published. */
+  pet_resource_usage_t usage;
+  pet_resources_device_usage(&usage);
+  return usage.realtime_reservations != 0;
+}
+
 static bool transfer_commit_fenced(const cJSON *payload, char *error, size_t error_size,
                                    widget_commit_live_fn live, void *context) {
   if (g_staging.files.enabled && (!transfer_matches(payload) || !widget_transfer_complete(payload))) {
@@ -9331,8 +9366,12 @@ static bool transfer_commit_fenced(const cJSON *payload, char *error, size_t err
     return false;
   }
   const bool report_receipt = g_staging.files.enabled;
-  if (report_receipt && (pet_p4_miniapp_storage_busy()
-      || !order_widget_resources(g_staging.widget_json, &g_staging.sprites))) {
+  if (report_receipt && pet_p4_miniapp_storage_busy()) {
+    set_error(error, error_size, widget_commit_audio_busy()
+      ? PET_P4_WIDGET_COMMIT_AUDIO_BUSY : PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED);
+    return false;
+  }
+  if (report_receipt && !order_widget_resources(g_staging.widget_json, &g_staging.sprites)) {
     set_error(error, error_size, "component image or sprite IDs do not match the declaration; existing package preserved");
     return false;
   }
@@ -9378,9 +9417,14 @@ static bool install_commit_fenced(const cJSON *payload, char *error, size_t erro
     return false;
   }
   pet_storage_scope_t storage __attribute__((cleanup(storage_scope_finish))) = {0};
-  if((!g_builtin_sync_in_progress&&storage_audio_busy())
-      ||!storage_scope_begin(&storage,false)){
-    set_error(error,error_size,"audio or component storage is busy; staged package preserved");return false;
+  if (!g_builtin_sync_in_progress && storage_audio_busy()) {
+    set_error(error, error_size, PET_P4_WIDGET_COMMIT_AUDIO_BUSY);
+    return false;
+  }
+  if (!storage_scope_begin(&storage, false)) {
+    set_error(error, error_size, !g_builtin_sync_in_progress && widget_commit_audio_busy()
+      ? PET_P4_WIDGET_COMMIT_AUDIO_BUSY : PET_P4_WIDGET_COMMIT_STORAGE_DEFERRED);
+    return false;
   }
   g_storage_failure[0] = '\0';
   const int base_generation=g_catalog_file_generation;
@@ -9501,7 +9545,10 @@ static bool install_commit_fenced(const cJSON *payload, char *error, size_t erro
 #if PET_P4_STORAGE_PRESERVE_UNCHANGED
   int unchanged=preserve_unchanged_package(next, title_checksum);
   if(unchanged<0){
-    free(next);set_error(error,error_size,"physical verification lost storage ownership; staged package preserved");return false;
+    free(next);
+    set_error(error, error_size, widget_commit_audio_busy()
+      ? PET_P4_WIDGET_COMMIT_AUDIO_BUSY : PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED);
+    return false;
   }
   if(unchanged==1){
     free(next);widget_install_stage_reset();
@@ -9530,7 +9577,7 @@ static bool install_commit_fenced(const cJSON *payload, char *error, size_t erro
     catalog_index = (size_t) existing;
     slot = next_catalog[catalog_index].slot;
     package_generation = (uint8_t) (1 - next_catalog[catalog_index].package_generation);
-  } else if (next_count < PET_P4_MINIAPP_CATALOG_MAX) {
+  } else if (catalog_has_room_for(next_catalog, next_count, g_staging.widget_id)) {
     slot = catalog_first_free_slot(next_catalog, next_count);
     if (slot < 0) {
       free(next);
@@ -9630,12 +9677,22 @@ static bool install_commit_fenced(const cJSON *payload, char *error, size_t erro
   /* Preload the target save outside the state lane. Publication re-reads only
    * RAM after saving the still-running old runtime, so input during flash work
    * is never overwritten by a stale prepare-time snapshot. */
-  if(!storage_work_current()||!restore_component_runtime(next)){
+  if (!storage_work_current()) {
+    free(next);
+    set_error(error, error_size, widget_commit_audio_busy()
+      ? PET_P4_WIDGET_COMMIT_AUDIO_BUSY : PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED);
+    return false;
+  }
+  if(!restore_component_runtime(next)){
     free(next);set_error(error,error_size,"component save is unavailable; original package and data preserved");return false;
   }
   miniapp_catalog_commit_t commit;
-  if(!storage_work_current()||(storage_audio_busy()&&!g_builtin_sync_in_progress)){
-    free(next);set_error(error,error_size,"audio started; catalog commit deferred and staged package preserved");return false;
+  const bool audio_blocks_commit = !g_builtin_sync_in_progress && widget_commit_audio_busy();
+  if (audio_blocks_commit || !storage_work_current()) {
+    free(next);
+    set_error(error, error_size, audio_blocks_commit
+      ? PET_P4_WIDGET_COMMIT_AUDIO_BUSY : PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED);
+    return false;
   }
 #if PET_P4_CAPABILITY_EXT
   pet_cext_publish_ticket_t media_ticket={0};
@@ -9645,9 +9702,13 @@ static bool install_commit_fenced(const cJSON *payload, char *error, size_t erro
   if(ext_swap&&!miniapp_ext_prepare(next,next_catalog[catalog_index].slot,next_catalog[catalog_index].package_generation,&media_ticket)){
     free(next);set_error(error,error_size,"component media prepare failed; existing runtime and catalog preserved");return false;
   }
-  if(!storage_work_current()||(storage_audio_busy()&&!g_builtin_sync_in_progress)){
+  const bool audio_blocks_publication = !g_builtin_sync_in_progress && widget_commit_audio_busy();
+  if (audio_blocks_publication || !storage_work_current()) {
     if(ext_swap)(void)miniapp_ext_abort(&media_ticket);
-    free(next);set_error(error,error_size,"component publication cancelled before catalog commit; existing runtime preserved");return false;
+    free(next);
+    set_error(error, error_size, audio_blocks_publication
+      ? PET_P4_WIDGET_COMMIT_AUDIO_BUSY : PET_P4_WIDGET_COMMIT_STORAGE_INTERRUPTED);
+    return false;
   }
 #endif
   /* LAN cancellation is checked immediately before starting durable publication.
@@ -9964,6 +10025,7 @@ esp_err_t pet_p4_miniapp_sync_builtins(void) {
     if(g_catalog_recovery_blocked)break;
     const char *widget_id = json_string(indexed, "id");
     const int existing = catalog_find(g_catalog,g_catalog_count,widget_id);
+    if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(indexed, "factoryWasm"))) continue;
     /* Missing membership is the durable uninstall tombstone, independent of
      * firmware build/bundle markers. Explicit PC/factory install can add it. */
     if(existing<0&&!seed_missing)continue;

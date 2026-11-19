@@ -1699,6 +1699,7 @@ mod tests {
                 &board.board_device_id,
                 None,
                 None,
+                None,
                 |done, total, stage| {
                     if done == 0 || done == total {
                         println!("OTA {stage}: {done}/{total}");

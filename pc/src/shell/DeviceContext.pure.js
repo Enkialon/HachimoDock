@@ -116,6 +116,7 @@ export function pairedWifiTarget(status) {
     address: status.address || "",
     firmware: status.firmware || "",
     bundledFirmwareVersion: status.bundledFirmwareVersion || "",
+    bundledFirmwareRollbackBlocked: status.bundledFirmwareRollbackBlocked === true,
     wifiConnected: true,
     clockSynchronized: status.clockSynchronized === true,
     rebootSupported: status.rebootSupported === true,
@@ -123,7 +124,10 @@ export function pairedWifiTarget(status) {
     controlTrusted: status.controlTrusted === true,
     wirelessOta: status.wirelessOta === true,
     wirelessRealtime: status.wirelessRealtime === true,
+    wirelessVoiceInput: status.wirelessVoiceInput === true,
     componentDelivery: status.componentDelivery === true,
+    appearanceCapacity: Number.isSafeInteger(status.appearanceCapacity) && status.appearanceCapacity > 0
+      ? status.appearanceCapacity : 0,
     inputDoublePress: status.inputDoublePress === true,
     systemSettings: status.systemSettings === true || (status.systemSettings == null && wifi6SettingsFirmware),
     panelControl: status.panelControl === true,

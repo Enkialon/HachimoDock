@@ -160,6 +160,26 @@ def valid_wifi_endpoint(url):
             and all(33 <= ord(char) <= 126 and char not in ("#", chr(92)) for char in path))
 
 
+def valid_private_feed(data):
+    connection = data.get("connection")
+    url = data.get("url")
+    if (data.get("source") != "wifi.feed" or "http" in data or
+            not isinstance(connection, dict) or not isinstance(url, str)):
+        return False
+    if connection == {"type": "bearer"}:
+        return "?" not in url and valid_wifi_endpoint(url)
+    if set(connection) != {"type", "topic"} or connection["type"] not in ("mqtt", "mqtt-public"):
+        return False
+    if not url.startswith("mqtts://") or any(c in url[8:] for c in "/?#@"):
+        return False
+    host, colon, port = url[8:].partition(":")
+    topic = connection["topic"]
+    return (valid_wifi_endpoint("https://" + host)
+            and (not colon or bool(re.fullmatch(r"[0-9]{1,5}", port)) and 1 <= int(port) <= 65535)
+            and isinstance(topic, str) and 1 <= len(topic) <= 127 and not topic.startswith("$")
+            and all(33 <= ord(c) <= 126 and c not in "+#" for c in topic))
+
+
 def valid_wifi_feed_map(mapping):
     required = {"rows", "id", "label"}
     return (isinstance(mapping, dict) and required <= mapping.keys()
@@ -1653,8 +1673,9 @@ def validate_runtime(
                 errors.append("media transition 仅接受受控 on 动作，不接受额外效果")
     if "data" in runtime:
         if (
-            not only_keys(data, {"source", "page_var", "select_var", "filters", "refresh_action", "url", "response_map", "http"})
-            or (data.get("source") == "wifi.feed" and not valid_wifi_endpoint(data.get("url")))
+            not only_keys(data, {"source", "page_var", "select_var", "filters", "refresh_action", "url", "response_map", "http", "connection"})
+            or ("connection" in data and not valid_private_feed(data))
+            or (data.get("source") == "wifi.feed" and "connection" not in data and not valid_wifi_endpoint(data.get("url")))
             or (data.get("source") != "wifi.feed" and "url" in data)
             or not isinstance(data.get("source"), str)
             or data["source"].startswith("wifi.feed.")
@@ -1670,6 +1691,11 @@ def validate_runtime(
             errors.append("runtime/widget.json.data 需要受控 source 和整数 page_var，只用于 v4 列表工具")
         if isinstance(data, dict) and data.get("source") == "wifi.feed" and capabilities.get("widgetWifiFeed") != "p4-wifi-feed-v1":
             errors.append("目标固件不支持设备 HTTPS 数据源 p4-wifi-feed-v1")
+        if isinstance(data, dict) and isinstance(data.get("connection"), dict) and data["connection"].get("type") == "mqtt-public":
+            if capabilities.get("widgetPublicMqtt") != "p4-public-mqtt-v1":
+                errors.append("目标固件缺少公开 MQTT 订阅能力")
+        elif isinstance(data, dict) and "connection" in data and capabilities.get("widgetPrivateFeed") != "p4-private-feed-v1":
+            errors.append("目标固件不支持设备私有数据源 p4-private-feed-v1")
         if isinstance(data, dict) and "response_map" in data:
             if data.get("source") != "wifi.feed" or not valid_wifi_feed_map(data["response_map"]):
                 errors.append("data.response_map 需要 wifi.feed 和有界字段路径")

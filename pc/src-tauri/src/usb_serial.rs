@@ -60,7 +60,7 @@ use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-mod appearance_transaction;
+pub(crate) mod appearance_transaction;
 mod appearance_recovery;
 mod appearance_reset;
 mod connection_handle;
@@ -81,7 +81,7 @@ use firmware_chip::chip_target_from_device;
 use firmware_chip::{firmware_chip_range, validate_firmware_chip};
 mod native_usb_protocol;
 mod transaction_waiters;
-mod transfer_log;
+pub(crate) mod transfer_log;
 mod receive_buffer;
 mod receive_diagnostics;
 mod control_integrity;
@@ -105,7 +105,7 @@ pub(crate) mod catalog;
 pub(crate) mod program_autostart_host;
 #[cfg(test)]
 mod component_sync_safety_tests;
-mod bubble_pixels;
+pub(crate) mod bubble_pixels;
 pub(crate) use bubble_pixels::BubbleFrame;
 
 use appearance_transaction::{
@@ -2343,7 +2343,7 @@ impl UsbSerialManager {
             .store(false, Ordering::SeqCst);
     }
 
-    fn ensure_appearance_sync_not_cancelled(
+    pub(crate) fn ensure_appearance_sync_not_cancelled(
         &self,
         transfer_id: Option<&str>,
     ) -> Result<(), String> {
@@ -2976,12 +2976,14 @@ impl UsbSerialManager {
         if frame.data.len() > 43692 {
             return Err("BUBBLE_FALLBACK: encoded limit".into());
         }
-        if !self
-            .bubble_renderer
-            .lock()
-            .map_err(|_| "BUBBLE_FALLBACK: lifecycle")?
-            .current(frame)
-        {
+        let current = if frame.wifi {
+            if self.status().connected { return Err("BUBBLE_FALLBACK: USB takeover".into()); }
+            crate::lan_agent::bubble_pixels::admit(frame)?;
+            true
+        } else {
+            self.bubble_renderer.lock().map_err(|_| "BUBBLE_FALLBACK: lifecycle")?.current(frame)
+        };
+        if !current {
             return Err("BUBBLE_FALLBACK: stale content".into());
         }
         bubble_pixels::WorkerLease::acquire(self.bubble_worker.clone())
@@ -3099,31 +3101,7 @@ impl UsbSerialManager {
             self.remove_device_response_waiter(&request_id, "ui/text-pixels/status");
             result
         };
-        let result = (|| {
-            let begin = phase(
-                "begin",
-                serde_json::json!({"pageSizes":frame.page_sizes,"pageIndex":frame.page_index,
-                "pageCount":frame.page_count,"checksum":frame.checksum,"totalBytes":bytes.len()}),
-            )?;
-            if begin["cached"] == true {
-                return Ok(());
-            }
-            if begin["offset"] != 0 {
-                return Err("BUBBLE_FALLBACK: invalid READY".into());
-            }
-            for (index, chunk) in bytes.chunks(bubble_pixels::CHUNK_BYTES).enumerate() {
-                let reply = phase(
-                    "chunk",
-                    serde_json::json!({"offset":index*bubble_pixels::CHUNK_BYTES,
-                    "data":base64::engine::general_purpose::STANDARD.encode(chunk)}),
-                )?;
-                if reply["offset"] != index * bubble_pixels::CHUNK_BYTES + chunk.len() {
-                    return Err("BUBBLE_FALLBACK: offset ACK".into());
-                }
-            }
-            phase("end", serde_json::json!({}))?;
-            Ok(())
-        })();
+        let result = bubble_pixels::transfer_frame(&frame, &bytes, &mut phase);
         // No uncertain image/frame replay. Superseding text invalidates its
         // device stage; otherwise the bounded idle/absolute timeout retires it.
         result
@@ -3131,6 +3109,15 @@ impl UsbSerialManager {
 
     /// Low-priority snapshots never interleave with firmware/widget/appearance transfers.
     pub(crate) fn send_widget_data(&self, board: &str, payload: &serde_json::Value) -> Result<(), String> {
+        self.send_widget_data_scoped(board, None, payload)
+    }
+
+    pub(crate) fn send_widget_data_scoped(
+        &self,
+        board: &str,
+        connection: Option<u64>,
+        payload: &serde_json::Value,
+    ) -> Result<(), String> {
         if self.media_requests_pending.load(Ordering::SeqCst) != 0 {
             return Err("音乐正在传输，稍后更新组件数据".into());
         }
@@ -3138,7 +3125,7 @@ impl UsbSerialManager {
         if self.media_requests_pending.load(Ordering::SeqCst) != 0 {
             return Err("音乐正在传输，稍后更新组件数据".into());
         }
-        self.send_to_board(board, "widget/data", payload)
+        self.send_inner("widget/data", payload, true, Some(board), connection, None)
     }
     pub(crate) fn send_app_snapshot(&self,board:&str,payload:&serde_json::Value)->Result<(),String>{
         // App controls need feedback while their own audio is playing. Wait for
@@ -3407,8 +3394,15 @@ impl UsbSerialManager {
         if conn.capabilities["bubblePixels"]==bubble_pixels::SCHEMA&&bubble_pixels::is_text_topic(topic)&&payload.is_object(){
             let mut bridge=self.bubble_renderer.lock().map_err(|_|"BUBBLE_FALLBACK: lifecycle")?;
             let boot=conn.capabilities["bubblePixelsBoot"].as_str().unwrap_or("");
+            bridge.set_format(
+                conn.capabilities["bubbleGlyphCells"] == true,
+                conn.capabilities["bubbleBodyMasks"] == true,
+                conn.capabilities["bubbleTitleMasks"] == true,
+            );
             bubble_events=bridge.observe(topic,&payload,conn.connection_id,&conn.board_device_id,boot);
-            payload["textPixels"]=bridge.metadata(topic,boot);bubble_sink=bridge.sink();
+            let metadata = bridge.metadata(topic, boot);
+            payload["textPixels"] = metadata;
+            bubble_sink=bridge.sink();
         }
         if topic == "system/heartbeat" && payload.is_object() {
             let services = conn.capabilities["widgetWasmHost"] == crate::clawpkg::HACHI_HOST_PROFILE;
@@ -3729,7 +3723,10 @@ impl UsbSerialManager {
         // from a local preview/version or a differently formatted JSON file.
         let inventory=self.send_device_request_and_wait(board,"widget/list","widget/inventory")?;
         if inventory["boardDeviceId"]!=board||inventory["ok"]!=true||inventory["complete"]!=true||inventory["recoveryBlocked"]!=false
-            ||!inventory["items"].as_array().is_some_and(|rows|rows.len()<=32&&rows.iter().any(|row|row["id"]==id)){
+            ||!inventory["items"].as_array().is_some_and(|rows|{
+                inventory["maxInstalled"].as_u64().is_some_and(|limit| rows.len() as u64 <= limit)
+                    && rows.iter().any(|row|row["id"]==id)
+            }){
             return Err("设备组件清单尚未确认，未启动程序，已有数据保留".into());
         }
         let inspected=self.send_device_payload_and_wait(board,"widget/program-inspect","widget/program-status",serde_json::json!({"widgetId":id}))?;
@@ -3981,6 +3978,7 @@ impl UsbSerialManager {
         expected_board_device_id: &str,
         expected_connection_id: Option<&str>,
         confirmed_board_model: Option<&str>,
+        rollback_directory: Option<&Path>,
         on_progress: F,
         mut reconnect: R,
     ) -> Result<FirmwareUpdateResult, String>
@@ -4019,6 +4017,12 @@ impl UsbSerialManager {
         }
         ota_diagnostic.snapshot.total_bytes = firmware.len() as u64;
         let descriptor = parse_esp_idf_app_descriptor(&firmware)?;
+        let digest = Sha256::digest(&firmware);
+        let sha256 = format!("{digest:x}");
+        let digest = digest.into();
+        if let Some(directory) = rollback_directory {
+            crate::firmware_rollback::ensure_allowed(directory, &expected_board_device_id, &digest)?;
+        }
         let identifies_board = descriptor.version.ends_with("-wifi6") || descriptor.version.ends_with("-pico");
         if identifies_board {
             let board = board_model_from_device(&status.capabilities, confirmed_board_model)?;
@@ -4061,7 +4065,6 @@ impl UsbSerialManager {
             .unwrap_or_default()
             .to_string();
 
-        let sha256 = format!("{:x}", Sha256::digest(&firmware));
         let transfer_id = format!("firmware-{}", uuid::Uuid::new_v4());
         let total_bytes = firmware.len() as u64;
         transfer_log::record(
@@ -4316,6 +4319,11 @@ impl UsbSerialManager {
             total_bytes,
         )
         .map_err(|error| {
+            if error == crate::firmware_rollback::ROLLED_BACK {
+                if let Some(directory) = rollback_directory {
+                    crate::firmware_rollback::record(directory, &expected_board_device_id, &digest);
+                }
+            }
             transfer_log::record(
                 "firmware",
                 "transaction_failed",
@@ -6301,26 +6309,56 @@ impl UsbSerialManager {
 
         let commit = serde_json::json!({"transferId":id,"widgetId":widget,"packageSha256":digest});
         let started = Instant::now();
-        transfer_log::record("widget", "commit_submitted", serde_json::json!({
-            "files": total_files, "bytes": total_bytes,
-            "timeoutMs": WIDGET_COMMIT_ACK_TIMEOUT.as_millis()
-        }));
-        let reply = send_phase("widget/commit", "commit", &commit, None, None, WIDGET_COMMIT_ACK_TIMEOUT)?;
-        transfer_log::record("widget", if reply.is_some() { "commit_ack" } else { "commit_unconfirmed" },
-            serde_json::json!({"elapsedMs": started.elapsed().as_millis(),
-                "ok": reply.as_ref().and_then(|ack| ack["ok"].as_bool())}));
-        match reply {
-            Some(ack) if ack["ok"] == true => completed(),
-            Some(ack) => Err(ack["msg"].as_str().unwrap_or("设备拒绝提交组件").into()),
-            None => match status() {
-                Ok(WidgetTransferStatus::Committed) => completed(),
-                Ok(_) => Err("组件提交结果尚未确认，重新同步时会先查询设备。".into()),
-                Err(error) => {
-                    transfer_log::record("widget", "commit_status_unconfirmed",
-                        serde_json::json!({"elapsedMs": started.elapsed().as_millis()}));
-                    Err(error)
+        let retry_window = Duration::from_millis(3500);
+        let mut backoff = [100, 250, 500, 850, 1300].into_iter().map(Duration::from_millis);
+        let mut attempt = 1u32;
+        loop {
+            // Each retry uses a distinct ACK key. The package identity and
+            // the original board/connection fence remain bound by send_phase.
+            let index = (attempt > 1).then_some(attempt);
+            let mut payload = commit.clone();
+            if let Some(index) = index {
+                payload["index"] = index.into();
+            }
+            let attempt_started = Instant::now();
+            transfer_log::record("widget", "phase_started", serde_json::json!({
+                "phase":"commit", "files":total_files, "bytes":total_bytes, "attempt":attempt,
+                "timeoutMs":WIDGET_COMMIT_ACK_TIMEOUT.as_millis()
+            }));
+            let reply = send_phase("widget/commit", "commit", &payload, None, index, WIDGET_COMMIT_ACK_TIMEOUT)?;
+            let ok = reply.as_ref().and_then(|ack| ack["ok"].as_bool());
+            let error_code = match reply.as_ref().and_then(|ack| ack["errorCode"].as_str()) {
+                Some(code @ ("commit_storage_deferred" | "commit_audio_busy" | "commit_storage_interrupted")) => code,
+                _ => "none",
+            };
+            transfer_log::record("widget", if ok.is_some() { "phase_ack" } else { "phase_timed_out" },
+                serde_json::json!({"phase":"commit","attempt":attempt,"elapsedMs":attempt_started.elapsed().as_millis(),
+                    "transactionElapsedMs":started.elapsed().as_millis(),"ok":ok,"errorCode":error_code}));
+            match reply.as_ref() {
+                Some(ack) if ack["ok"] == true => return completed(),
+                Some(ack) => {
+                    // Only the pre-write negative ACK authorizes repeating
+                    // the commit. The board revalidates the same staged ID/digest.
+                    if ok == Some(false) && error_code == "commit_storage_deferred" {
+                        if let Some(delay) = backoff.next()
+                            .filter(|delay| started.elapsed().saturating_add(*delay) <= retry_window)
+                        {
+                            std::thread::sleep(delay);
+                            if started.elapsed() <= retry_window {
+                                attempt += 1;
+                                continue;
+                            }
+                        }
+                    }
+                    return Err(ack["msg"].as_str().unwrap_or("设备拒绝提交组件").into());
                 }
-            },
+                None => {
+                    return match status() {
+                        Ok(WidgetTransferStatus::Committed) => completed(),
+                        _ => Err("组件提交结果尚未确认，请刷新设备组件清单核对。".into()),
+                    };
+                }
+            }
         }
     }
 
@@ -7469,6 +7507,14 @@ fn load_prepared_p4_appearance_pack(
                 "{error}. Re-save or re-import this appearance so Pet Manager can prepare it before device transfer"
             )
         })
+}
+
+pub(crate) fn prepared_p4_lan_files(
+    appearance_dir: &Path,
+) -> Result<(PreparedP4Appearance, Vec<(String, PathBuf)>), String> {
+    let (assets, prepared) = load_p4_pack_from_profile_root(&p4_ready_profile_root(appearance_dir))
+        .map_err(|_| "设备素材未准备好，请在形象画廊重新保存或导入形象。")?;
+    Ok((prepared, assets.into_iter().map(|asset| (asset.device_path, asset.source_path)).collect()))
 }
 
 pub fn inspect_prepared_p4_appearance(
@@ -9030,7 +9076,7 @@ manager.activate_memory_test_connection();
             });
             manager.activate_memory_test_connection();
             let image = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("firmware/esp32-p4").join(name);
-            let result = manager.update_firmware(&image, "p4-test", None, None,
+            let result = manager.update_firmware(&image, "p4-test", None, None, None,
                 |_,_,_| panic!("incompatible firmware must not start transfer"),
                 || panic!("incompatible firmware must not reconnect"));
             assert!(result.unwrap_err().contains("芯片版本不匹配"));
@@ -11763,7 +11809,7 @@ manager.activate_memory_test_connection();
             image[17..19].copy_from_slice(&103u16.to_le_bytes());
             std::fs::write(&image_path,image).unwrap();
             let started = Instant::now();
-            let error = manager.update_firmware(&image_path,"p4-board-a",None,None,|_,_,_|{},
+            let error = manager.update_firmware(&image_path,"p4-board-a",None,None,None,|_,_,_|{},
                 ||panic!("unknown/rejected transaction must not reconnect or validate")).unwrap_err();
             let reason = match phase {"begin-metadata"=>"targetPartition", "begin-rejected"=>"another firmware transfer is active",
                 "chunk-mismatch"=>"firmware transferId mismatch", "commit-rejected"|"chunk-base64-known"|"chunk-timeout-applied"|"chunk-timeout-unchanged"=>"commit rejected",
@@ -12708,6 +12754,7 @@ manager.activate_memory_test_connection();
                 &expected_board_device_id,
                 None,
                 confirmed_board_model.as_deref(),
+                None,
                 |sent, total, stage| {
                     if stage != "upload" || sent == total || sent % (64 * 1024) == 0 {
                         eprintln!("[p4-firmware-hil] stage={stage} bytes={sent}/{total}");

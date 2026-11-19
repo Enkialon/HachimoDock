@@ -883,6 +883,9 @@ static void native_protocol_worker_task(void *arg) {
   }
 }
 
+#if PET_P4_COLD_INIT_SIZE && defined(__GNUC__) && !defined(__clang__)
+__attribute__((noinline, optimize("Oz")))
+#endif
 esp_err_t pet_p4_native_usb_init(
   pet_p4_runtime_state_t *state,
   SemaphoreHandle_t state_mutex,

@@ -1,5 +1,5 @@
 /**
- * [Input] Tauri USB audio, transcript, and Agent-delivery events for device PTT utterances.
+ * [Input] Tauri audio, transcript, and Agent-delivery events for USB and Wi-Fi PTT utterances.
  * [Output] One monotonic, utterance-scoped draft-then-confirm voice flow with current-to-exact guarded route resolution plus audio relay activity callbacks.
  * [Pos] Dashboard device-voice routing state machine and event-listener boundary.
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md` and `pc/src/.folder.md`.
@@ -380,7 +380,7 @@ function audioActivity(payload) {
   } else if (!ok) {
     message = `板端录音处理失败：${normalizeText(payload.error) || "音频流校验失败"}`;
   } else if (phase === "begin") {
-    message = "设备麦克风录音中，音频正通过 USB 转发...";
+    message = `设备麦克风录音中，音频正通过 ${payload.transport === "wifi" ? "Wi-Fi" : "USB"} 转发...`;
   } else if (phase === "streaming") {
     message = `设备麦克风录音中，已转发 ${(durationMs / 1000).toFixed(1)} 秒音频...`;
   } else if (phase === "end") {

@@ -2,6 +2,7 @@ use super::{
     exchange_connection, query_status, read_before, read_peer, read_with_recovery, recover_pairing,
     Peer, IO_TIMEOUT,
 };
+use crate::firmware_rollback;
 use crate::usb_serial::{self, P4BoardModel, P4ChipTarget};
 use crate::wireless_ota::{self, Boot, Error, Offer, Receipt, TransferId, TrustedOtaLink};
 use ring::{
@@ -16,26 +17,46 @@ use std::{
     time::{Duration, Instant},
 };
 
+use tauri::{Emitter, Manager};
+
 const MODE: u8 = 12;
 const FRAME_TIMEOUT: Duration = Duration::from_secs(4);
 
 // Wi-Fi status identifies the board family. Offer a version comparison only
 // when both bundled chip variants agree; chip selection remains in the updater.
-pub(super) fn bundled_wifi6_version(app: &tauri::AppHandle) -> Option<&'static str> {
-    static VERSION: OnceLock<Option<String>> = OnceLock::new();
-    VERSION.get_or_init(|| {
-        let board = P4BoardModel::Wifi6;
-        let inspect = |target| {
-            let path = crate::bundled_p4_firmware_path(
-                app, usb_serial::bundled_resource_for_device(board, target),
-            ).ok()?;
-            let info = usb_serial::inspect_firmware_image(&path, target).ok()?;
-            board.image_version_matches(&info.version).then_some(info.version)
-        };
-        let v1 = inspect(P4ChipTarget::LegacyV1)?;
-        let v3 = inspect(P4ChipTarget::Revision(302))?;
-        (v1 == v3).then_some(v1)
-    }).as_deref()
+pub(super) fn bundled_wifi6_status(app: &tauri::AppHandle, board_id: &str) -> (Option<&'static str>, bool) {
+    static BUNDLED: OnceLock<Option<(String, [[u8; 32]; 2])>> = OnceLock::new();
+    let Some((version, digests)) = BUNDLED
+        .get_or_init(|| {
+            let board = P4BoardModel::Wifi6;
+            let inspect = |target| {
+                let path = crate::bundled_p4_firmware_path(
+                    app,
+                    usb_serial::bundled_resource_for_device(board, target),
+                )
+                .ok()?;
+                let info = usb_serial::inspect_firmware_image(&path, target).ok()?;
+                board
+                    .image_version_matches(&info.version)
+                    .then_some(info)
+            };
+            let v1 = inspect(P4ChipTarget::LegacyV1)?;
+            let v3 = inspect(P4ChipTarget::Revision(302))?;
+            (v1.version == v3.version).then_some((v1.version, [v1.sha256, v3.sha256]))
+        })
+        .as_ref()
+    else {
+        return (None, false);
+    };
+    let blocked = app.path().app_data_dir().is_ok_and(|app_data| {
+        let directory = firmware_rollback::directory(&app_data);
+        // A board's chip revision cannot change, and installs can only record
+        // the variant they authenticated and selected for that board.
+        !board_id.is_empty() && digests.iter().any(|digest| {
+            firmware_rollback::is_blocked(&directory, board_id, digest).unwrap_or(false)
+        })
+    });
+    (Some(version), blocked)
 }
 
 struct Link {
@@ -211,21 +232,49 @@ fn error_text(error: Error) -> String {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WirelessUpdateResult {
+    version: String,
+    board_device_id: String,
+    boot_id: String,
+}
+
 fn install_bundled(
     app: &tauri::AppHandle,
     usb: &usb_serial::UsbSerialManager,
+    expected_board_device_id: &str,
     expected_boot_id: &str,
-) -> Result<String, String> {
+) -> Result<WirelessUpdateResult, String> {
+    let _update = firmware_rollback::start_update()?;
+    let _foreground = super::widget_data::foreground()?;
+    let progress = |stage, percent| {
+        let _ = app.emit(
+            "lan-firmware-update-progress",
+            serde_json::json!({
+                "stage": stage, "percent": percent,
+            }),
+        );
+    };
     super::require_no_usb(usb)?;
     let (mut peer, status) = read_with_recovery(query_status, "无法读取已配对的 Wi-Fi 设备。")?;
-    if !status.wireless_ota || !status.control_trusted || status.boot_id != expected_boot_id {
-        return Err("当前设备未开放无线升级，或启动身份已变化。".into());
+    if !status.wifi_connected
+        || status.board_device_id != expected_board_device_id
+        || status.boot_id != expected_boot_id
+    {
+        return Err("目标设备或启动身份已改变。".into());
+    }
+    if !status.wireless_ota || !status.control_trusted {
+        return Err("当前设备未开放无线升级，或尚未授权无线控制。".into());
     }
     // Resolve and inspect the bundled image outside of the transfer session.
     let mut link = Link::open(&peer).map_err(error_text)?;
     let revision = link.revision;
     let id = link.id.clone();
     link.close();
+    if id != expected_board_device_id {
+        return Err(error_text(Error::Device));
+    }
     let target = P4ChipTarget::Revision(revision);
     let board = P4BoardModel::Wifi6;
     let path = crate::bundled_p4_firmware_path(
@@ -254,9 +303,11 @@ fn install_bundled(
     if bytes[23] != 1 || <[u8; 32]>::from(Sha256::digest(&bytes[..end])) != digest {
         return Err(error_text(Error::Image));
     }
-    let image =
-        wireless_ota::VerifiedImage::new(&bytes, Sha256::digest(&bytes).into(), digest, revision)
-            .map_err(error_text)?;
+    let sha256 = Sha256::digest(&bytes).into();
+    let image = wireless_ota::VerifiedImage::new(&bytes, sha256, digest, revision)
+        .map_err(error_text)?;
+    let directory = firmware_rollback::directory(&app.path().app_data_dir().map_err(|e| e.to_string())?);
+    firmware_rollback::ensure_allowed(&directory, &id, &sha256)?;
     let mut transfer = [0; 16];
     SystemRandom::new()
         .fill(&mut transfer)
@@ -269,17 +320,29 @@ fn install_bundled(
         return Err(error_text(Error::Device));
     }
     super::require_no_usb(usb)?;
-    let pending = wireless_ota::install(&mut link, &id, transfer, image).map_err(error_text)?;
+    let pending =
+        wireless_ota::install(&mut link, &id, transfer, image, progress).map_err(error_text)?;
+    progress("reboot", 100);
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut next_scan = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(1400));
         if let Ok(mut live) = Link::open(&peer) {
-            if live
-                .query_boot()
-                .is_ok_and(|boot| pending.validated(live.board_id(), &boot))
-            {
-                return Ok(info.version);
+            if let Ok(boot) = live.query_boot() {
+                if boot.id != expected_boot_id {
+                    progress("validate", 100);
+                }
+                if pending.validated(live.board_id(), &boot) {
+                    return Ok(WirelessUpdateResult {
+                        version: info.version,
+                        board_device_id: id,
+                        boot_id: boot.id,
+                    });
+                }
+                if pending.rolled_back(live.board_id(), &boot) {
+                    firmware_rollback::record(&directory, &id, &sha256);
+                    return Err(firmware_rollback::ROLLED_BACK.into());
+                }
             }
         } else if Instant::now() >= next_scan {
             let _ = recover_pairing(&peer);
@@ -298,12 +361,18 @@ fn install_bundled(
 #[tauri::command]
 pub(crate) async fn lan_update_bundled_firmware(
     app_handle: tauri::AppHandle,
+    expected_board_device_id: String,
     expected_boot_id: String,
     usb_manager: tauri::State<'_, usb_serial::UsbSerialManager>,
-) -> Result<String, String> {
+) -> Result<WirelessUpdateResult, String> {
     let usb = usb_manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        install_bundled(&app_handle, &usb, &expected_boot_id)
+        install_bundled(
+            &app_handle,
+            &usb,
+            &expected_board_device_id,
+            &expected_boot_id,
+        )
     })
     .await
     .map_err(|_| "无线升级任务未完成。")?

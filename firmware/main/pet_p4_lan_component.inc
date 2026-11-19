@@ -4,6 +4,7 @@
 #define LAN_COMPONENT_MAX (21 + 32 + 4095 + 2047)
 #define LAN_REBOOT_WORK_US 2500000
 #define LAN_COMPONENT_WORK_US 55000000
+#define LAN_WIDGET_DATA_WORK_US 350000
 
 typedef struct {
   cJSON *manifest;
@@ -26,9 +27,12 @@ static struct {
   uint8_t result;
   bool publication_started;
   bundle_job_t *bundle;
-  unsigned panel_action;
+  unsigned action;
   const cJSON *keyboard_request;
   cJSON **keyboard_reply;
+  uint32_t paired_generation;
+  char *appearance_reply;
+  const uint8_t *widget_data_board;
 } delivery;
 
 static uint32_t next_component_token;
@@ -41,6 +45,17 @@ static bool component_socket_live(void *unused) {
   uint8_t extra;
   const int got = recv(delivery.fd, &extra, 1, MSG_PEEK);
   return got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+}
+
+bool pet_p4_lan_appearance_current(void *route) {
+  return (uintptr_t)route == delivery.paired_generation &&
+    !atomic_load(&usb_client_active) && component_socket_live(NULL);
+}
+
+void pet_p4_lan_appearance_reply(const char *line, void *route) {
+  if (delivery.appearance_reply && pet_p4_lan_appearance_current(route) &&
+      strlen(line) < LAN_APPEARANCE_REPLY_MAX)
+    strcpy(delivery.appearance_reply, line);
 }
 
 static bool component_publish(void *unused) {
@@ -185,7 +200,15 @@ void pet_p4_lan_control_run(pet_p4_runtime_state_t *state, uint32_t token, bool 
 
   bool installed = false;
   bool published = false;
-  if (delivery.bundle) {
+  if (delivery.operation != PET_LAN_CONTROL_APPEARANCE || delivery.bundle)
+    admitted = admitted && !state->asset_transfer_active && !pet_p4_appearance_active() &&
+      !pet_p4_appearance_mutation_blocked();
+  if (delivery.operation == PET_LAN_CONTROL_APPEARANCE && !delivery.bundle) {
+    void *route = (void *)(uintptr_t)delivery.paired_generation;
+    if (admitted && pet_p4_lan_appearance_current(route))
+      pet_p4_handle_lan_appearance(state, delivery.action, delivery.keyboard_request, route);
+    installed = delivery.appearance_reply[0] != 0;
+  } else if (delivery.bundle) {
     installed = bundle_step(delivery.bundle, admitted);
     published = installed && delivery.publication_started;
   } else if (delivery.operation == PET_LAN_CONTROL_KEYBOARD) {
@@ -194,9 +217,26 @@ void pet_p4_lan_control_run(pet_p4_runtime_state_t *state, uint32_t token, bool 
       installed = *delivery.keyboard_reply != NULL;
     }
   } else if (delivery.operation == PET_LAN_CONTROL_PANEL) {
-    if (!atomic_load(&usb_client_active) && component_socket_live(NULL)) {
-      *delivery.keyboard_reply = lan_panel_run(delivery.panel_action, delivery.keyboard_request, state, admitted);
+    /* Linearize each bitmap phase with pairing revocation. The state lane
+     * already excludes concurrent USB protocol application. */
+    const bool pixels = delivery.action == PET_LAN_PANEL_TEXT_PIXELS;
+    if (pixels) xSemaphoreTake(lock, portMAX_DELAY);
+    if ((!pixels || (delivery.paired_generation == generation && volume_available()
+          && !pet_p4_state_usb_client_connected(state, clock_ms())))
+        && !atomic_load(&usb_client_active) && component_socket_live(NULL)) {
+      *delivery.keyboard_reply = lan_panel_run(delivery.action, delivery.keyboard_request, state, admitted);
       installed = *delivery.keyboard_reply != NULL;
+    }
+    if (pixels) xSemaphoreGive(lock);
+  } else if (delivery.operation == PET_LAN_CONTROL_WIDGET_DATA) {
+    const uint64_t now = clock_ms();
+    if (admitted && !atomic_load(&usb_client_active) &&
+        !pet_p4_state_usb_client_connected(state, now) &&
+        strlen(state->board_device_id) == LAN_WIDGET_BOARD_BYTES &&
+        !memcmp(delivery.widget_data_board, state->board_device_id, LAN_WIDGET_BOARD_BYTES) &&
+        component_socket_live(NULL) && pet_p4_widget_data_apply_lan(delivery.keyboard_request, now)) {
+      state->last_update_ms += 1;
+      installed = true;
     }
   } else if (admitted && delivery.operation == PET_LAN_CONTROL_REBOOT) {
     installed = pet_p4_miniapp_lan_install_idle() && component_socket_live(NULL) &&
@@ -307,13 +347,13 @@ static uint8_t queue_delivery(bool cleanup) {
       }
     }
     xSemaphoreGive(lock);
-    vTaskDelay(delivery.bundle ? 1 : pdMS_TO_TICKS(50));
+    vTaskDelay(delivery.bundle || delivery.operation == PET_LAN_CONTROL_APPEARANCE ? 1 : pdMS_TO_TICKS(50));
   }
 }
 
 static uint8_t control_deliver(int fd, unsigned operation, uint8_t *body, size_t size,
                                uint32_t paired_generation, const cJSON *keyboard_request,
-                               cJSON **keyboard_reply) {
+                               cJSON **keyboard_reply, char *appearance_reply) {
   if (strlen(pet_p4_boot_identity()) != 16 || memcmp(body, pet_p4_boot_identity(), 16)) return 0;
 
   xSemaphoreTake(lock, portMAX_DELAY);
@@ -327,12 +367,18 @@ static uint8_t control_deliver(int fd, unsigned operation, uint8_t *body, size_t
     return 0;
   }
   delivery.operation = operation;
-  delivery.panel_action = operation == PET_LAN_CONTROL_PANEL ? body[16] : 0;
+  delivery.action = (operation == PET_LAN_CONTROL_PANEL ||
+    operation == PET_LAN_CONTROL_APPEARANCE) ? body[16] : 0;
+  delivery.paired_generation = paired_generation;
+  delivery.appearance_reply = appearance_reply;
   delivery.fd = fd;
   delivery.bundle = NULL;
   delivery.keyboard_request = keyboard_request;
   delivery.keyboard_reply = keyboard_reply;
+  if (operation == PET_LAN_CONTROL_WIDGET_DATA) delivery.widget_data_board = body + 16;
   delivery.until = esp_timer_get_time() +
-    (operation == PET_LAN_CONTROL_COMPONENT ? LAN_COMPONENT_WORK_US : LAN_REBOOT_WORK_US);
+    (operation == PET_LAN_CONTROL_WIDGET_DATA ? LAN_WIDGET_DATA_WORK_US :
+     (operation == PET_LAN_CONTROL_COMPONENT || operation == PET_LAN_CONTROL_APPEARANCE)
+      ? LAN_COMPONENT_WORK_US : LAN_REBOOT_WORK_US);
   return queue_delivery(false);
 }

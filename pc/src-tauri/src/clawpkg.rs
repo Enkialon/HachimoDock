@@ -44,6 +44,13 @@ impl ComponentSyncRequirements {
         if runtime["hachiHost"] == HACHI_HOST_PROFILE {result.usb_capabilities.insert("widgetWasmHost",HACHI_HOST_PROFILE);}
         if runtime["data"]["source"] == "wifi.feed" {
             result.usb_capabilities.insert("widgetWifiFeed", "p4-wifi-feed-v1");
+            if runtime["data"].get("connection").is_some() {
+                if runtime["data"]["connection"]["type"] == "mqtt-public" {
+                    result.usb_capabilities.insert("widgetPublicMqtt", "p4-public-mqtt-v1");
+                } else {
+                    result.usb_capabilities.insert("widgetPrivateFeed", private_feed::CAPABILITY);
+                }
+            }
             if runtime["data"].get("response_map").is_some() {
                 result.usb_capabilities.insert(wifi_feed_map::CAPABILITY, wifi_feed_map::VERSION);
             }
@@ -747,6 +754,8 @@ fn validate_p4_runtime_dashboard_rules(files: &HashMap<String, Vec<u8>>, errors:
 
 #[path = "clawpkg/wifi_endpoint.rs"]
 mod wifi_endpoint;
+#[path = "clawpkg/private_feed.rs"]
+pub(crate) mod private_feed;
 #[path = "clawpkg/wifi_feed_map.rs"]
 mod wifi_feed_map;
 #[path = "wifi_audio_manifest.rs"]
@@ -758,9 +767,11 @@ fn validate_widget_data(files: &HashMap<String, Vec<u8>>, errors: &mut Vec<Strin
     let source = data.get("source").and_then(|v| v.as_str()).unwrap_or("");
     let page = data.get("page_var").and_then(|v| v.as_str()).unwrap_or("");
     let wifi_feed = source == "wifi.feed";
-    if !data.as_object().is_some_and(|v| v.keys().all(|k| ["source", "page_var","select_var","filters","refresh_action","url","response_map","http"].contains(&k.as_str())))
+    let private = data.get("connection").is_some();
+    if !data.as_object().is_some_and(|v| v.keys().all(|k| ["source", "page_var","select_var","filters","refresh_action","url","response_map","http","connection"].contains(&k.as_str())))
         || source.starts_with("wifi.feed.")
-        || (wifi_feed && !data["url"].as_str().is_some_and(wifi_endpoint::valid))
+        || (private && private_feed::parse(data).is_err())
+        || (wifi_feed && !private && !data["url"].as_str().is_some_and(wifi_endpoint::valid))
         || (!wifi_feed && data.get("url").is_some())
         || source.is_empty() || source.len() > 47 || !source.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
         || widget.get("engine").and_then(|v| v.as_str()) != Some("p4-bounded-runtime-v4")

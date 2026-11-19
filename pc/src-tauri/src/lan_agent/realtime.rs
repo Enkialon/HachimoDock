@@ -18,7 +18,7 @@ impl AudioTarget {
         Self::from_status(peer, status, expected_board_id)
     }
 
-    fn from_status(peer: Peer, status: super::LanDeviceStatus, expected_board_id: &str) -> Result<Self, String> {
+    pub(super) fn from_status(peer: Peer, status: super::LanDeviceStatus, expected_board_id: &str) -> Result<Self, String> {
         if status.rtc_key & 2 != 0 || !status.wifi_connected
             || !status.wireless_realtime
             || !status.control_trusted
@@ -45,7 +45,7 @@ impl AudioTarget {
         Ok(target)
     }
 
-    fn matches_peer(&self, peer: Option<&Peer>) -> bool {
+    pub(super) fn matches_peer(&self, peer: Option<&Peer>) -> bool {
         peer.is_some_and(|peer| peer.address == self.peer.address && peer.key.as_ref() == self.peer.key.as_ref())
     }
 
@@ -77,7 +77,20 @@ impl AudioTarget {
         &self.board_id
     }
 
+    pub(super) fn boot_id(&self) -> &str { &self.boot }
+
     pub(crate) fn open(&self) -> Result<(TcpStream, Zeroizing<[u8; 16]>), String> {
+        self.open_audio(self.boot.as_bytes(), false)
+    }
+
+    pub(super) fn open_voice(&self, token: u32) -> Result<(TcpStream, Zeroizing<[u8; 16]>), String> {
+        let mut offer = [0; 20];
+        offer[..16].copy_from_slice(self.boot.as_bytes());
+        offer[16..].copy_from_slice(&token.to_be_bytes());
+        self.open_audio(&offer, true)
+    }
+
+    fn open_audio(&self, body: &[u8], voice: bool) -> Result<(TcpStream, Zeroizing<[u8; 16]>), String> {
         // An admission offer never starts capture. Authenticate a fresh
         // socket once more if the first TCP handshake ended before admission.
         let offer = || {
@@ -85,7 +98,7 @@ impl AudioTarget {
             exchange_link(
                 &self.peer,
                 MODE,
-                self.boot.as_bytes(),
+                body,
                 Some(1),
                 Duration::from_millis(2200),
             )
@@ -94,11 +107,12 @@ impl AudioTarget {
             .map_err(|_| "无法建立设备 Wi-Fi 音频连接。".to_string())?;
         self.ensure_current_pair()?;
         if session.reply != [1] {
-            return Err("设备音频当前不可用，请检查 Wi-Fi 后重新进入实时对话。".into());
+            return Err(if voice { "设备麦克风当前不可用，请重新按住说话。" }
+                else { "设备音频当前不可用，请检查 Wi-Fi 后重新进入实时对话。" }.into());
         }
         session
             .stream
-            .set_read_timeout(Some(Duration::from_millis(8)))
+            .set_read_timeout(Some(Duration::from_millis(if voice { 1000 } else { 8 })))
             .and_then(|_| {
                 session
                     .stream

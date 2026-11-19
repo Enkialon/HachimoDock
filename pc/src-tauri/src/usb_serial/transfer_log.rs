@@ -146,11 +146,12 @@ fn safe_label(label: &str) -> &str {
         "comparing_assets" | "preparing_slot" | "waiting_storage" |
         "phase_started" | "phase_ack" | "phase_timed_out" | "phase_wait_disconnected" |
         "phase_send_failed" | "phase_ack_invalid" | "transaction_completed" | "status" |
-        "begin" | "chunk" | "raw-chunk" | "raw-ready" | "commit" | "abort" |
+        "commit_storage_deferred" | "commit_audio_busy" | "commit_storage_interrupted" |
+        "begin" | "chunk" | "raw-chunk" | "raw-ready" | "commit" | "abort" | "file" | "activate" | "slot-query" |
         "idle" | "unknown" | "pending" | "accepted" | "rejected" | "timeout" |
         "read" | "write" | "probe_hello" | "live" | "preparing_storage" | "transferring" |
         "preparing" | "activating" | "validating" | "completed" | "cancelled" |
-        "uart-raw-v1" | "json-base64-v1" | "native-usb" | "body" | "physical_line" |
+        "uart-raw-v1" | "json-base64-v1" | "native-usb" | "wifi" | "body" | "physical_line" |
         "header" | "length" | "hash" | "required_prefix" | "negotiation" | "utf8" |
         "admission" | "ack" | "response" | "admission_failed" | "write_failed" |
         "post_write_failed" | "ack_timeout" | "ack_channel_closed" | "ack_read_failed" |

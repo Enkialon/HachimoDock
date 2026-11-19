@@ -1,8 +1,30 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { BUBBLE_STYLES, bubblePixelKey, bubbleChecksum, clampBubbleText,
-  encodeBubbleAlpha, wrapBubbleText, wrapBubbleRuns, parseBubbleMarkdown, renderBubblePixels,
+  encodeBubbleAlpha, wrapBubbleText, wrapBubbleRuns, parseBubbleMarkdown, renderBubblePixels, renderBubbleGlyphCells,
   collectBubbleTexts, startBubblePixelService } from "./bubble-pixels.js";
+
+test("glyph cells index the entire text by Unicode scalar and keep the original asset identity", () => {
+  const text = "㐀A㐀𠀀";
+  const glyphs = [];
+  const rgba = new Uint8Array(16 * 18 * 4);
+  rgba[3] = 255;
+  const context = {
+    clearRect() {},
+    fillText(glyph, x, baseline, maxWidth) { glyphs.push([glyph, x, baseline, maxWidth]); },
+    getImageData() { return { data: rgba }; },
+  };
+  const frame = renderBubbleGlyphCells(2, text, () => ({ getContext: () => context }));
+  const bytes = Uint8Array.from(atob(frame.data), byte => byte.charCodeAt(0));
+  const view = new DataView(bytes.buffer);
+  assert.deepEqual(glyphs, [["A", 0, 15, 10], ["㐀", 0, 15, 16], ["𠀀", 0, 15, 16]]);
+  assert.equal(frame.id, bubblePixelKey(2, text));
+  assert.equal(frame.glyphCells, true);
+  assert.deepEqual([frame.pageIndex, frame.pageCount], [0, 1]);
+  assert.deepEqual([0, 40, 80].map(offset => view.getUint32(offset, true)), [0x41, 0x3400, 0x20000]);
+  assert.deepEqual([bytes[4], bytes[44], bytes[84]], [0x80, 0x80, 0x80]);
+  assert.equal(frame.checksum, bubbleChecksum(bytes));
+});
 
 test("Markdown emphasis keeps real bold runs and literal code/escaped markers", () => {
   assert.deepEqual(parseBubbleMarkdown("普通 **重点**，__强调__；`**原样**`，\\*字\\*"), [

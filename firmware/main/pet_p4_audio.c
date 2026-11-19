@@ -1,6 +1,9 @@
 #include "pet_p4_wasm_trial.h"
 #include "pet_p4_audio_patch.h"
 #include "pet_p4_audio.h"
+#if PET_P4_SYSTEM_WIFI
+#include "pet_p4_lan.h"
+#endif
 #include "pet_p4_wdt_deadlock.h"
 #include "pet_p4_audio_volume.h"
 #include "pet_p4_fs_activity.h"
@@ -220,6 +223,8 @@ static atomic_uint g_wifi_audio_drained_turn;
 static unsigned g_wifi_audio_drain_writes;
 static bool g_wifi_audio_play_open;
 static const char wifi_capture_label[] = "\001wifi-rtc";
+static bool g_wifi_audio_ptt;
+static const char wifi_ptt_label[] = "\001wifi-ptt";
 static void audio_stream_flush_locked(void);
 _Static_assert(PET_P4_AUDIO_FRAME_BYTES == PET_P4_AUDIO_WIFI_FRAME_BYTES, "Wi-Fi audio frame size");
 #endif
@@ -1363,13 +1368,20 @@ static void audio_task(void *arg) {
     atomic_store(&g_capture_tx_last_us, 0);
     atomic_store(&g_capture_tx_max_us, 0);
 #if PET_P4_SYSTEM_WIFI
-    const bool wifi_capture = !strcmp(capture_owner, wifi_capture_label);
+    const bool wifi_ptt = !strcmp(capture_owner, wifi_ptt_label);
+    const bool wifi_capture = wifi_ptt || !strcmp(capture_owner, wifi_capture_label);
     const unsigned wifi_owner = wifi_capture ? atomic_load(&g_wifi_audio_owner) : 0;
     if (!wifi_capture)
 #endif
     send_audio_begin(session_id, session_queue_empty, capture_owner);
 
     while (capture_worker_current(capture_work)) {
+#if PET_P4_SYSTEM_WIFI
+      if (wifi_ptt && !pet_p4_lan_voice_mic_allowed()) {
+        capture_worker_cancel(capture_work);
+        break;
+      }
+#endif
       uint64_t now_ms = (uint64_t) (esp_timer_get_time() / 1000ULL);
       bool conversation = atomic_load_explicit(&g_conversation, memory_order_acquire);
       if (atomic_load(&g_conversation_starting)) { vTaskDelay(1); continue; }
@@ -1445,7 +1457,8 @@ static void audio_task(void *arg) {
       if (wifi_capture) {
         /* No USB fallback. This frame belongs to the worker's original route
          * even when the network closes during a codec read. */
-        if (processed && wifi_owner && xSemaphoreTake(g_wifi_audio_tap_lock, 0) == pdTRUE) {
+        if ((processed || (wifi_ptt && pet_p4_lan_voice_mic_allowed())) &&
+            wifi_owner && xSemaphoreTake(g_wifi_audio_tap_lock, 0) == pdTRUE) {
           if (g_wifi_audio_tap && wifi_owner == atomic_load(&g_wifi_audio_owner) &&
               !atomic_load(&g_wifi_audio_fault) && capture_worker_current(capture_work))
             g_wifi_audio_tap(g_wifi_audio_ctx, wifi_owner, (uint64_t)esp_timer_get_time() / 1000, pcm, speech);
@@ -2207,11 +2220,11 @@ void pet_p4_audio_stream_flush(void) {
 #pragma GCC push_options
 #pragma GCC optimize ("Os")
 #endif
-esp_err_t pet_p4_audio_wifi_start(pet_p4_audio_wifi_capture_fn tap, void *ctx,
-                                 pet_p4_audio_wifi_session_t *session) {
+static esp_err_t audio_wifi_start(pet_p4_audio_wifi_capture_fn tap, void *ctx, bool ptt,
+                                  bool queue_empty, pet_p4_audio_wifi_session_t *session) {
   if (!tap || !session) return ESP_ERR_INVALID_ARG;
   *session = 0;
-  if (!g_stream_lock || !pet_p4_audio_playback_ready() || !audio_wired_lock())
+  if (!g_stream_lock || (!ptt && !pet_p4_audio_playback_ready()) || !audio_wired_lock())
     return ESP_ERR_INVALID_STATE;
   esp_err_t result = ESP_ERR_INVALID_STATE;
   if (g_wifi_audio_generation != UINT32_MAX && pet_p4_audio_master_idle()) {
@@ -2222,6 +2235,7 @@ esp_err_t pet_p4_audio_wifi_start(pet_p4_audio_wifi_capture_fn tap, void *ctx,
     }
     const unsigned owner = ++g_wifi_audio_generation;
     g_wifi_audio_tap = tap;
+    g_wifi_audio_ptt = ptt;
     g_wifi_audio_ctx = ctx;
     g_wifi_audio_turn = 0;
     atomic_store(&g_wifi_audio_drained_turn, 0);
@@ -2231,11 +2245,34 @@ esp_err_t pet_p4_audio_wifi_start(pet_p4_audio_wifi_capture_fn tap, void *ctx,
     atomic_store(&g_wifi_audio_owner, owner);
     /* The worker snapshots the private route label at admission. The
      * conversation ID is local and cannot identify a wired conversation. */
-    result = audio_conversation_set(true, false, "wifi-realtime", wifi_capture_label);
+    result = ptt
+      ? audio_capture_start(queue_empty, wifi_ptt_label, false)
+      : audio_conversation_set(true, false, "wifi-realtime", wifi_capture_label);
     if (result == ESP_OK) *session = owner;
     else (void)pet_p4_audio_wifi_stop(owner);
   }
   audio_wired_unlock();
+  return result;
+}
+
+esp_err_t pet_p4_audio_wifi_start(pet_p4_audio_wifi_capture_fn tap, void *ctx,
+                                 pet_p4_audio_wifi_session_t *session) {
+  return audio_wifi_start(tap, ctx, false, false, session);
+}
+
+esp_err_t pet_p4_audio_wifi_ptt_start(pet_p4_audio_wifi_capture_fn tap, bool queue_empty,
+                                     pet_p4_audio_wifi_session_t *session) {
+  return audio_wifi_start(tap, NULL, true, queue_empty, session);
+}
+
+esp_err_t pet_p4_audio_wifi_ptt_enable(bool enabled) {
+  if (!g_stream_lock) return ESP_ERR_INVALID_STATE;
+  xSemaphoreTakeRecursive(g_stream_lock, portMAX_DELAY);
+  // The dictation switch may stop its own capture, never an active SW2 session.
+  const unsigned owner = atomic_load(&g_wifi_audio_owner);
+  const esp_err_t result = (!owner || (!enabled && g_wifi_audio_ptt))
+    ? audio_set_enabled(enabled) : ESP_ERR_INVALID_STATE;
+  xSemaphoreGiveRecursive(g_stream_lock);
   return result;
 }
 
@@ -2254,7 +2291,7 @@ esp_err_t pet_p4_audio_wifi_stop(pet_p4_audio_wifi_session_t session) {
     g_wifi_audio_ctx = NULL;
     xSemaphoreGive(g_wifi_audio_tap_lock);
     capture_request_cancel();
-    result = audio_conversation_set(false, true, NULL, "");
+    result = g_wifi_audio_ptt ? ESP_OK : audio_conversation_set(false, true, NULL, "");
   }
   xSemaphoreGiveRecursive(g_stream_lock);
   if (result == ESP_OK) {

@@ -20,7 +20,7 @@ def config(data,runtime=None):
     """Strict data extension; raises ValueError. Returns the normalized config."""
     def need(q):
         if not q:raise ValueError('Invalid data rows declaration')
-    need(isinstance(data,dict) and {'source','page_var'}<=set(data)<={'source','page_var','select_var','filters','refresh_action','url','response_map','http'})
+    need(isinstance(data,dict) and {'source','page_var'}<=set(data)<={'source','page_var','select_var','filters','refresh_action','url','response_map','http','connection'})
     if 'http' in data:
         need(data['source'] == 'wifi.feed' and valid_wifi_feed_http(data['http']))
     out={'select_var':data.get('select_var'),'filters':[],'refresh_action':data.get('refresh_action')}

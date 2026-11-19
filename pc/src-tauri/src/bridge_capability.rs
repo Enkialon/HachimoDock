@@ -13,7 +13,79 @@ pub(crate) struct Capability {
     pub epoch: String,
 }
 
+#[cfg(windows)]
+pub(crate) mod managed {
+    use super::Capability;
+    use rand::{rngs::OsRng, RngCore};
+    use serde::Serialize;
+    use std::sync::{Mutex, OnceLock};
+
+    #[derive(Serialize)]
+    struct Tokens {
+        read: String,
+        control: String,
+        hook: String,
+    }
+
+    #[derive(Serialize)]
+    pub(crate) struct Bootstrap {
+        epoch: String,
+        tokens: Tokens,
+    }
+
+    fn active() -> &'static Mutex<Option<(u32, Bootstrap)>> {
+        static ACTIVE: OnceLock<Mutex<Option<(u32, Bootstrap)>>> = OnceLock::new();
+        ACTIVE.get_or_init(|| Mutex::new(None))
+    }
+
+    pub(crate) fn fresh() -> Result<Bootstrap, String> {
+        fn secret() -> Result<String, String> {
+            let mut bytes = [0u8; 32];
+            OsRng.try_fill_bytes(&mut bytes).map_err(|_| "bridge random source unavailable")?;
+            Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+        }
+        Ok(Bootstrap {
+            epoch: secret()?,
+            tokens: Tokens { read: secret()?, control: secret()?, hook: secret()? },
+        })
+    }
+
+    pub(crate) fn set(pid: u32, bootstrap: Bootstrap) -> Result<(), String> {
+        *active().lock().map_err(|_| "bridge capability state unavailable")? = Some((pid, bootstrap));
+        Ok(())
+    }
+
+    pub(crate) fn clear() {
+        if let Ok(mut current) = active().lock() {
+            current.take();
+        }
+    }
+
+    pub(super) fn load(role: &str) -> Option<Capability> {
+        let current = active().lock().ok()?;
+        let (pid, bootstrap) = current.as_ref()?;
+        if !crate::managed_runtime::is_live(*pid) {
+            return None;
+        }
+        let (port, token) = match role {
+            "read" => (crate::DEFAULT_AGENT_BUS_PORT, &bootstrap.tokens.read),
+            "control" => (crate::DEFAULT_BRIDGE_PORT, &bootstrap.tokens.control),
+            "hook" => (crate::DEFAULT_BRIDGE_PORT, &bootstrap.tokens.hook),
+            _ => return None,
+        };
+        Some(Capability {
+            base_url: format!("http://127.0.0.1:{port}"),
+            token: token.clone(),
+            epoch: bootstrap.epoch.clone(),
+        })
+    }
+}
+
 pub(crate) fn load(role: &str) -> Result<Capability, String> {
+    #[cfg(windows)]
+    if let Some(capability) = managed::load(role) {
+        return Ok(capability);
+    }
     let name = if role == "hook" { "hook.json" } else { "client.json" };
     let file = std::env::var_os("HACHIMODOCK_BRIDGE_CAPABILITY_DIR")
         .map(|p| PathBuf::from(p).join(name))

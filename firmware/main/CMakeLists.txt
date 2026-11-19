@@ -4,13 +4,16 @@
 # [Sync] If this file changes, update `firmware/.folder.md` and `protocol.md`.
 
 if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
-  set(settings_requires esp_wifi esp_event esp_netif esp-tls protocomm)
+  set(settings_requires esp_wifi esp_event esp_netif esp-tls protocomm efuse esp_hw_support bootloader_support)
   set(settings_sources
     "pet_p4_system_settings.c"
     "pet_p4_device_wifi.c"
     "pet_p4_wifi_clock.c"
     "pet_p4_lan.c"
     "pet_p4_wifi_data.c"
+    "pet_p4_live_tls.c"
+    "pet_p4_private_feed.c"
+    "pet_p4_mqtt_feed.c"
     "pet_p4_wifi_data_cache.c"
     "pet_p4_wifi_data_sources.c"
     "pet_p4_radio.c"
@@ -159,7 +162,7 @@ idf_component_register(
     tinyusb
 )
 
-if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1" AND "$ENV{PET_P4_CHIP_FAMILY}" STREQUAL "v3")
+if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
   idf_component_get_property(pet_h264_dir espressif__esp_h264 COMPONENT_DIR)
   target_include_directories(${COMPONENT_LIB} PRIVATE "${pet_h264_dir}/sw/libs/tinyh264_inc")
 endif()
@@ -218,6 +221,11 @@ if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
     "pet_p4_input.c" "pet_p4_assets.c" "pet_p4_program_activation.c"
     "pet_p4_transport_audit.c" "pet_p4_collection_host.c" "pet_p4_component_events.c"
     "pet_p4_view.c" "pet_p4_conversation.c" "pet_p4_stats.c" "pet_p4_spiffs_hint.c" "pet_p4_board_probe.c"
+    APPEND PROPERTY COMPILE_OPTIONS "-Oz")
+endif()
+# Keep fault reporting and credential setup compact on the small pre-v3 OTA slot.
+if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1" AND "$ENV{PET_P4_CHIP_FAMILY}" STREQUAL "v1")
+  set_property(SOURCE "pet_p4_diagnostics.c" "pet_p4_private_feed.c"
     APPEND PROPERTY COMPILE_OPTIONS "-Oz")
 endif()
 # The reviewed v4 report consumes six actual module reports. Append this after
@@ -481,7 +489,7 @@ if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1")
     "pet_p4_program_store.c" "pet_p4_program_group.c"
     "pet_p4_resources_device.c" "pet_p4_storage_io_trace.c"
     "pet_p4_program_timers.c" "pet_p4_event_bus.c" "pet_p4_variable_owners.c"
-    "pet_p4_surface.c"
+    "pet_p4_surface.c" "pet_p4_private_feed.c" "pet_p4_mqtt_feed.c" "pet_p4_live_tls.c"
     APPEND PROPERTY COMPILE_OPTIONS "-Oz")
 endif()
 
@@ -490,6 +498,18 @@ if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1" AND "$ENV{PET_P4_CHIP_FAMILY}" STREQU
   # using the SDK size default. V3 already used the size default and retains
   # its existing per-file flags (including the explicit hot-path O2 above).
   # These compiler differences never gate Wi-Fi, HID or gesture features.
+  set_property(SOURCE "pet_p4_system_settings.c" "pet_p4_reset_record.c"
+    "pet_p4_boot_trace.c" "pet_p4_flash_phase.c" "pet_p4_native_panic.c"
+    "pet_p4_app_host.c" "pet_p4_selection.c" "pet_p4_control_session.c"
+    "pet_p4_widget_trace.c" "pet_p4_transport_audit.c" "pet_p4_sched_trace_rpc.c"
+    "pet_p4_collection_host.c" "pet_p4_host_collection.c" "pet_p4_program_image.c"
+    "pet_p4_program_registry.c" "pet_p4_program_activation.c"
+    "pet_p4_trusted_services_device.c" "pet_p4_ota.c" "pet_p4_miniapp.c"
+    "pet_p4_trusted_services.c" "pet_p4_collection.c"
+    "pet_p4_conversation.c" "pet_p4_observation.c"
+    "pet_p4_program_persistence.c" "pet_p4_program_session_probe.c"
+    "pet_p4_input.c"
+    APPEND PROPERTY COMPILE_OPTIONS "-Oz")
   get_target_property(application_sources ${COMPONENT_LIB} SOURCES)
   foreach(application_source IN LISTS application_sources)
     get_source_file_property(application_options "${application_source}" COMPILE_OPTIONS)
@@ -507,4 +527,17 @@ if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1" AND "$ENV{PET_P4_CHIP_FAMILY}" STREQU
       endif()
     endif()
   endforeach()
+endif()
+
+# Measured v1 control-plane size profile; PCM/DSP/render/USB data paths retain flags.
+if("$ENV{PET_P4_SYSTEM_WIFI}" STREQUAL "1" AND "$ENV{PET_P4_CHIP_FAMILY}" STREQUAL "v1")
+  set_property(SOURCE "pet_p4_boot_dma.c" "pet_p4_fs_activity.c"
+    "pet_p4_storage_lane.c" "pet_p4_system_cues.c" "pet_p4_reset_cost.c"
+    APPEND PROPERTY COMPILE_OPTIONS "-Oz")
+  set_property(SOURCE "${pet_volume_generated}/device/es8311/es8311.c"
+    "${pet_volume_generated}/platform/audio_codec_ctrl_i2c.c"
+    "${pet_volume_codec_dir}/device/es7210/es7210.c"
+    TARGET_DIRECTORY ${pet_volume_codec_lib} APPEND PROPERTY COMPILE_OPTIONS "-Oz")
+  set_property(SOURCE "pet_p4_touch.c" "pet_p4_usb_native.c"
+    APPEND PROPERTY COMPILE_DEFINITIONS PET_P4_COLD_INIT_SIZE=1)
 endif()

@@ -28,6 +28,10 @@ def test_status_current_old_peer_and_future_version_capacity():
     wire = json.dumps(fields, separators=(',', ':')).encode()
     assert len(wire) <= 512  # old PC response cap, exact current public version
     fields['firmware'] = 'v' * 31  # maximum NUL-terminated ESP app descriptor version
+    assert '!extended || (cJSON_AddNumberToObject(status, "ac"' in source
+    assert 'cJSON_AddBoolToObject(status, "wd", true)' in source
+    fields['ac'] = 16 * 1024 * 1024
+    fields['wd'] = True
     future = json.dumps(fields, separators=(',', ':')).encode()
     assert len(future) + 6 <= 576  # includes conservative cJSON print slack
     assert '#define LAN_STATUS_MAX 576' in source
@@ -36,7 +40,8 @@ def test_status_current_old_peer_and_future_version_capacity():
 
 def test_legacy_probe_and_producer_routes_preserved():
     lan = (ROOT / 'main/pet_p4_lan.c').read_text()
-    assert 'case 0: case LAN_STATUS_MODE: case LAN_OTA_MODE: if (size) return;' in lan
+    assert 'case 0: case LAN_OTA_MODE: if (size) return;' in lan
+    assert 'case LAN_STATUS_MODE: if (size > 1) return;' in lan
     assert 'case LAN_PRESS_MODE: if (size != 36) return;' in lan
     assert 'client_seen_ms = now;' in lan
     assert 'request_generation == generation && paired' in lan
