@@ -675,10 +675,7 @@ mod tests {
             expected.push(vec![3]);
         }
         let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            socket
-                .set_read_timeout(Some(Duration::from_secs(3)))
-                .unwrap();
+            let mut socket = crate::lan_agent::confirmation_tests::accept(&listener);
             let mut client = [0; 16];
             socket.read_exact(&mut client).unwrap();
             let server_nonce = [5; 16];
@@ -734,12 +731,7 @@ mod tests {
                 assert_eq!(socket.read(&mut [0]).unwrap(), 0, "commit must not be sent");
             }
             drop(socket);
-            listener.set_nonblocking(true).unwrap();
-            std::thread::sleep(Duration::from_millis(30));
-            assert_eq!(
-                listener.accept().unwrap_err().kind(),
-                std::io::ErrorKind::WouldBlock
-            );
+            listener
         });
         // The guard runs before opening the link, in the connection attempt,
         // before the offer, and before each chunk. Attach USB at commit.
@@ -759,6 +751,6 @@ mod tests {
         } else {
             assert!(failure.contains("提交结果未确认"));
         }
-        server.join().unwrap();
+        crate::lan_agent::confirmation_tests::assert_no_replay(server.join().unwrap());
     }
 }

@@ -112,8 +112,6 @@ fn run(scenario: Scenario) {
     )
     .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let remaining_connections = listener.try_clone().unwrap();
     let peer = Peer {
         address: listener.local_addr().unwrap(),
         key: Zeroizing::new(MASTER),
@@ -255,7 +253,7 @@ fn run(scenario: Scenario) {
                 );
             }
         }
-        (phases, received, max_chunk)
+        (listener, phases, received, max_chunk)
     });
     let transfer = Transfer {
         peer: &peer,
@@ -267,13 +265,8 @@ fn run(scenario: Scenario) {
     };
     let result = transfer.global_cues(&dir, crate::lan_agent::component_events::pairing_revision());
     usb.finish_appearance_sync();
-    let (phases, received, max_chunk) = worker.join().unwrap();
-    // A cloned listener retains the socket queue after the last response,
-    // making a second connection observable even if the caller ignores its error.
-    assert_eq!(
-        remaining_connections.accept().unwrap_err().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
+    let (listener, phases, received, max_chunk) = worker.join().unwrap();
+    crate::lan_agent::confirmation_tests::assert_no_replay(listener);
     if scenario == Scenario::Maximum {
         assert_eq!(result.unwrap(), (24, 2 * 1024 * 1024, false));
         assert_eq!(received, 2 * 1024 * 1024);

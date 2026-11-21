@@ -391,10 +391,7 @@ mod tests {
         let expected = event.clone();
         let worker = thread::spawn(move || {
             for op in [POLL, VALIDATE, SNAPSHOT, IMAGE, IMAGE] {
-                let (mut stream, _) = socket.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .unwrap();
+                let mut stream = crate::lan_agent::confirmation_tests::accept(&socket);
                 let mut challenge = [0; 16];
                 stream.read_exact(&mut challenge).unwrap();
                 stream.write_all(&[9; 16]).unwrap();

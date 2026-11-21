@@ -145,7 +145,7 @@ mod tests {
         let copy=binding.clone();
         let task=std::thread::spawn(move||{
             for ack in if corrupt {vec![0]} else {vec![0,1]} {
-                let (mut stream,_)=listener.accept().unwrap();stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut stream=crate::lan_agent::confirmation_tests::accept(&listener);
                 let mut client=[0;16];stream.read_exact(&mut client).unwrap();let server=[9;16];stream.write_all(&server).unwrap();
                 let mut header=[0;3];stream.read_exact(&mut header).unwrap();assert_eq!(header,[MODE,0,36]);
                 let key=key_from_digest(&session_digest(copy.peer.key.as_ref(),&client,&server));

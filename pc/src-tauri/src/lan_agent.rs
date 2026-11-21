@@ -1374,7 +1374,7 @@ mod tests {
     fn confirmation_exchange_keeps_existing_credentials_on_early_disconnect() {
         use std::net::TcpListener;
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();let address=listener.local_addr().unwrap();
-        let thread=std::thread::spawn(move||{let (mut stream,_)=listener.accept().unwrap();let mut nonce=[0;16];stream.read_exact(&mut nonce).unwrap();stream.write_all(&[1;16]).unwrap();let mut header=[0;3];stream.read_exact(&mut header).unwrap();assert_eq!(header,[5,1,128]);let mut public=[0;384];stream.read_exact(&mut public).unwrap();});
+        let thread=std::thread::spawn(move||{let mut stream=confirmation_tests::accept(&listener);let mut nonce=[0;16];stream.read_exact(&mut nonce).unwrap();stream.write_all(&[1;16]).unwrap();let mut header=[0;3];stream.read_exact(&mut header).unwrap();assert_eq!(header,[5,1,128]);let mut public=[0;384];stream.read_exact(&mut public).unwrap();});
         assert!(pair_exchange(address,b"Hachimodock-auto-v1",true).is_err());thread.join().unwrap();
         // pair_exchange cannot persist anything: only a successful proof and
         // authenticated read-only probe return a Peer to save_peer.

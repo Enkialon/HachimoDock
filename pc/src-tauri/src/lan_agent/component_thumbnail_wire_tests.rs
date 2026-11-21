@@ -170,7 +170,6 @@ fn center_thumb_authenticated_install_repair_legacy_and_pairing_change() {
     let pkg = Package::read(&root).unwrap();
     let id = pkg.preview.id.as_str();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
     let peer = Peer {
         address: listener.local_addr().unwrap(),
         key: Zeroizing::new(TOKEN),
@@ -199,10 +198,7 @@ fn center_thumb_authenticated_install_repair_legacy_and_pairing_change() {
         status_reply(&listener, false);
         let old = receive(&listener, 1, "wasm-2046", None).unwrap();
         assert_eq!(old, prior);
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            std::io::ErrorKind::WouldBlock
-        );
+        listener
     });
     let binding = ComponentPairing::bind(&peer, Some(&peer), 1).unwrap();
     let current = || binding.current(revision.load(Ordering::Acquire));
@@ -253,5 +249,5 @@ fn center_thumb_authenticated_install_repair_legacy_and_pairing_change() {
     }
     assert!(ComponentPairing::bind(&peer, None, 2).is_err());
     assert_eq!(peer.key.as_ref(), TOKEN);
-    worker.join().unwrap();
+    crate::lan_agent::confirmation_tests::assert_no_replay(worker.join().unwrap());
 }

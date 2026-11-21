@@ -2,14 +2,30 @@ use super::*;
 use std::net::TcpListener;
 
 pub(super) fn accept(listener: &TcpListener) -> TcpStream {
+    listener.set_nonblocking(true).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
-            Ok((stream, _)) => { stream.set_nonblocking(false).unwrap(); stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap(); return stream; }
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false).unwrap();
+                let timeout = Some(Duration::from_secs(3));
+                stream.set_read_timeout(timeout).unwrap();
+                stream.set_write_timeout(timeout).unwrap();
+                stream.set_nodelay(true).unwrap();
+                return stream;
+            }
             Err(e) if e.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             Err(e) => panic!("test peer did not connect: {e}"),
         }
     }
+}
+
+// Call after the synchronous client returns. Any replay is already ahead of
+// this marker in the original loopback listener's pending connection queue.
+pub(super) fn assert_no_replay(listener: TcpListener) {
+    let marker = TcpStream::connect_timeout(&listener.local_addr().unwrap(), Duration::from_secs(2)).unwrap();
+    let next = accept(&listener);
+    assert_eq!(next.peer_addr().unwrap(), marker.local_addr().unwrap(), "unexpected replay connection");
 }
 
 enum Interruption { None, PairAck, FirstProbe }
@@ -233,8 +249,7 @@ fn component_delivery_rejects_tampered_results_and_never_reopens_the_connection(
                 stream.write_all(&reply).unwrap();
             }
             drop(stream);
-            std::thread::sleep(Duration::from_millis(50));
-            assert_eq!(listener.accept().unwrap_err().kind(), io::ErrorKind::WouldBlock);
+            listener
         });
         let result = exchange_response_with_timeout(&peer, 9, fixture, Some(1), Duration::from_secs(1));
         if outcome == Some(false) {
@@ -242,7 +257,7 @@ fn component_delivery_rejects_tampered_results_and_never_reopens_the_connection(
         } else {
             assert!(result.is_err());
         }
-        worker.join().unwrap();
+        assert_no_replay(worker.join().unwrap());
     }
 }
 
@@ -251,7 +266,7 @@ fn paired_status_distinguishes_transport_authentication_and_decode_failures() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let peer = Peer { address: listener.local_addr().unwrap(), key: Zeroizing::new([4; 16]) };
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let mut stream = accept(&listener);
         let mut client = [0u8;16];
         stream.read_exact(&mut client).unwrap();
         stream.write_all(&[8u8;16]).unwrap();

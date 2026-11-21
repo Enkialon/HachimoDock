@@ -30,7 +30,11 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Push-Location (Split-Path -Parent $manifestPath)
 try {
     foreach ($suite in $Suites) {
-        if ($suite) { & $testExe $suite } else { & $testExe }
+        if ($suite) {
+            & $testExe $suite
+        } else {
+            python (Join-Path $PSScriptRoot 'run-native-test-cases.py') $testExe
+        }
         if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     }
 } finally { Pop-Location }
