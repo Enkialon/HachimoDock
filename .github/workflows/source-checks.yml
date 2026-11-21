@@ -115,6 +115,10 @@ jobs:
         working-directory: pc
       - run: npm test
         working-directory: pc
+      - name: Check desktop packaging and integration tools
+        if: runner.os == 'macOS'
+        shell: bash
+        run: node --test pc/scripts/*.test.mjs integrations/dsh-hachimodock/test/*.test.js server/community/web/app.test.mjs
       - name: Build and exercise the Win32 ACL verifier
         if: runner.os == 'Windows'
         shell: pwsh
@@ -196,6 +200,8 @@ jobs:
           /usr/lib/llvm-20/bin/wasm-ld --version
           echo /usr/lib/llvm-20/bin >> "$GITHUB_PATH"
       - run: python -m pip install Pillow pytest platformio==6.1.19
+      - name: Check PetUI authoring and package handling
+        run: python -m pytest -q pc/skills/petui/scripts pc/tests/test_petui_package_traversal.py
       - name: Restore locked SDK downloads
         id: sdk-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
