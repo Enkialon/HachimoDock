@@ -104,6 +104,13 @@ jobs:
         run: |
           $report = Join-Path $env:RUNNER_TEMP 'windows-smoke-result.json'
           if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
+      - name: Save the sanitized installer report
+        if: runner.os == 'Windows' && inputs.verify_installers && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-installer-report
+          path: ${{ runner.temp }}/windows-smoke-result.json
+          retention-days: 5
       - run: npm ci
         working-directory: pc
       - run: npm test

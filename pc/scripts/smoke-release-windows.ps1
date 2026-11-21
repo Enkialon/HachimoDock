@@ -19,12 +19,6 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if (-not $IsWindows -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or
-    $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not [Environment]::Is64BitProcess) {
-    throw 'Use a fresh GitHub-hosted x64 Windows job with pwsh.'
-}
-
-$setup = (Resolve-Path -LiteralPath $Installer).ProviderPath
 $root = Join-Path $env:RUNNER_TEMP ('hachimi-' + [guid]::NewGuid().ToString('N'))
 $install = Join-Path $root 'app'
 $userDir = Join-Path $root 'user'
@@ -32,21 +26,29 @@ $tempDir = Join-Path $root 'tmp'
 $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\com.petmanager.desktop'
 $exe = Join-Path $install 'Hachimodock.exe'
 $uninstaller = Join-Path $install 'Uninstall.exe'
-$report = [ordered]@{ version=$version; passed=$false; stage='candidate'; checks=[ordered]@{} }
+$report = [ordered]@{ version=$version; passed=$false; stage='runner'; failures=@(); checks=[ordered]@{} }
 $gui = $null
 $installedHere = $false
 
-# Keep GUI stderr private, drain pipes continuously and retain only the exact native
-# confirmation emitted when the loaded frontend completes its startup handshake.
-Add-Type -TypeDefinition @'
+# Observe native startup without forwarding GUI output.
+function Initialize-SmokeProbe {
+    Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 public sealed class SmokeReady {
-    public volatile bool Accepted;
+    public volatile bool Accepted, StaleReady, ReadyTimeout, LoadStarted, LoadFinished;
     public void Attach(Process p) {
-        p.ErrorDataReceived += (s,e) => { if (e.Data == "[startup-native] category=ready") Accepted = true; };
+        p.ErrorDataReceived += (s,e) => {
+            string line=e.Data;
+            if (line==null) return;
+            if (line=="[startup-native] category=ready") Accepted=true;
+            if (line=="[startup-native] category=stale_ready") StaleReady=true;
+            if (line=="[startup-native] category=ready_timeout") ReadyTimeout=true;
+            if (line.StartsWith("[webview-load] window=main phase=Started ",StringComparison.Ordinal)) LoadStarted=true;
+            if (line.StartsWith("[webview-load] window=main phase=Finished ",StringComparison.Ordinal)) LoadFinished=true;
+        };
         p.OutputDataReceived += (s,e) => {};
     }
 }
@@ -61,15 +63,26 @@ public static class SmokeWindow {
     [DllImport("user32.dll")] static extern int GetMenuItemCount(IntPtr menu);
     [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetMenuString(IntPtr menu,uint pos,StringBuilder name,int n,uint flags);
     [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr menu,int pos);
-    public static IntPtr Owned(int process, string cls) {
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd,StringBuilder title,int n);
+    public static bool Responsive(IntPtr hwnd) {
+        IntPtr result;
+        return SendMessageTimeout(hwnd,0,IntPtr.Zero,IntPtr.Zero,2,500,out result)!=IntPtr.Zero;
+    }
+    public static IntPtr Owned(int process, string cls, string title) {
         IntPtr found=IntPtr.Zero;
         EnumWindows((h,u)=>{
             uint pid;
             GetWindowThreadProcessId(h,out pid);
             if(pid!=process) return true;
             var name=new StringBuilder(128);
-            GetClassName(h,name,name.Capacity);
-            if(name.ToString()!=cls) return true;
+            if(!String.IsNullOrEmpty(cls)) {
+                GetClassName(h,name,name.Capacity);
+                if(name.ToString()!=cls) return true;
+            }
+            if(!String.IsNullOrEmpty(title)) {
+                GetWindowText(h,name,name.Capacity);
+                if(name.ToString()!=title) return true;
+            }
             found=h; return false;
         },IntPtr.Zero);
         return found;
@@ -101,6 +114,33 @@ public static class SmokeWindow {
     }
 }
 '@
+}
+
+function Write-SmokeFailure([System.Management.Automation.ErrorRecord]$Record) {
+    # Do not serialize the message, invocation text, stack, native output or paths.
+    $detail = [ordered]@{
+        stage = $report.stage
+        script = 'smoke-release-windows.ps1'
+        line = [int]$Record.InvocationInfo.ScriptLineNumber
+        column = [int]$Record.InvocationInfo.OffsetInLine
+        category = $Record.CategoryInfo.Category.ToString()
+    }
+    $cause = $Record.Exception.GetBaseException()
+    if ($cause -is [ComponentModel.Win32Exception]) { $detail.win32Code = $cause.NativeErrorCode }
+    if ($Record.Exception.Data.Contains('smokeExitCode')) { $detail.exitCode = [int]$Record.Exception.Data['smokeExitCode'] }
+    if (!$report.Contains('failureStage')) { $report.failureStage = $detail.stage }
+    $report.failures += $detail
+    if ($detail.stage -eq 'gui-ready' -and $report.Contains('guiProbe')) { $detail.probe = $report.guiProbe }
+    Write-Host ('Windows smoke failure ' + ($detail | ConvertTo-Json -Compress))
+}
+
+function Assert-SmokeExit([Diagnostics.Process]$Process) {
+    if ($Process.ExitCode -ne 0) {
+        $exception = [Exception]::new('Candidate returned a nonzero exit code')
+        $exception.Data['smokeExitCode'] = $Process.ExitCode
+        throw $exception
+    }
+}
 
 function New-SmokeProcess([string]$File, [string[]]$Arguments) {
     $p = [Diagnostics.Process]::new()
@@ -142,7 +182,7 @@ function Invoke-SmokeProcess([string]$File, [string[]]$Arguments, [int]$Timeout 
             $p.Kill($true)
             throw 'Candidate operation timed out'
         }
-        if ($p.ExitCode -ne 0) { throw "Candidate operation exited with code $($p.ExitCode)" }
+        Assert-SmokeExit $p
         if (!$Capture) { return }
         if (!$out.Wait(5000) -or !$err.Wait(5000)) { throw 'Candidate output did not close' }
         return $out.Result
@@ -159,6 +199,14 @@ function Wait-For([scriptblock]$Condition, [int]$Seconds) {
 }
 
 try {
+    if (-not $IsWindows -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or
+        $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not [Environment]::Is64BitProcess) {
+        throw 'Use a fresh GitHub-hosted x64 Windows job with pwsh.'
+    }
+    $report.stage = 'probe-init'
+    Initialize-SmokeProbe
+    $report.stage = 'candidate'
+    $setup = (Resolve-Path -LiteralPath $Installer).ProviderPath
     $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($hash -ne $ExpectedSha256) { throw 'Candidate digest mismatch' }
     $report.installerSha256 = $hash
@@ -175,13 +223,16 @@ try {
     try {
         if (!$installerProcess.Start()) { throw 'Installer did not start' }
         if (!$installerProcess.WaitForExit(240000)) { $installerProcess.Kill($true); throw 'Installer timed out' }
-        if ($installerProcess.ExitCode -ne 0) { throw 'Installer returned failure' }
+        Assert-SmokeExit $installerProcess
     } finally { $installerProcess.Dispose() }
+    $report.stage = 'install-registration'
     $registration = Get-ItemProperty -LiteralPath $registry
-    if ($registration.InstallLocation -ne $install -or $registration.DisplayVersion -ne $version) {
+    if ($registration.InstallLocation -ne $install) {
         throw 'Installed product registration mismatch'
     }
     $installedHere = $true
+    $report.stage = 'install-version'
+    if ($registration.DisplayVersion -ne $Version) { throw 'Installed registration version mismatch' }
     $v = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
     $fixed = '{0}.{1}.{2}.{3}' -f $v.ProductMajorPart,$v.ProductMinorPart,$v.ProductBuildPart,$v.ProductPrivatePart
     if ($fixed -ne "$version.0") { throw 'Installed EXE product version mismatch' }
@@ -189,23 +240,28 @@ try {
     if ($ExpectedExeSha256 -and $report.exeSha256 -ne $ExpectedExeSha256) { throw 'Installed EXE digest mismatch' }
     $report.checks.install = $fixed
 
-    $report.stage = 'petui'
+    $report.stage = 'petui-tool-info'
     $info = (Invoke-SmokeProcess $exe @('--petui','tool-info')) | ConvertFrom-Json
     if ($info.version -ne $version -or $info.target -ne 'windows-x64' -or $info.protocol -ne 2) {
         throw 'Installed PetUI CLI identity mismatch'
     }
+    $report.stage = 'petui-doctor'
     $doctor = (Invoke-SmokeProcess $exe @('--petui','doctor')) | ConvertFrom-Json
     if ($doctor.ok -ne $true -or $doctor.wasmBytes -le 0) { throw 'Bundled compiler did not produce WASM' }
     $sample = Join-Path $install 'skills\petui\examples\local-notebook'
     $packed = Join-Path $root 'notebook.hachiapp'
+    $report.stage = 'petui-pack'
     $null = Invoke-SmokeProcess $exe @('--petui','pack',$sample,$packed)
+    $report.stage = 'petui-validate'
     $null = Invoke-SmokeProcess $exe @('--petui','validate',$packed)
+    $report.stage = 'petui-install-rehearsal'
     $rehearsal = (Invoke-SmokeProcess $exe @('--petui','install-rehearsal',$packed)) | ConvertFrom-Json
     if ($rehearsal.component -ne 'local-notebook' -or $rehearsal.firstOpen -ne 'library-entry-verified') {
         throw 'PetUI temporary library rehearsal failed'
     }
     $report.checks.petui = @{target=$info.target; wasmBytes=$doctor.wasmBytes; rehearsal=$rehearsal.firstOpen}
 
+    $report.stage = 'copy-installed-resources'
     # Use the exact shipped compiler and checker for the native regression suite.
     $testResources = Join-Path $env:RUNNER_TEMP 'petui-release-resources'
     $null = New-Item -ItemType Directory -Path $testResources
@@ -220,23 +276,39 @@ try {
     if (!$gui.Start()) { throw 'GUI did not start' }
     $gui.BeginErrorReadLine()
     $gui.BeginOutputReadLine()
+    $report.stage = 'gui-ready'
+    $probe = [ordered]@{
+        sessionZero = ($gui.SessionId -eq 0)
+        frontendReady=$false; staleReady=$false; nativeTimeout=$false
+        loadStarted=$false; loadFinished=$false
+        hasWindow=$false; visible=$false; responding=$false
+    }
+    $report.guiProbe = $probe
     Wait-For {
         $gui.Refresh()
-        if ($gui.HasExited) { throw 'GUI exited during startup' }
-        $ready.Accepted -and $gui.MainWindowHandle -ne [IntPtr]::Zero -and
-            [SmokeWindow]::IsWindowVisible($gui.MainWindowHandle) -and $gui.Responding
+        if ($gui.HasExited) { Assert-SmokeExit $gui; throw 'GUI exited during startup' }
+        $probe.frontendReady = $ready.Accepted
+        $probe.staleReady = $ready.StaleReady
+        $probe.nativeTimeout = $ready.ReadyTimeout
+        $probe.loadStarted = $ready.LoadStarted
+        $probe.loadFinished = $ready.LoadFinished
+        $handle = [SmokeWindow]::Owned($gui.Id,'','Hachimodock')
+        $probe.hasWindow = $handle -ne [IntPtr]::Zero
+        $probe.visible = $probe.hasWindow -and [SmokeWindow]::IsWindowVisible($handle)
+        $probe.responding = $probe.visible -and [SmokeWindow]::Responsive($handle)
+        $probe.frontendReady -and $probe.responding
     } 60
     $report.checks.gui = 'visible-responsive-window-and-native-frontend-ready'
 
     $report.stage = 'exit'
-    $mainWindow = $gui.MainWindowHandle
-    $tray = [SmokeWindow]::Owned($gui.Id,'tray_icon_app')
+    $mainWindow = [SmokeWindow]::Owned($gui.Id,'','Hachimodock')
+    $tray = [SmokeWindow]::Owned($gui.Id,'tray_icon_app','')
     $quitMode = 'tray-menu'
     $menuInvoked = $false
     if ($tray -ne [IntPtr]::Zero -and [SmokeWindow]::OpenTray($tray)) {
         $timer = [Diagnostics.Stopwatch]::StartNew()
         do {
-            $popup = [SmokeWindow]::Owned($gui.Id,'#32768')
+            $popup = [SmokeWindow]::Owned($gui.Id,'#32768','')
             if ($popup -ne [IntPtr]::Zero) {
                 if (![SmokeWindow]::QuitMenu($tray,$popup)) { throw 'Candidate tray Quit command unavailable' }
                 $menuInvoked = $true
@@ -251,11 +323,13 @@ try {
         $quitMode = 'win32-message-loop'
         if (![SmokeWindow]::QuitLoop($mainWindow,$gui.Id)) { throw 'Could not request GUI thread exit' }
     }
-    if (!$gui.WaitForExit(30000) -or $gui.ExitCode -ne 0) { throw 'Candidate did not quit cleanly' }
+    $report.exitRoute = $quitMode
+    if (!$gui.WaitForExit(30000)) { throw 'Candidate did not quit cleanly' }
+    Assert-SmokeExit $gui
     $report.checks.exit = $quitMode
 
 } catch {
-    $report.failureStage = $report.stage
+    Write-SmokeFailure $_
 } finally {
     if ($gui) {
         try { if (!$gui.HasExited) { $gui.Kill($true); $null = $gui.WaitForExit(10000) } } catch {}
@@ -265,14 +339,31 @@ try {
         try {
             $report.stage = 'uninstall'
             $null = Invoke-SmokeProcess $uninstaller @('/S') 90 $false
-            Wait-For { !(Test-Path -LiteralPath $install) -and !(Test-Path -LiteralPath $registry) } 45
+            $report.stage = 'uninstall-removal'
+            Wait-For {
+                $report.installDirPresent = Test-Path -LiteralPath $install
+                $report.registrationPresent = Test-Path -LiteralPath $registry
+                !$report.installDirPresent -and !$report.registrationPresent
+            } 45
             $report.checks.uninstall = 'files-and-registration-removed'
-        } catch { $report.uninstallFailed = $true }
+        } catch {
+            $report.uninstallFailed = $true
+            Write-SmokeFailure $_
+        }
     }
+    $report.stage = 'remove-test-profile'
+    try {
+        if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    } catch { Write-SmokeFailure $_ }
     $report.passed = $report.checks.Contains('exit') -and $report.checks.Contains('uninstall') -and !$report.Contains('failureStage')
     $report.stage = 'finished'
-    $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
-    if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    try {
+        $report | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $ReportPath -Encoding utf8
+    } catch {
+        $report.stage = 'write-report'
+        Write-SmokeFailure $_
+        $report.passed = $false
+    }
 }
 if (!$report.passed) { throw 'Windows smoke failed. See the sanitized JSON report.' }
 Write-Output "Windows $version smoke passed."

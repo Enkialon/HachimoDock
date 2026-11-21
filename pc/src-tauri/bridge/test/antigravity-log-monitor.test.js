@@ -84,20 +84,22 @@ test("baseline skips history and a partial UTF-8 append emits exactly once after
   assert.equal(events.at(-1).state, "working");
 });
 
-test("trim, same-length rewrite, replacement and truncate recover without replay", (t) => {
+test("trim, same-length rewrite, replacement and truncate recover without replay", async (t) => {
   const { transcript, monitor, events } = fixture(t);
   const file = transcript("session-a");
   const old = prompt("history");
   const shared = answer("shared answer");
   fs.writeFileSync(file, jsonl(old, shared));
-  monitor.poll();
+  // Exercise the actual polling interval. Synchronous writes and manual polls
+  // in one clock tick can share a timestamp on Windows.
+  monitor.start();
+  t.after(() => monitor.stop());
   fs.writeFileSync(file, jsonl(shared, prompt("new turn")));
-  monitor.poll();
+  await t.waitFor(() => assert.equal(events.at(-1)?.title, "new turn"), { timeout: 5000 });
   assert.equal(events.at(-1).content, "正在思考");
 
   fs.writeFileSync(file, jsonl(shared, prompt("new edit")));
-  monitor.poll();
-  assert.equal(events.at(-1).title, "new edit");
+  await t.waitFor(() => assert.equal(events.at(-1)?.title, "new edit"), { timeout: 5000 });
 
   fs.writeFileSync(file + ".next", jsonl(prompt("new edit"), answer("rotated reply")));
   // unlink + rename also works on Windows when the file is replaced externally.
