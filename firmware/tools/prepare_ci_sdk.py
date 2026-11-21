@@ -116,14 +116,15 @@ def host_test_environment(project, cores):
     packages = project.parent / "pc/builtin-clawpkgs"
     for path in (
         cores["v1"] / "packages/framework-espidf/components/json/cJSON/cJSON.c",
-        mbedtls / "CMakeLists.txt", mbedtls / "library/gcm.c",
+        mbedtls / "CMakeLists.txt",
+        mbedtls / "library/gcm.c",
+        images / "city-radio/background.p4i",
         packages / "city-radio/runtime/widget.json",
     ):
         if not path.is_file():
             raise SystemExit(f"Missing firmware host test input: {path}")
     return {
         "PLATFORMIO_CORE_DIR": str(cores["v1"]),
-        "P4_CC": str(cores["v1"] / "packages/toolchain-riscv32-esp/bin/riscv32-esp-elf-gcc"),
         "PETUI_HOST_MBEDTLS_SOURCE": str(mbedtls),
         "PETUI_TEST_MBEDTLS_SOURCE": str(mbedtls),
         "PET_APP_ENCODED_DIR": str(images),
@@ -178,6 +179,7 @@ def main():
     for family in cores:
         database = Path(exports[f"PET_P4_{family.upper()}_COMPILE_COMMANDS"])
         check_database(database, project)
+    exports["P4_CC"] = exports["PET_V1_SDK_CC"]
     exports.update(host_test_environment(project, cores))
     with open(github_env, "a", encoding="utf-8") as stream:
         for name, value in exports.items():

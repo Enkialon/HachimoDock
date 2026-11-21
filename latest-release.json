@@ -53,8 +53,8 @@
     {
       "file": "HachimiDock_0.1.254_macOS-arm64.dmg",
       "role": "macos",
-      "bytes": 0,
-      "sha256": ""
+      "bytes": 205918407,
+      "sha256": "0ef0d0228748c0593d98d3309013b3ce4bbf4939b324795b841210a53d2294f9"
     },
     {
       "file": "HachimiDock_0.1.254_Windows-x64-setup.exe",
