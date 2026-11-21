@@ -87,6 +87,8 @@ jobs:
             python pc/scripts/stage-release-firmware.py
           fi
       - name: Install and start the Windows release
+        id: windows-installer
+        continue-on-error: true
         if: runner.os == 'Windows' && inputs.verify_installers
         shell: pwsh
         env:
@@ -96,6 +98,12 @@ jobs:
           $asset = $release.artifacts | Where-Object role -eq windows
           $installer = Join-Path (Join-Path $env:RUNNER_TEMP 'release-assets') $asset.file
           ./pc/scripts/smoke-release-windows.ps1 -Installer $installer -ExpectedSha256 $asset.sha256 -Version $release.desktopVersion
+      - name: Report installed-client checks
+        if: runner.os == 'Windows' && inputs.verify_installers && always()
+        shell: pwsh
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'windows-smoke-result.json'
+          if (Test-Path -LiteralPath $report) { Get-Content -LiteralPath $report }
       - run: npm ci
         working-directory: pc
       - run: npm test
@@ -150,6 +158,10 @@ jobs:
           for suite in shared_font:: openai_tts:: component_python::; do
             cargo test --locked --manifest-path pc/src-tauri/Cargo.toml --lib "$suite"
           done
+      - name: Require successful Windows installer regression
+        if: always() && steps.windows-installer.outcome == 'failure'
+        shell: pwsh
+        run: throw 'Windows installer regression failed. See the installed-client checks above.'
   firmware-host:
     runs-on: ubuntu-latest
     env:
