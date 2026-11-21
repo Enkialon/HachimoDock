@@ -17,6 +17,7 @@
 #include "pet_p4_query_reply.h"
 #include "pet_p4_appearance_session.h"
 #include "pet_p4_resources.h"
+#include "pet_p4_voice_feedback.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -99,6 +100,7 @@ typedef struct {
   pet_p4_session_queue_item_t session_queue_staging[PET_P4_SESSION_QUEUE_MAX];
   unsigned int session_queue_count;
   bool session_voice_active;
+  pet_voice_feedback_t voice_feedback;
 #if PET_P4_SYSTEM_WIFI
   uint8_t session_voice_lan_button;
 #endif

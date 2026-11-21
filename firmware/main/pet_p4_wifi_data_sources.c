@@ -88,16 +88,20 @@ static bool format_utc(char *out, size_t capacity, uint64_t ms, bool include_tim
   return time_bytes >= 0 && (size_t)time_bytes < remaining;
 }
 
+bool pet_wifi_data_snapshot_date(cJSON *snapshot, uint64_t utc_ms) {
+  char date[11];
+  return format_utc(date, sizeof(date), utc_ms, false) && cJSON_AddStringToObject(snapshot, "date", date);
+}
+
 cJSON *pet_wifi_data_snapshot(const char *source, const char *status, const char *message,
                             uint32_t ttl_ms, uint64_t utc_ms) {
-  char date[11];
   cJSON *root = cJSON_CreateObject();
-  if (!root || !format_utc(date, sizeof(date), utc_ms, false)
+  if (!root
       || !cJSON_AddNumberToObject(root, "schema", 1)
       || !cJSON_AddStringToObject(root, "source", source)
       || !cJSON_AddStringToObject(root, "status", status)
       || !cJSON_AddStringToObject(root, "message", message)
-      || !cJSON_AddStringToObject(root, "date", date)
+      || !pet_wifi_data_snapshot_date(root, utc_ms)
       || !cJSON_AddNumberToObject(root, "ttlMs", ttl_ms)
       || !cJSON_AddArrayToObject(root, "rows")) {
     cJSON_Delete(root);
@@ -121,6 +125,7 @@ static bool append_row(cJSON *root, const char *id, const char *label, const cha
   }
   return true;
 }
+
 
 static bool decimal(const char *s, bool sign, size_t limit) {
   if (!s || !*s || strlen(s) > limit) return false;
@@ -238,6 +243,35 @@ static bool feed_shape(const char *body, size_t length, bool mapped) {
   }
   return true;
 }
+
+#if PET_P4_SCOPED_WRITE
+cJSON *pet_wifi_github_account(const char *source, const char *body, size_t length, uint64_t utc) {
+  if (!body || !length || length > PET_WIFI_DATA_BODY_MAX || !feed_shape(body, length, true)) return NULL;
+  const char *end = NULL;
+  cJSON *obj = cJSON_ParseWithLengthOpts(body, length, &end, false);
+  if (!obj) return NULL;
+  while (end < body + length && strchr(" \r\n\t", *end)) ++end;
+  const cJSON *login = cJSON_GetObjectItemCaseSensitive(obj, "login");
+  const cJSON *repos = cJSON_GetObjectItemCaseSensitive(obj, "public_repos");
+  cJSON *snapshot = NULL;
+  if (end == body + length && cJSON_IsString(login) && login->valuestring[0] && strlen(login->valuestring) <= 39 &&
+      strspn(login->valuestring, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") == strlen(login->valuestring) &&
+      cJSON_IsNumber(repos) && repos->valueint >= 0 && repos->valuedouble == repos->valueint) {
+    snapshot = pet_wifi_data_snapshot(source, "ok", "", PET_WIFI_DATA_FEED_TTL_MS, utc);
+    char count[16], preview[sizeof(((pet_p4_data_row_t *)0)->value)];
+    snprintf(preview, sizeof(preview), "%.*s", (int)sizeof(preview) - 1, login->valuestring);
+    snprintf(count, sizeof(count), "%d", repos->valueint);
+    if (!snapshot || !cJSON_AddBoolToObject(snapshot, "clearOnExpire", true) ||
+        !append_row(snapshot, "login", "GitHub", preview, "", login->valuestring, 0) ||
+        !append_row(snapshot, "repos", "公开仓库", count, "", "", 0)) {
+      cJSON_Delete(snapshot);
+      snapshot = NULL;
+    }
+  }
+  cJSON_Delete(obj);
+  return snapshot;
+}
+#endif
 
 static const char *const feed_fields[] = {"rows", "id", "label", "value", "detail", "meta", "tone"};
 

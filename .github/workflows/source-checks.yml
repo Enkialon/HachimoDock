@@ -4,8 +4,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      verify_installers:
+        description: Verify the staged release installers
+        type: boolean
+        default: false
 permissions:
   contents: read
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
 jobs:
   desktop:
     strategy:
@@ -19,24 +26,110 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '26.13.1'
           cache: npm
           cache-dependency-path: pc/package-lock.json
+      - name: Check official desktop Node.js binary
+        run: node --input-type=module -e "import { verifyNodeRuntime } from './pc/scripts/dependency-license-resources.mjs'; verifyNodeRuntime(process.execPath)"
       - run: node pc/scripts/check-source-safety.mjs
       - run: node --test pc/scripts/check-source-safety.test.mjs
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
-      - run: python pc/scripts/stage-release-firmware.py
+      - name: Download staged release assets for installer regression
+        if: inputs.verify_installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(node -p "require('./latest-release.json').releaseTag")
+          assets="$RUNNER_TEMP/release-assets"
+          mkdir -p "$assets"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | [.name,.id] | @tsv" > "$assets/list.tsv"
+          while IFS=$'\t' read -r name id; do
+            case "$name" in
+              HachimiDock_*_FULL-FACTORY.zip) ;;
+              HachimiDock_*_Windows-x64-setup.exe) [[ "$RUNNER_OS" == Windows ]] || continue ;;
+              *) continue ;;
+            esac
+            [[ "$name" =~ ^[a-zA-Z0-9._-]+$ && "$id" =~ ^[0-9]+$ ]]
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$assets/$name"
+          done < "$assets/list.tsv"
+      - name: Stage verified firmware for all four board profiles
+        shell: bash
+        env:
+          VERIFY_INSTALLERS: ${{ inputs.verify_installers }}
+        run: |
+          if [[ "$VERIFY_INSTALLERS" == true ]]; then
+            python pc/scripts/stage-release-firmware.py --assets-dir "$RUNNER_TEMP/release-assets"
+          else
+            python pc/scripts/stage-release-firmware.py
+          fi
+      - name: Install and start the Windows release
+        if: runner.os == 'Windows' && inputs.verify_installers
+        shell: pwsh
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          $release = Get-Content latest-release.json -Raw | ConvertFrom-Json
+          $asset = $release.artifacts | Where-Object role -eq windows
+          $installer = Join-Path (Join-Path $env:RUNNER_TEMP 'release-assets') $asset.file
+          ./pc/scripts/smoke-release-windows.ps1 -Installer $installer -ExpectedSha256 $asset.sha256 -Version $release.desktopVersion
       - run: npm ci
         working-directory: pc
       - run: npm test
         working-directory: pc
+      - name: Build and exercise the Win32 ACL verifier
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Visual C++ x64 toolchain unavailable' }
+          $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $batch = Join-Path $env:RUNNER_TEMP 'build-hachimi-windows-acl.cmd'
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b 1
+          node pc/scripts/build-windows-acl.mjs
+          exit /b %errorlevel%
+          "@ | Set-Content -Encoding ascii $batch
+          & $batch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $helper = 'pc/src-tauri/generated-runtime/windows-acl.exe'
+          New-Item -ItemType Directory -Path 'pc/src-tauri/dsh-bridge' -Force | Out-Null
+          Copy-Item $helper 'pc/src-tauri/dsh-bridge/windows-acl.exe'
+          Copy-Item $helper 'integrations/dsh-hachimodock/windows-acl.exe'
+          node --test integrations/dsh-hachimodock/test/windows-acl.test.js integrations/dsh-hachimodock/test/managed-install.test.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check Windows composer and focus handling
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./pc/scripts/test-windows-composer.ps1
       - run: npm run test:bridge
         working-directory: pc
         timeout-minutes: 10
       - run: npm run build:web
         working-directory: pc
+      - name: Run full native Windows regression with installed resources
+        if: runner.os == 'Windows' && inputs.verify_installers
+        shell: pwsh
+        env:
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+        run: |
+          $env:PETUI_TEST_RESOURCES = Join-Path $env:RUNNER_TEMP 'petui-release-resources'
+          cargo test --locked --manifest-path pc/src-tauri/Cargo.toml --lib
+      - name: Exercise native font delivery, speech streaming and Python components
+        if: runner.os != 'Windows' || !inputs.verify_installers
+        shell: bash
+        env:
+          TAURI_CONFIG: '{"bundle":{"resources":[]}}'
+        run: |
+          set -euo pipefail
+          for suite in shared_font:: openai_tts:: component_python::; do
+            cargo test --locked --manifest-path pc/src-tauri/Cargo.toml --lib "$suite"
+          done
   firmware-host:
     runs-on: ubuntu-latest
     env:

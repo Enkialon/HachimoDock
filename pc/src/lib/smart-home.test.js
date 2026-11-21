@@ -13,7 +13,9 @@ test("home filtering uses home ID, not ambiguous names", () => {
   assert.equal(visibleDevices(devices, "", "卧室", "speaker").length, 1);
 });
 test("value parsing preserves false and rejects blank/non-numeric numbers", () => {
-  assert.equal(parsePropertyValue({ format: "bool" }, "false"), false);
+  for (const v of ["false", false, "0", 0]) assert.equal(parsePropertyValue({ format: "bool" }, v), false);
+  for (const v of ["true", true, "1", 1]) assert.equal(parsePropertyValue({ format: "bool" }, v), true);
+  for (const v of ["", "disable?", null]) assert.throws(() => parsePropertyValue({ format: "bool" }, v));
   assert.equal(parsePropertyValue({ format: "uint8" }, "20"), 20);
   for (const v of ["", "nan", "Infinity"]) assert.throws(() => parsePropertyValue({ format: "uint8" }, v));
 });

@@ -27,7 +27,7 @@ export default function KeyboardConfiguration({ usb, wifi, boardDeviceId, childr
     </div>
     <div role="tabpanel" id={`${id}-panel-bluetooth`} aria-labelledby={`${id}-tab-bluetooth`}
       hidden={tab !== "bluetooth"}>
-      <BluetoothShortcutPanel key={JSON.stringify([board, wired, wired ? usb.connectionId : wifi?.bootId])}
+      <BluetoothShortcutPanel key={JSON.stringify([board, wired, wired ? usb.connectionId : null, wired ? usb.bootId : wifi?.bootId])}
         usb={usb} wifi={wifi} board={board} active={tab === "bluetooth"} />
     </div>
   </PageShell>;

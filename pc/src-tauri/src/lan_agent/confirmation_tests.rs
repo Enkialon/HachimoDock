@@ -1,7 +1,7 @@
 use super::*;
 use std::net::TcpListener;
 
-fn accept(listener: &TcpListener) -> TcpStream {
+pub(super) fn accept(listener: &TcpListener) -> TcpStream {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match listener.accept() {
@@ -12,7 +12,9 @@ fn accept(listener: &TcpListener) -> TcpStream {
     }
 }
 
-fn confirmed_roundtrip(drop_ack: bool) {
+enum Interruption { None, PairAck, FirstProbe }
+
+fn confirmed_roundtrip(interruption: Interruption) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
     let address = listener.local_addr().unwrap();
@@ -44,8 +46,20 @@ fn confirmed_roundtrip(drop_ack: bool) {
         let master = hmac::Key::new(hmac::HMAC_SHA256,secret.as_ref()); let mut transcript=hmac::Context::with_key(&master);
         transcript.update(b"P4LAN1");transcript.update(&cn);transcript.update(&sn);
         let mut stored=[0;16];stored.copy_from_slice(&transcript.sign().as_ref()[..16]);
-        if !drop_ack {stream.write_all(sha512(&[&public_a,&proof,secret.as_ref()]).as_ref()).unwrap();}
+        if !matches!(interruption, Interruption::PairAck) {stream.write_all(sha512(&[&public_a,&proof,secret.as_ref()]).as_ref()).unwrap();}
         drop(stream);
+        if matches!(interruption, Interruption::FirstProbe) {
+            let mut probe = accept(&listener);
+            let mut nonce = [0; 16];
+            probe.read_exact(&mut nonce).unwrap();
+            probe.write_all(&[0x42; 16]).unwrap();
+            let mut header = [0; 3];
+            probe.read_exact(&mut header).unwrap();
+            assert_eq!(header, [PROBE, 0, 0]);
+            let mut tag = [0; 16];
+            probe.read_exact(&mut tag).unwrap();
+            // Drop the first probe before sending its authenticated receipt.
+        }
         // Client must authenticate a fresh read-only probe before returning success.
         let mut stream = accept(&listener); let mut cn=[0;16]; stream.read_exact(&mut cn).unwrap(); let sn=[0x41;16];stream.write_all(&sn).unwrap();
         let mut header=[0;3];stream.read_exact(&mut header).unwrap();assert_eq!(header,[PROBE,0,0]);
@@ -59,9 +73,14 @@ fn confirmed_roundtrip(drop_ack: bool) {
 }
 
 #[test]
-fn automatic_pairing_proofs_and_readonly_probe_succeed() { confirmed_roundtrip(false); }
+fn automatic_pairing_proofs_and_readonly_probe_succeed() { confirmed_roundtrip(Interruption::None); }
 #[test]
-fn lost_final_ack_is_recovered_only_by_authenticated_probe() { confirmed_roundtrip(true); }
+fn lost_final_ack_is_recovered_only_by_authenticated_probe() { confirmed_roundtrip(Interruption::PairAck); }
+
+#[test]
+fn committed_pairing_survives_a_dropped_first_verification_socket() {
+    confirmed_roundtrip(Interruption::FirstProbe);
+}
 
 #[test]
 fn address_recovery_requires_original_key_and_uses_only_read_only_probes() {
@@ -225,4 +244,25 @@ fn component_delivery_rejects_tampered_results_and_never_reopens_the_connection(
         }
         worker.join().unwrap();
     }
+}
+
+#[test]
+fn paired_status_distinguishes_transport_authentication_and_decode_failures() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let peer = Peer { address: listener.local_addr().unwrap(), key: Zeroizing::new([4; 16]) };
+    let worker = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut client = [0u8;16];
+        stream.read_exact(&mut client).unwrap();
+        stream.write_all(&[8u8;16]).unwrap();
+        let mut request = [0u8;19];
+        stream.read_exact(&mut request).unwrap();
+        // Disconnect after the challenge, before the authenticated response.
+    });
+    let error = exchange(&peer, PROBE, &[]).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+    assert!(error.to_string().contains("认证回执"));
+    worker.join().unwrap();
+    assert!(exchange(&peer, PROBE, &[]).unwrap_err().to_string().contains("TCP"));
+    assert!(decode_status(b"{}").err().unwrap().to_string().contains("状态格式"));
 }

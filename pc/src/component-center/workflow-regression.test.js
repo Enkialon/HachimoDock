@@ -55,7 +55,7 @@ test('publication accepts empty or omitted license without fabricating human ack
     assert.equal(action,'publish');
     assert.deepEqual(Object.keys(input).sort(),['covers','expectedContentHash','metadata','path','requestId']);
     assert.deepEqual(input.metadata,h.env.form);
-    assert.deepEqual(input.covers,['c2NyZWVuc2hvdA==']);
+    assert.deepEqual(input.covers,[]);
     assert.equal(input.expectedContentHash,'a'.repeat(64));
     assert.equal(input.requestId,'fixture-publication-request');
     assert.deepEqual(h.published,[{id:'fixture-component',status:'pending'}]);
@@ -68,7 +68,7 @@ test('optional publication license retains screenshot, scan, integrity and moder
   const community=source('CommunityCenter.jsx'),native=source('../../src-tauri/src/community.rs');
   const publish=native.slice(native.indexOf('        "publish" => {'),native.indexOf('        "download" => {'));
   assert.match(community,/accept="image\/png,image\/jpeg,image\/webp"/);
-  assert.match(community,/files\.length > 3/);
+  assert.match(community,/files\.length > 2/);
   assert.match(community,/file\.size > 2 \* 1024 \* 1024/);
   assert.match(community,/disabled=\{Boolean\(publishBlocker\)\}/);
   assert.match(community,/新作品和更新均需审核，审核通过后才会公开/);
@@ -78,7 +78,7 @@ test('optional publication license retains screenshot, scan, integrity and moder
   assert.match(native,/if sensitive_text\(std::str::from_utf8\(&bytes\)/);
   assert.match(publish,/let prepared = prepare\(home,/);
   assert.match(publish,/input\.expected_content_hash\.as_deref\(\) != Some\(prepared\.hash\.as_str\(\)\)/);
-  assert.match(publish,/covers\.is_empty\(\)[\s\S]*covers\.len\(\) > 3/);
+  assert.match(publish,/covers\.len\(\) > 2/);
   assert.match(publish,/if sensitive_json\(&metadata\)/);
   assert.match(publish,/result\["contentHash"\] != prepared\.hash/);
   assert.doesNotMatch(publish,/rights_confirmed|privacy_confirmed|LICENSE\.txt|"(?:rightsConfirmed|privacyConfirmed)":true/);
@@ -95,15 +95,16 @@ test('publication starts with the component cover and preserves the package-chec
   const prepared={path,canPublish:true,coverDataUrl:cover};
   const defaults=select(prepared,path,null,false,'',false);
   assert.deepEqual(defaults,{covers:[cover],publishBlocker:''});
-  assert.deepEqual(select(prepared,path,['other'],false,'',false).covers,['other']);
+  assert.deepEqual(select(prepared,path,['other'],false,'',false).covers,[cover,'other']);
+  assert.ok(select({...prepared,coverDataUrl:null},path,['other'],false,'',false).publishBlocker);
   assert.ok(select({...prepared,coverDataUrl:null},path,null,false,'',false).publishBlocker);
   assert.ok(select(prepared,'/new-component',null,false,'',false).publishBlocker);
   assert.equal(select(null,path,['other'],false,'组件校验失败',false).publishBlocker,'组件校验失败');
   assert.ok(select(prepared,path,null,false,'',true).publishBlocker);
   const submission=publicationHarness();
-  submission.env.covers.splice(0,1,...defaults.covers);
+  submission.env.covers.splice(0,1,...defaults.covers,'data:image/png;base64,b3RoZXI=');
   await submission.submit();
-  assert.deepEqual(submission.calls[0].input.covers,['Y292ZXI=']);
+  assert.deepEqual(submission.calls[0].input.covers,['b3RoZXI=']);
 });
 test('background refresh retains same-identity data but never reuses a different query result',()=>{
   const community=source('CommunityCenter.jsx');

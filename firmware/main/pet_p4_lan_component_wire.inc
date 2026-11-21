@@ -28,7 +28,7 @@ static uint8_t bundle_wire_run(int fd, bundle_job_t *job, int64_t deadline) {
 
 static void bundle_wire_session(int fd, mbedtls_gcm_context *gcm, uint8_t *cipher,
                                 uint8_t *plain, uint32_t request_generation) {
-  bundle_job_t job = {0};
+  bundle_job_t job = {.generation = request_generation};
   const int enabled = 1;
   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled));
   const int64_t end = esp_timer_get_time() + LAN_BUNDLE_SESSION_US;

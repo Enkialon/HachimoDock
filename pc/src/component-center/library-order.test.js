@@ -125,7 +125,7 @@ test("recent installs precede curated defaults without losing custom source revi
 });
 
 test("renamed packages preserve identity and synchronize all display titles", () => {
-  for(const [id,name,version]of [['wooden-fish','静心木鱼','1.0.5'],['book-pocket','每天一本书','1.0.2'],['wasm-2046','2048','1.4.2']]){
+  for(const [id,name,version]of [['wooden-fish','静心木鱼','1.0.6'],['book-pocket','每天一本书','1.0.3'],['wasm-2046','2048','1.5.0']]){
     const root=new URL(`../../builtin-clawpkgs/${id}/`,import.meta.url);
     const read=file=>JSON.parse(readFileSync(new URL(file,root)));
     assert.deepEqual([read('component.json').id,read('component.json').name,read('component.json').version],[id,name,version]);
@@ -157,8 +157,6 @@ test("catalog visibility is checked on active, preview, restore and creator UI r
   assert.match(center,/if \(!component \|\| !isComponentVisible\(component\) \|\| localInstallBlockedReason\(component\)\) return false/);
   assert.match(center,/isComponentVisible\(activeComponentRecord\)/);
   assert.match(center,/isComponentVisible\(item\) && !catalogIds.has\(item.id\)/);
-  const sidebar=readFileSync(new URL("../shell/ContextRail.jsx",import.meta.url),"utf8");
-  assert.match(sidebar,/isComponentVisible\(currentComponent\) && currentComponent\?\.name/);
   const removed=readFileSync(new URL("./RemovedComponents.jsx",import.meta.url),"utf8");
   assert.match(removed,/filter\(item=>!isWithdrawnComponent\(item\)\)/);
   const community=readFileSync(new URL("./CommunityCenter.jsx",import.meta.url),"utf8");

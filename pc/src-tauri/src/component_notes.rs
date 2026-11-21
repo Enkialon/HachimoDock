@@ -318,7 +318,7 @@ pub fn execute(id:&str,op:&str,input:&Value,dir:&Path,usb:&UsbSerialManager)->Re
                 n.items[index].todo=Some(crate::todos::create_component_note_once(&format!("{id}:{}",n.items[index].id),&title)?);
             }save(dir,&n)?;if draft.is_some(){cancel(Some(id));}
         },
-        "previous"|"next"=>{if draft.is_some(){return Err("请先保存当前转写，再浏览笔记".into());}if !n.items.is_empty(){n.selected=(n.selected%n.items.len()+n.items.len()+if op=="previous"{n.items.len()-1}else{1})%n.items.len();save(dir,&n)?;}},
+        "previous"|"next"=>{if draft.is_some(){return Err("请先保存当前转写，再浏览笔记".into());}if n.items.len()>1{n.selected=(n.selected%n.items.len()+n.items.len()+if op=="previous"{n.items.len()-1}else{1})%n.items.len();save(dir,&n)?;}},
         "edit"=>{
             let target=input["noteId"].as_str().ok_or("请选择笔记")?;
             let text=input["text"].as_str().ok_or("请输入笔记内容")?.trim();
@@ -328,7 +328,12 @@ pub fn execute(id:&str,op:&str,input:&Value,dir:&Path,usb:&UsbSerialManager)->Re
         },
         "delete"=>{
             if input["confirm"]!=true{return Ok(json!({"headline":"删除需要确认","metricValue":"","note":"请在 PC 笔记列表确认删除；不会删除关联待办"}));}
-            let target=if contextual{n.items.get(n.selected).map(|v|v.id.clone()).ok_or("请选择笔记")?}else{input["noteId"].as_str().ok_or("请选择笔记")?.to_string()};n.items.retain(|v|v.id!=target);n.selected=0;save(dir,&n)?;
+            let target=if contextual{n.items.get(n.selected).map(|v|v.id.as_str()).ok_or("请选择笔记")?}else{input["noteId"].as_str().ok_or("请选择笔记")?};
+            let removed=n.items.iter().position(|note|note.id==target).ok_or("笔记不存在，请刷新列表")?;
+            n.items.remove(removed);
+            if removed<n.selected { n.selected-=1; }
+            n.selected=n.selected.min(n.items.len().saturating_sub(1));
+            save(dir,&n)?;
         },_=>{}
     }
     let mut result=json!({"eyebrow":"笔记仅保存在这台电脑","headline":"接住一个想法","metricValue":"","metricLabel":"开始录制","metricUnit":"保存笔记","note":"录音转写后，由你确认保存或转为待办"});

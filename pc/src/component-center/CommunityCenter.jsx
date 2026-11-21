@@ -210,15 +210,18 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
   const pending = useRef(null),
     coverSeq = useRef(0),
     prepareSeq = useRef(0);
+  const publishableItems = localItems.filter(item =>
+    item.isLocal && item.libraryPath && !legacyAudioInstallBlockedReason(item)
+  );
   const currentPackage = prepared?.path === path ? prepared : null;
-  const covers = selectedCovers ?? (currentPackage?.coverDataUrl ? [currentPackage.coverDataUrl] : []);
+  const covers = currentPackage?.coverDataUrl ? [currentPackage.coverDataUrl, ...(selectedCovers || [])] : [];
   let publishBlocker = prepareError;
   if (!path) publishBlocker = "请先选择要发布的本地组件。";
   else if (checking) publishBlocker = "正在检查组件文件…";
   else if (!publishBlocker && !currentPackage?.canPublish)
     publishBlocker = currentPackage?.warning || "组件文件尚未通过发布检查。";
   else if (!publishBlocker && readingCovers) publishBlocker = "正在读取截图…";
-  else if (!publishBlocker && !covers.length) publishBlocker = "请添加至少一张组件截图。";
+  else if (!publishBlocker && !covers.length) publishBlocker = "请在组件包内添加 pc/cover.png 后重新打包。";
   useExitProtection(busy ? "社区发布尚未完成，请勿重复提交" : dirty.current ? "组件发布内容尚未提交" : "");
   useEffect(() => {
     const seq = ++prepareSeq.current;
@@ -268,14 +271,14 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
       return;
     }
     if (
-      files.length > 3 ||
+      files.length > 2 ||
       files.some(
         (file) =>
           file.size > 2 * 1024 * 1024 ||
           !["image/png", "image/jpeg", "image/webp"].includes(file.type),
       )
     ) {
-      setError("截图未更换。请选择 1–3 张 PNG、JPEG 或 WebP 截图，每张不超过 2 MB。");
+      setError("最多可附两张 PNG、JPEG 或 WebP 截图，每张不超过 2 MB。");
       return;
     }
     setReadingCovers(true);
@@ -331,7 +334,7 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
       const result = await request("publish", {
         path,
         metadata: form,
-        covers: covers.map((url) => url.split(",")[1]),
+        covers: covers.slice(1).map((url) => url.split(",")[1]),
         expectedContentHash: prepared.contentHash,
         requestId: pending.current.requestId,
       });
@@ -369,11 +372,11 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
   return (
     <Dialog title="发布我的玩法" onClose={close} busy={busy||Boolean(discard)} wide>
       <form className="community-publish" onSubmit={submit} onChange={()=>{dirty.current=true;}}>
-        <fieldset disabled={busy} style={{border:0,padding:0,minWidth:0}}>
+        <fieldset disabled={busy}>
         <div className="community-publish-intro">
           <Upload size={22} />
           <div>
-            <h3>把创作分享给更多桌面</h3>
+            <h3>提交社区审核</h3>
             <p>
               选择组件后，社区会预检组件包。新作品和更新均需审核，审核通过后才会公开。
             </p>
@@ -388,10 +391,8 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
             disabled={busy}
             required
           >
-            <option value="">选择已经验证过的本地作品</option>
-            {localItems
-              .filter((item) => item.isLocal && item.libraryPath && !legacyAudioInstallBlockedReason(item))
-              .map((item) => (
+            <option value="">{publishableItems.length ? "选择要发布的本地组件" : "暂无可发布的本地组件"}</option>
+            {publishableItems.map((item) => (
                 <option key={item.libraryPath} value={item.libraryPath}>
                   {item.name} · {item.version || "待检查版本"}
                 </option>
@@ -449,7 +450,7 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
         {field("releaseNotes", "本次更新说明（选填）", 2000, true, false)}
         {field("sourceUrl", "来源链接（选填，派生作品请注明公开来源）", 500, false, false)}
         <label>
-          组件截图 · 1–3 张
+          补充截图（选填，最多两张）
           <input
             key={path}
             type="file"
@@ -459,8 +460,8 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
             onChange={(e) => readCovers([...e.target.files])}
           />
         </label>
-        {selectedCovers === null && currentPackage?.coverDataUrl && (
-          <small>已带入组件封面，可选择其他截图替换。</small>
+        {currentPackage?.coverDataUrl && (
+          <small>首图来自包内封面。要更换首图，请更新组件包。</small>
         )}
         <div className="community-publish-shots">
           {covers.map((src, index) => (
@@ -472,7 +473,7 @@ function Publish({ localItems, owned, onClose, onPublished, selectedPath }) {
             {error}
           </p>
         )}
-        {publishBlocker && !prepareError && <p role="status">{publishBlocker}</p>}
+        {publishBlocker && !prepareError && <p role="status">{!path && !publishableItems.length ? "还没有可发布的本地作品。请先在组件中心创建或导入自己的组件。" : publishBlocker}</p>}
         <footer>
           <small>
             需要下架或删除社区作品，请联系开发者。更新不会自动覆盖用户设备。
@@ -499,6 +500,7 @@ import { isWithdrawnComponent } from "./library-order.js";
 export default function CommunityCenter({
   active = true,
   tab: controlledTab,
+  capabilityTarget,
   onTabChange,
   localItems,
   inventory,
@@ -580,7 +582,7 @@ export default function CommunityCenter({
           </Button>
         </div>
       )}
-      {["discover","favorites"].includes(tab) && <CommunityWeb key={tab} view={tab} localItems={localItems} inventory={inventory} deviceInstallTargetKey={deviceInstallTargetKey} onImported={onImported} onOpenLocal={onOpenLocal}/>}
+      {["discover","favorites"].includes(tab) && <CommunityWeb capabilityTarget={capabilityTarget} key={tab} view={tab} localItems={localItems} inventory={inventory} deviceInstallTargetKey={deviceInstallTargetKey} onImported={onImported} onOpenLocal={onOpenLocal}/>}
       {tab === "local" && (
         <section role="tabpanel" aria-label="我的组件">
           <div className="community-section-title">

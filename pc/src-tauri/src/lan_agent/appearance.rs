@@ -8,7 +8,7 @@ use crate::usb_serial::{
         parse_p4_appearance_slot_state, verified_p4_payload_snapshot, P4AppearanceSlot,
         P4AppearanceSlotState, P4_BUILTIN_APPEARANCE_SLOT, P4_RAW_APPEARANCE_SLOT,
     },
-    prepared_p4_lan_files, transfer_log, UsbSerialManager,
+    prepared_p4_lan_files, sync_global_cues, transfer_log, GlobalCuePhase, UsbSerialManager,
 };
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::{json, Value};
@@ -74,6 +74,10 @@ enum Phase {
     Chunk,
     File,
     Commit,
+    AudioBegin,
+    AudioChunk,
+    AudioCommit,
+    AudioAbort,
 }
 
 impl Phase {
@@ -85,6 +89,10 @@ impl Phase {
             Self::Chunk => "chunk",
             Self::File => "file",
             Self::Commit => "commit",
+            Self::AudioBegin => GlobalCuePhase::Begin.label(),
+            Self::AudioChunk => GlobalCuePhase::Chunk.label(),
+            Self::AudioCommit => GlobalCuePhase::Commit.label(),
+            Self::AudioAbort => GlobalCuePhase::Abort.label(),
         }
     }
 }
@@ -123,16 +131,29 @@ impl Transfer<'_> {
 
     fn exchange_phase(&self, phase: Phase, payload: Value) -> Result<Value, String> {
         require_no_usb(self.usb)?;
-        self.usb.ensure_appearance_sync_not_cancelled(None)?;
+        if !matches!(phase, Phase::AudioAbort) {
+            self.usb.ensure_appearance_sync_not_cancelled(None)?;
+        }
         let mut body = self.boot.as_bytes().to_vec();
         body.push(phase as u8);
         serde_json::to_writer(&mut body, &payload).map_err(|_| NOT_READY)?;
+        if body.len() >= 16384 {
+            return Err("无线素材请求超过固件上限。".into());
+        }
         let timeout = match phase {
-            Phase::Begin | Phase::Activate | Phase::Commit => Duration::from_secs(58),
+            Phase::Begin
+            | Phase::Activate
+            | Phase::Commit
+            | Phase::AudioBegin
+            | Phase::AudioCommit
+            | Phase::AudioAbort => Duration::from_secs(58),
             _ => Duration::from_secs(6),
         };
         let reason = match phase {
             Phase::Activate | Phase::Commit => RESULT_UNKNOWN,
+            Phase::AudioBegin | Phase::AudioChunk | Phase::AudioCommit | Phase::AudioAbort => {
+                "无线音效操作结果未确认，请核对设备。"
+            }
             Phase::Slots => "无法确认设备形象槽位，尚未发送素材。",
             _ => "Wi-Fi 形象传输已中断，尚未提交新形象。",
         };
@@ -141,6 +162,9 @@ impl Transfer<'_> {
                 .map_err(|_| reason)?;
         if bytes == [0] {
             return Err(match phase {
+                Phase::AudioBegin | Phase::AudioChunk | Phase::AudioCommit | Phase::AudioAbort => {
+                    reason
+                }
                 Phase::Activate | Phase::Commit => RESULT_UNKNOWN,
                 _ => NOT_READY,
             }
@@ -157,6 +181,17 @@ impl Transfer<'_> {
             return Err(reason.into());
         }
         if !matches!(phase, Phase::Slots) && ack["ok"] != true {
+            if matches!(
+                phase,
+                Phase::AudioBegin | Phase::AudioChunk | Phase::AudioCommit | Phase::AudioAbort
+            ) {
+                return Err(if ack["errorCode"] == "audio_patch_rejected" {
+                    "设备已拒绝无线提示音操作。"
+                } else {
+                    reason
+                }
+                .into());
+            }
             return Err(if ack["errorCode"] == "appearance_query_outcome_unknown"
                 || ack["error"]
                     .as_str()
@@ -169,6 +204,41 @@ impl Transfer<'_> {
             .into());
         }
         Ok(ack.clone())
+    }
+
+    fn global_cues(&self, directory: &Path, pairing: u64) -> Result<(u32, u64, bool), String> {
+        let route = || {
+            if super::component_events::pairing_revision() != pairing {
+                return Err("Wi-Fi 配对已变化，无线音效操作已停止。".to_owned());
+            }
+            require_no_usb(self.usb)
+        };
+        let current = || {
+            route()?;
+            self.usb.ensure_appearance_sync_not_cancelled(None)
+        };
+        sync_global_cues(
+            directory,
+            self.board,
+            self.boot,
+            &self.id,
+            current,
+            |phase, payload| {
+                route()?;
+                self.request(
+                    match phase {
+                        GlobalCuePhase::Slots => Phase::Slots,
+                        GlobalCuePhase::Begin => Phase::AudioBegin,
+                        GlobalCuePhase::Chunk => Phase::AudioChunk,
+                        GlobalCuePhase::Commit => Phase::AudioCommit,
+                        GlobalCuePhase::Abort => Phase::AudioAbort,
+                    },
+                    payload.clone(),
+                )
+            },
+            true,
+            |_, _, _, _| {},
+        )
     }
 
     fn slots(&self) -> Result<P4AppearanceSlotState, String> {
@@ -401,6 +471,67 @@ pub(crate) async fn lan_sync_appearance(
     result.map_err(|_| "Wi-Fi 形象同步任务未完成。")?
 }
 
+fn global_cue_target(status: &super::LanDeviceStatus, board: &str, boot: &str) -> bool {
+    status.global_audio_cues
+        && status.control_trusted
+        && status.wifi_connected
+        && !board.is_empty()
+        && status.board_device_id == board
+        && boot.len() == 16
+        && boot.bytes().all(|c| c.is_ascii_hexdigit())
+        && status.boot_id == boot
+}
+
+#[tauri::command]
+pub(crate) async fn lan_sync_global_audio_cues(
+    app: tauri::AppHandle,
+    usb_manager: tauri::State<'_, UsbSerialManager>,
+    board_device_id: String,
+    boot_id: String,
+) -> Result<crate::UsbSyncAppearanceResult, String> {
+    let directory = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|_| "无法读取本机提示音。")?;
+    let usb = usb_manager.inner().clone();
+    require_no_usb(&usb)?;
+    usb.begin_appearance_sync()?;
+    let worker = usb.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let _foreground = super::widget_data::foreground()?;
+        let (peer, status) = read_with_recovery(query_status, "无法读取已配对的 Wi-Fi 设备。")?;
+        if !global_cue_target(&status, &board_device_id, &boot_id) {
+            return Err("需要本次启动已授权且支持无线全局提示音的设备。".into());
+        }
+        let transfer = Transfer {
+            peer: &peer,
+            board: &board_device_id,
+            boot: &boot_id,
+            capacity: status.appearance_capacity,
+            id: uuid::Uuid::new_v4().to_string(),
+            usb: &worker,
+        };
+        let pairing = {
+            let _lock = super::PAIRING_MUTATION.lock().map_err(|_| "配对记录繁忙")?;
+            if !super::read_peer()?.is_some_and(|p| super::widget_data::same_peer(&p, &peer)) {
+                return Err("已配对的 Wi-Fi 设备发生变化。".into());
+            }
+            super::component_events::pairing_revision()
+        };
+        let (file_count, byte_count, reused_slot) = transfer.global_cues(&directory, pairing)?;
+        Ok(crate::UsbSyncAppearanceResult {
+            ok: true,
+            file_count,
+            byte_count,
+            reused_slot,
+            error: None,
+        })
+    })
+    .await;
+    usb.finish_appearance_sync();
+    result.map_err(|_| "无线音效任务结果未确认。")?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,3 +612,7 @@ mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+#[path = "global_cues_tests.rs"]
+mod global_cues_tests;

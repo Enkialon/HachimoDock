@@ -10,6 +10,8 @@
  * [Sync] If this file changes, update `pc/.folder.md` and `pc/docs/realtime-chat.md`.
  */
 
+use crate::model_issue::{self, LLM};
+
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -219,7 +221,7 @@ where F: FnMut(&str), E: FnMut(crate::web_search::Event) {
         let (mut text,calls) = result.map_err(|error| {
             // A later model stream failure must not erase earlier tool attempts
             // or tell the user that the entire utterance executed nothing.
-            if tools_attempted { crate::voice_decision::AFTER_TOOLS_FAILURE.to_string() }
+            if tools_attempted { format!("{error} {}", crate::voice_decision::AFTER_TOOLS_FAILURE) }
             else { error }
         })?;
         if generation!=crate::smart_home::cancellation_generation() {return Err("对话任务已取消".into());}
@@ -661,7 +663,12 @@ where F: FnMut(&str) {
     stream_response_logged(cfg, body, None, on_delta).await
 }
 
-async fn stream_response_logged<F>(cfg: &LlmConfig, body: Value, session: Option<&str>, mut on_delta: F) -> Result<(String,Vec<Value>), String>
+async fn stream_response_logged<F>(cfg: &LlmConfig, body: Value, session: Option<&str>, on_delta: F) -> Result<(String,Vec<Value>), String>
+where F: FnMut(&str) {
+    read_model_stream(cfg, body, session, on_delta).await.map_err(|e| model_issue::local(LLM,e))
+}
+
+async fn read_model_stream<F>(cfg: &LlmConfig, body: Value, session: Option<&str>, mut on_delta: F) -> Result<(String,Vec<Value>), String>
 where F: FnMut(&str) {
     if cfg.api_key.trim().is_empty() { return Err("对话大模型未配置 API Key".into()); }
     let started = std::time::Instant::now();
@@ -670,25 +677,17 @@ where F: FnMut(&str) {
         "count":body["tools"].as_array().map_or(0,Vec::len),
         "chars":body["messages"].as_array().map_or(0,|messages|messages.iter().map(|m|m["content"].as_str().map_or(0,|s|s.chars().count())).sum::<usize>()),
         "state":if body["thinking"]["type"]=="disabled" {"thinking_disabled"} else {"provider_default"}}));
-    let client = crate::llm_network::client(REQUEST_TIMEOUT)?;
+    let client = model_issue::client(LLM, REQUEST_TIMEOUT)?;
     let url = cfg.completions_url();
     let response = crate::web_search::authorize(client.post(&url), &url, cfg.api_key.trim())
         .json(&body)
         .send()
         .await
-        .map_err(|error| crate::llm_network::connection_error(&error))?;
+        .map_err(|error| model_issue::network(LLM, &error))?;
     let status = response.status();
     crate::realtime_chat_log::record(diagnostic_session,"model_http_headers",json!({"elapsedMs":started.elapsed().as_millis(),"ok":status.is_success()}));
     if !status.is_success() {
-        let text = response.text().await.unwrap_or_default().replace(cfg.api_key.trim(), "[redacted]");
-        let hint = if status.as_u16() == 401 {
-            "（鉴权失败，请核对大模型 API Key）"
-        } else if status.as_u16() == 404 {
-            "（接口地址或模型名不对）"
-        } else {
-            ""
-        };
-        return Err(format!("对话大模型返回 HTTP {}{}: {}", status.as_u16(), hint, truncate(&text, 300)));
+        return Err(model_issue::http(LLM, status.as_u16(), false));
     }
     let mut stream = response.bytes_stream();
     // Network chunks can split a UTF-8 Chinese character. Decode complete SSE lines only.
@@ -696,9 +695,17 @@ where F: FnMut(&str) {
     let mut full = String::new();
     let mut calls: std::collections::BTreeMap<usize,Value> = std::collections::BTreeMap::new();
     let mut first_payload = true;
+    let mut json_reply = false;
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("对话大模型流读取失败: {error}"))?;
+        let chunk = chunk.map_err(|error| model_issue::network(LLM, &error))?;
         buffer.extend_from_slice(&chunk);
+        // Some compatible servers return an ordinary JSON error to a streaming
+        // request. Inspect the wire format; a mislabeled SSE still streams.
+        json_reply |= buffer.iter().find(|b| !b.is_ascii_whitespace()) == Some(&b'{');
+        if json_reply {
+            if buffer.len() > 64 * 1024 { return Err("对话服务 JSON 响应过大".into()); }
+            continue;
+        }
         if buffer.len() > 1024 * 1024 { return Err("对话流单行超过安全上限".into()); }
         while let Some(newline) = buffer.iter().position(|b| *b == b'\n') {
             let line = std::str::from_utf8(&buffer[..newline])
@@ -714,11 +721,11 @@ where F: FnMut(&str) {
             }
             let value: Value = serde_json::from_str(data)
                 .map_err(|_| "对话流数据损坏，未执行本次模型返回的工具")?;
+            model_issue::check_reply(LLM, &value)?;
             if value["choices"][0]["finish_reason"]=="length" {return Err("大模型输出达到长度上限，本轮工具未执行".into());}
             if value["choices"][0]["finish_reason"].as_str().is_some_and(|reason|!matches!(reason,"stop"|"tool_calls")) {
                 return Err("大模型未正常完成本轮输出，未执行本轮工具".into());
             }
-            if value.get("error").is_some() {return Err("大模型未完成请求，请检查模型是否支持工具调用".into());}
             let delta = &value["choices"][0]["delta"];
             if first_payload && (delta["content"].as_str().is_some_and(|s|!s.is_empty())
                 || delta["reasoning_content"].as_str().is_some_and(|s|!s.is_empty())
@@ -747,16 +754,13 @@ where F: FnMut(&str) {
             }
         }
     }
+    if json_reply {
+        let reply = serde_json::from_slice(&buffer).map_err(|_| "服务返回无效 JSON")?;
+        model_issue::check_reply(LLM,&reply)?;
+        return Err("服务未返回对话流，请检查模型的流式输出支持".into());
+    }
     if !calls.is_empty() { return Err("工具调用流提前结束，未执行操作".into()); }
     Err("对话流提前结束，回复未完成".into())
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    let mut out = text.trim().replace('\n', " ");
-    if out.chars().count() > max {
-        out = out.chars().take(max).collect::<String>() + "…";
-    }
-    out
 }
 
 /// Turns streamed deltas into spoken sentences: emits on sentence punctuation, and on a
@@ -765,6 +769,8 @@ fn truncate(text: &str, max: usize) -> String {
 pub struct SentenceSplitter {
     pending: String,
     emitted: bool,
+    chars: usize,
+    buffered_tts: bool,
 }
 
 impl SentenceSplitter {
@@ -773,19 +779,28 @@ impl SentenceSplitter {
     const SOFT_MIN_CHARS: usize = 18;
     const HARD_MIN_CHARS: usize = 2;
 
+    pub fn for_buffered_tts(buffered_tts: bool) -> Self {
+        Self { buffered_tts, ..Self::default() }
+    }
+
     pub fn push(&mut self, delta: &str) -> Vec<String> {
         let mut out = Vec::new();
         for ch in delta.chars() {
             self.pending.push(ch);
-            let count = self.pending.chars().count();
+            self.chars += 1;
+            let count = self.chars;
             let hard = Self::HARD_ENDS.contains(&ch) && count >= Self::HARD_MIN_CHARS;
             // A short first clause gives TTS a head start; later clauses remain longer
             // to preserve prosody and avoid many tiny synthesis sessions.
             let soft_min = if self.emitted { Self::SOFT_MIN_CHARS } else { 8 };
             let soft = Self::SOFT_ENDS.contains(&ch) && count >= soft_min;
-            if hard || soft {
+            let limit = if self.emitted { 64 } else { 32 };
+            let phrase = self.buffered_tts && count >= limit &&
+                (ch.is_whitespace() || ('一'..='鿿').contains(&ch));
+            if hard || soft || phrase {
                 let sentence = self.pending.trim().to_string();
                 self.pending.clear();
+                self.chars = 0;
                 if !sentence.is_empty() {
                     self.emitted = true;
                     out.push(sentence);
@@ -798,6 +813,7 @@ impl SentenceSplitter {
     pub fn flush(&mut self) -> Option<String> {
         let sentence = self.pending.trim().to_string();
         self.pending.clear();
+        self.chars = 0;
         if sentence.is_empty() {
             None
         } else {
@@ -918,6 +934,22 @@ mod tests {
         let mut calls=std::collections::BTreeMap::new();
         merge_tool_calls(&mut calls,&json!([{"index":0,"id":"first","function":{"name":"desktop_agent","arguments":"{"}}])).unwrap();
         assert!(merge_tool_calls(&mut calls,&json!([{"index":0,"id":"second","function":{"arguments":"}"}}])).is_err());
+    }
+
+    #[tokio::test]
+    async fn model_issue_realtime_stream_drops_private_http_and_sse_detail() {
+        use super::*;
+        let reply=json!({"error":{"type":"insufficient_quota","message":"private-key https://private.invalid"}});
+        for (status,mime,body,expected) in [
+            ("401 Unauthorized","text/plain","private-key https://private.invalid".into(),"[LLM] HTTP 401"),
+            ("200 OK","application/json",reply.to_string(),"[LLM] code=insufficient_quota"),
+            ("200 OK","text/event-stream",format!("data: {reply}\n\n"),"[LLM] code=insufficient_quota"),
+        ] {
+            let (origin,server)=crate::voice_chat_settings::mock_model_response(status,mime,body.into_bytes()).await;
+            let cfg=LlmConfig{base_url:origin,api_key:"private-key".into(),model:"private-model".into(),web_search:false,search:Default::default()};
+            let error=stream_response(&cfg,json!({}),|_| panic!("error emitted as speech")).await.unwrap_err();
+            assert!(error.starts_with(expected));assert!(!error.contains("private"));server.await.unwrap();
+        }
     }
 
     #[tokio::test]

@@ -15,7 +15,11 @@ export function stepLabel(step, devices = [], scenes = []) {
   return step.kind === "set" ? `${name} · ${capability} → ${JSON.stringify(step.value)}` : `${name} · ${capability}（${(step.args || []).map(v => JSON.stringify(v)).join("，")}）`;
 }
 export function parsePropertyValue(property, value) {
-  if (property.format === "bool") return value === "true";
+  if (property.format === "bool") {
+    if (["true", "1", true, 1].includes(value)) return true;
+    if (["false", "0", false, 0].includes(value)) return false;
+    throw new Error("请选择开启或关闭");
+  }
   if (property.format === "string") return value;
   if (String(value).trim() === "" || !Number.isFinite(Number(value))) throw new Error("请填写有效数字");
   return Number(value);

@@ -11,6 +11,10 @@ import {
   channelLabelForId,
 } from "../lib/agent-appearance-config.js";
 
+export function deviceDisplayId(boardDeviceId) {
+  return String(boardDeviceId || "").slice(-6);
+}
+
 export function deriveCurrentDisplay(agentAppearanceMap, enabledAgents, appearances, agentOptions) {
   const active = activeDesktopAssignment(agentAppearanceMap, enabledAgents);
   return {
@@ -118,14 +122,18 @@ export function pairedWifiTarget(status) {
     bundledFirmwareVersion: status.bundledFirmwareVersion || "",
     bundledFirmwareRollbackBlocked: status.bundledFirmwareRollbackBlocked === true,
     wifiConnected: true,
+    // Older LAN status versions default an absent vault flag to false.
+    widgetCredentialStorageReady: status.widgetCredentialStorageReady === true,
     clockSynchronized: status.clockSynchronized === true,
     rebootSupported: status.rebootSupported === true,
     trustedVolume: status.trustedVolume === true,
+    globalAudioCues: status.globalAudioCues === true,
     controlTrusted: status.controlTrusted === true,
     wirelessOta: status.wirelessOta === true,
     wirelessRealtime: status.wirelessRealtime === true,
     wirelessVoiceInput: status.wirelessVoiceInput === true,
     componentDelivery: status.componentDelivery === true,
+    centerThumb: status.centerThumb === true && status.componentBundle === true,
     appearanceCapacity: Number.isSafeInteger(status.appearanceCapacity) && status.appearanceCapacity > 0
       ? status.appearanceCapacity : 0,
     inputDoublePress: status.inputDoublePress === true,

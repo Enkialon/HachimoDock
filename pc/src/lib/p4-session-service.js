@@ -19,11 +19,17 @@ export function enqueueP4SessionBinding(previous, isCurrent, submit) {
   return previous.catch(() => undefined).then(() => isCurrent() ? submit() : undefined);
 }
 
-function retainNewerLifecycle(previous, incoming, merged) {
+function retainNewerLifecycle(previous, incoming, merged, concurrentEvent = false) {
   const before = Number(previous?.statusUpdatedAt);
   const after = Number(incoming?.statusUpdatedAt);
-  if (!Number.isFinite(before) || !Number.isFinite(after) || before <= 0 || after <= 0 || after >= before) return;
-  for (const key of ["state", "statusUpdatedAt", "displayTitle", "displayContent", "status", "active", "activitySource", "stateDetailUnknown"]) {
+  const sameEpoch = previous?.epoch && previous.epoch === incoming?.epoch;
+  const seqBefore = Number(previous?.sourceSeq);
+  const seqAfter = Number(incoming?.sourceSeq);
+  const versionedTie = sameEpoch && before === after && Number.isFinite(seqBefore) && Number.isFinite(seqAfter);
+  const older = (before > 0 && after > 0 && after < before) || (versionedTie && seqBefore > seqAfter);
+  const ambiguous = !incoming?.state || !after || (after === before && !(versionedTie && seqAfter > seqBefore));
+  if (!previous || !(older || (concurrentEvent && ambiguous))) return;
+  for (const key of ["state", "statusUpdatedAt", "displayTitle", "displayContent", "status", "active", "activitySource", "stateDetailUnknown", "epoch", "sourceSeq", "transitionRevision"]) {
     if (Object.hasOwn(previous, key)) merged[key] = previous[key];
     else delete merged[key];
   }
@@ -93,15 +99,17 @@ export function buildP4RoutingSessions(sessions) {
     .sort((a, b) => recency(b) - recency(a));
 }
 
-export function mergeP4SessionSnapshot(previousSessions, incomingSessions) {
+export function mergeP4SessionSnapshot(previousSessions, incomingSessions, concurrentIds) {
   const previousById = new Map(
     buildP4RoutingSessions(previousSessions)
       .map((session) => [normalizeSessionText(session?.id), session]),
   );
+  const missing = concurrentIds?.size ? new Set(concurrentIds) : null;
   const merged = (Array.isArray(incomingSessions) ? incomingSessions : []).map((session) => {
     const id = normalizeSessionText(session?.id);
     const previous = id ? previousById.get(id) : null;
     if (!previous) return session;
+    missing?.delete(id);
     const next = { ...previous, ...session, id };
     const incomingState = normalizeSessionText(session?.state);
     if (!incomingState && normalizeSessionText(previous?.state)) {
@@ -126,9 +134,17 @@ export function mergeP4SessionSnapshot(previousSessions, incomingSessions) {
       Number(session?.lastModified || 0),
       Number(next.statusUpdatedAt || 0),
     );
-    retainNewerLifecycle(previous, session, next);
+    retainNewerLifecycle(previous, session, next, concurrentIds?.has(id));
     return next;
   });
+  // A scan already in flight may omit a just-created session. Only preserve
+  // rows touched by events during this request, so later scans can prune them.
+  if (missing) {
+    for (const id of missing) {
+      const session = previousById.get(id);
+      if (session) merged.push(session);
+    }
+  }
   return buildP4RoutingSessions(merged);
 }
 

@@ -109,9 +109,9 @@ test("provider polls USB status but does not auto-connect inside the polling eff
 });
 
 test("provider obtains Wi-Fi reachability from the authenticated paired status", () => {
-  assert.match(source, /invoke\("lan_device_status"\)/);
-  assert.match(source, /usb\.connected \? null : wifiStatus/);
-  assert.match(source, /target = pairedWifiTarget\(await invoke\("lan_device_status"\)\)/);
+  assert.match(source, /invoke\("lan_connection_snapshot"\)/);
+  assert.match(source, /usb\.connected \? null : pairedStatus/);
+  assert.match(source, /status && pairedWifiTarget\(status\)/);
   assert.match(source, /activeBoardDeviceId = onlineBoardDeviceId \|\| binding\?\.boardDeviceId/);
   assert.match(source, /deriveDeviceReachability\(\{ usb, wifi \}\)/);
   assert.match(source, /if \(usb.connected\) return applyDesktopPet\(agentId, appearance, options\)/);
@@ -212,11 +212,14 @@ test("P4 reachability prefers USB and uses authenticated Wi-Fi when USB disconne
   assert.equal(pairedWifiTarget({ ...status, wifiConnected: false }), null);
   assert.equal(pairedWifiTarget({ ...status, bootId: "" }), null);
   const wifi = pairedWifiTarget(status);
-  const wifiCapabilities = { trustedVolume: true, controlTrusted: true, wirelessOta: true, componentDelivery: true, appearanceCapacity: 8388608, panelControl: true };
+  assert.equal(pairedWifiTarget({ ...status, centerThumb: true, componentBundle: true }).centerThumb, true);
+  assert.equal(pairedWifiTarget({ ...status, centerThumb: true }).centerThumb, false);
+  assert.equal(pairedWifiTarget({ ...status, centerThumb: 1, componentBundle: true }).centerThumb, false);
+  const wifiCapabilities = { globalAudioCues: true, trustedVolume: true, controlTrusted: true, wirelessOta: true, componentDelivery: true, appearanceCapacity: 8388608, panelControl: true };
   assert.deepEqual(wifi, { boardDeviceId: status.boardDeviceId, bootId: status.bootId,
     address: "", firmware: "", bundledFirmwareVersion: "", bundledFirmwareRollbackBlocked: false, wifiConnected: true,
-    clockSynchronized: false, rebootSupported: false, wirelessRealtime: false, wirelessVoiceInput: false,
-    trustedVolume: false, controlTrusted: false, wirelessOta: false, componentDelivery: false,
+    clockSynchronized: false, widgetCredentialStorageReady: false, rebootSupported: false, wirelessRealtime: false, wirelessVoiceInput: false,
+    globalAudioCues: false, trustedVolume: false, controlTrusted: false, wirelessOta: false, componentDelivery: false, centerThumb: false,
     appearanceCapacity: 0, inputDoublePress: false, systemSettings: false, panelControl: false });
   assert.deepEqual(pairedWifiTarget({ ...status, ...wifiCapabilities }), { ...wifi, ...wifiCapabilities });
   assert.deepEqual(deriveDeviceReachability({ usb, wifi }), connected);

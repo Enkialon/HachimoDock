@@ -9,6 +9,7 @@
  * [Sync] If this file changes, update this header.
  */
 
+import { normalizeGenerationErrorMessage } from "../generation-issue.js";
 import { CUSTOM_GENERATION_FAMILIES, FAMILIES } from "./families.js";
 import { buildImagePayload, bytesToDataUrl, uint8ToBase64 } from "./image.js";
 import { processImageForPipeline } from "./image-processing.js";
@@ -647,7 +648,7 @@ export async function runAvatarPipeline({
       emit();
       return familyResult;
     } catch (err) {
-      const message = err?.message || String(err);
+      const message = normalizeGenerationErrorMessage(err, effectiveProviderConfig.provider);
       if (session && !persistenceError && !signal?.aborted && err?.name !== "AbortError") {
         session.actions ||= {};
         const action=session.actions[entry.family]||{};

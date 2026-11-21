@@ -38,7 +38,19 @@ pub fn observe(topic:&str,p:&Value){
 }
 pub fn status(id:&str)->Value{job(id).map(|j|json!({"phase":j.phase.lock().unwrap().clone(),"error":j.error.lock().unwrap().clone(),"speechId":j.speech_key,"speechItemId":j.speech_item.lock().unwrap().clone(),"speechOffset":j.speech_offset.load(Ordering::Acquire),"maxSpeechGapMs":j.speech_gap_ms.load(Ordering::Acquire),"remainingSeconds":j.sound_total.load(Ordering::Acquire).saturating_sub(j.sound_offset.load(Ordering::Acquire)).div_ceil(48000)})).unwrap_or(json!({"phase":"idle","error":""}))}
 /// Change this soundscape's total duration, never replace its audio session.
-pub fn sound_timer(id:&str,minutes:u32){if let Some(j)=job(id){if j.sound_total.load(Ordering::Acquire)>0{j.sound_total.store(minutes.clamp(1,60)*60*48000,Ordering::Release);}}}
+const SOUND_FADE_SAMPLES: u32 = 3 * 48_000;
+fn sound_deadline(minutes: u32, accepted_samples: u32) -> u32 {
+    // Shortening an already elapsed timer still gives the synth its fade-out.
+    (minutes.clamp(1, 60) * 60 * 48_000).max(accepted_samples.saturating_add(SOUND_FADE_SAMPLES))
+}
+pub fn sound_timer(id: &str, minutes: u32) {
+    if let Some(j) = job(id) {
+        if j.sound_total.load(Ordering::Acquire) > 0 {
+            let deadline = sound_deadline(minutes, j.sound_offset.load(Ordering::Acquire));
+            j.sound_total.store(deadline, Ordering::Release);
+        }
+    }
+}
 pub fn volume(id:&str,v:u32){if let Some(j)=job(id){j.volume.store(v.min(100),Ordering::Release);}}
 pub fn playing(id:&str)->bool{job(id).is_some_and(|j|!j.cancel.load(Ordering::Acquire)&&matches!(j.phase.lock().unwrap().as_str(),"preparing"|"buffering"|"playing"))}
 pub enum Source{Sound{kind:usize,minutes:u32},Speech(String),SpeechQueue{key:String,items:Vec<SpeechItem>}}
@@ -57,9 +69,12 @@ fn prepare_authorized<T>(owner:&crate::component_app::MediaAuthority,prepare:imp
 }
 pub fn start(id:&str,usb:&UsbSerialManager,source:Source,volume:u32)->Result<(),String>{
     let owner=crate::component_app::media_authority(id)?;
-    let board=usb.status();if !board.connected{return Err("请先连接设备，并在设备打开这个组件".into());}
+    let board = usb.status();
+    if !board.connected { return Err("此组件的电脑合成音频通过 USB 播放，请连接 USB 并在设备上打开组件。".into()); }
+    let connection = board.connection_id.parse().map_err(|_| "USB 连接已变化，请重新打开组件")?;
+    let route = crate::lan_agent::widget_data::Route::Usb { board: board.board_device_id.clone(), connection };
     if voice_busy(){return Err("语音正在使用，请结束后再播放".into());}
-    let cfg=prepare_authorized(&owner,||if matches!(source,Source::Speech(_)|Source::SpeechQueue{..}){crate::component_voice::config(&board.board_device_id).map(Some)}else{Ok(None)})?;
+    let cfg=prepare_authorized(&owner,||if matches!(source,Source::Speech(_)|Source::SpeechQueue{..}){crate::component_voice::config_for(&board.board_device_id, Some(&route)).map(Some)}else{Ok(None)})?;
     if let Source::SpeechQueue{key,items}=&source{speech_queue::validate(key,items)?;}
     if !owner.is_current(){return Err("组件已退出，未启动音频".into());}
     stop(None);crate::component_media::stop_all();
@@ -138,12 +153,25 @@ impl Synth{
             _=>self.low*0.5+(t*2.0).sin().max(0.0).powi(12)*(t*std::f64::consts::TAU*3100.0).sin()*0.08,
         };v.clamp(-0.7,0.7)
     }
-    fn block(&mut self,count:usize,offset:usize,total:usize)->Vec<u8>{let mut b=Vec::with_capacity(count*2);for i in 0..count{let fade=((offset+i)as f64/96000.0).min(1.0)*((total-offset-i)as f64/144000.0).min(1.0);let v=(self.sample()*fade*32767.0)as i16;b.extend_from_slice(&v.to_le_bytes());}b}
+    fn block(&mut self,count:usize,offset:usize,total:usize)->Vec<u8>{let mut b=Vec::with_capacity(count*2);for i in 0..count{let fade=((offset+i)as f64/96000.0).min(1.0)*((total-offset-i)as f64/f64::from(SOUND_FADE_SAMPLES)).min(1.0);let v=(self.sample()*fade*32767.0)as i16;b.extend_from_slice(&v.to_le_bytes());}b}
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn resampling_is_bounded_and_preserves_length(){let p=resample(&[0,0,255,127]);assert_eq!(p.len(),12);assert_eq!(&p[0..2],&[0,0]);assert_eq!(&p[10..12],&[255,127]);}
 #[test]fn saved_draft_does_not_own_microphone(){
     assert!(capture_busy(false,false,false));assert!(capture_busy(true,false,false));
     assert!(!capture_busy(true,true,false));assert!(!capture_busy(false,false,true));
+}
+#[test]
+fn shortened_sound_timer_finishes_with_a_fade_without_restarting() {
+    let elapsed = 20 * 60 * 48_000;
+    let end = sound_deadline(15, elapsed);
+    assert_eq!(end - elapsed, 3 * 48_000);
+    assert_eq!(sound_deadline(30, elapsed), 30 * 60 * 48_000);
+    let mut synth = Synth::new(1);
+    let pcm = synth.block((end-elapsed) as usize, elapsed as usize, end as usize);
+    let peak = |bytes: &[u8]| bytes.chunks_exact(2)
+        .map(|s| i16::from_le_bytes([s[0],s[1]]).unsigned_abs()).max().unwrap();
+    assert!(peak(&pcm[..9600]) > 100);
+    assert!(peak(&pcm[pcm.len()-96..]) < 10);
 }
 #[test]fn sounds_have_continuous_state_and_safe_peak(){for kind in 0..4{let mut a=Synth::new(kind);let mut b=Synth::new(kind);let joined=a.block(7680,0,100000);let mut split=b.block(3840,0,100000);split.extend(b.block(3840,3840,100000));assert_eq!(joined,split);assert!(joined.chunks_exact(2).all(|s|i16::from_le_bytes([s[0],s[1]]).unsigned_abs()<=22938));}}}
 

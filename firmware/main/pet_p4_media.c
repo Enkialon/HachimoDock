@@ -31,6 +31,7 @@ static SemaphoreHandle_t lock;
  * taking the internal RAM needed by codecs, USB and task stacks. */
 static EXT_RAM_BSS_ATTR pet_p4_media_view_t view;
 static char session[64];
+static char visible_source[PET_P4_MEDIA_SOURCE_MAX];
 static uint32_t next_seq,offset_ms;
 static uint64_t last_request;
 static uint8_t *cover;
@@ -547,21 +548,52 @@ static bool radio_action_locked(const char *source, const char *operation, int v
 }
 #endif
 
+static bool reports_media_visibility(const char *source) {
+#if PET_P4_SYSTEM_WIFI
+  if (!strcmp(source, PET_P4_MEDIA_WIFI_SOURCE)) return false;
+#endif
+  return strncmp(source, "app.", 4) != 0;
+}
+
+static void stop_visible_media_locked(void) {
+  const char *owner = view.source[0] ? view.source : "audio.player";
+  if (session[0] && !strcmp(visible_source, owner)) {
+    pet_p4_audio_music_flush_if_owner(session);
+    session[0] = 0;
+    offset_ms = view.position_ms = 0;
+    view.level = 0;
+    view.seeking = false;
+    copy(view.status, sizeof(view.status), "idle");
+    copy(view.message, sizeof(view.message), "已停止播放");
+  }
+}
+
 void pet_p4_media_visibility(const char *source,bool visible,uint64_t now_ms) {
-  static char prior[48];static bool was_visible;static uint32_t epoch,boot;static uint64_t last;
+  static uint32_t epoch,boot;
+  static uint64_t last;
   if(!lock)return;
   xSemaphoreTake(lock,portMAX_DELAY);
   if(!boot)boot=esp_random()|1;
-  if(was_visible&&(!visible||strcmp(prior,source))){
-    cJSON *p=cJSON_CreateObject();cJSON_AddStringToObject(p,"source",prior);cJSON_AddStringToObject(p,"operation","visibility");
-    cJSON_AddNumberToObject(p,"boot",boot);cJSON_AddNumberToObject(p,"epoch",++epoch);cJSON_AddBoolToObject(p,"visible",false);emit("media/event",p);was_visible=false;
+  if (visible_source[0] && (!visible || strcmp(visible_source, source))) {
+    stop_visible_media_locked();
+    if (reports_media_visibility(visible_source)) {
+      // The scoped stop also cancels preparation on desktop clients that
+      // interpret visibility loss as permission to keep an active stream.
+      cJSON *stop = cJSON_CreateObject();
+      cJSON_AddStringToObject(stop, "source", visible_source);
+      cJSON_AddStringToObject(stop, "operation", "stop");
+      emit("media/event", stop);
+      cJSON *p=cJSON_CreateObject();cJSON_AddStringToObject(p,"source",visible_source);cJSON_AddStringToObject(p,"operation","visibility");
+      cJSON_AddNumberToObject(p,"boot",boot);cJSON_AddNumberToObject(p,"epoch",++epoch);cJSON_AddBoolToObject(p,"visible",false);emit("media/event",p);
+    }
+    visible_source[0] = 0;
   }
-#if PET_P4_SYSTEM_WIFI
-  if (!strcmp(source, PET_P4_MEDIA_WIFI_SOURCE)) visible = false;
-#endif
-  if(visible&&source[0]){
-    if(!was_visible||strcmp(prior,source)){copy(prior,sizeof(prior),source);++epoch;last=0;}
-    was_visible=true;
+  if (visible && source[0] && !visible_source[0]) {
+    copy(visible_source, sizeof(visible_source), source);
+    ++epoch;
+    last = 0;
+  }
+  if(visible&&source[0]&&reports_media_visibility(source)){
 #if PET_P4_SYSTEM_WIFI
     if (radio_fallback_pending && live_source(source)) {
       radio_fallback_pending = false;
@@ -649,7 +681,10 @@ bool pet_p4_media_handle_with_reply(const char *topic,const cJSON *p,
 #if PET_P4_SYSTEM_WIFI
     else if(!strcmp(str(p,"source"), PET_P4_MEDIA_WIFI_SOURCE)) {ok=false;message="Wi-Fi 音频由设备播放";}
 #endif
-    else if(!strncmp(str(p,"source"),"app.",4)&&!pet_p4_miniapp_host_source(str(p,"source"))) {ok=false;message="请先打开对应组件";}
+    else if (!strncmp(str(p,"source"), "app.", 4) &&
+        (strcmp(str(p,"source"), visible_source) || !pet_p4_miniapp_host_source(str(p,"source")))) {
+      ok=false;message="请先打开对应组件";
+    }
     else if(pet_p4_audio_music_begin(id)!=ESP_OK) {ok=false;message="麦克风或语音正在使用，音乐未启动";}
     else {
 #if PET_P4_SYSTEM_WIFI

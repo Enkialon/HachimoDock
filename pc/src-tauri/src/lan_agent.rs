@@ -15,6 +15,8 @@ pub(crate) mod trust;
 pub(crate) mod realtime;
 pub(crate) mod voice;
 pub(crate) mod private_feed;
+#[path = "lan_agent/component_events.rs"]
+pub(crate) mod component_events;
 #[path = "lan_agent/widget_data.rs"]
 pub(crate) mod widget_data;
 pub(crate) mod press;
@@ -203,13 +205,15 @@ fn exchange_link_bounded(peer: &Peer, mode: u8, body: &[u8], response_max: Optio
     SystemRandom::new()
         .fill(&mut client)
         .map_err(|_| invalid())?;
-    let mut stream = TcpStream::connect_timeout(&peer.address, budget(IO_TIMEOUT)?)?;
+    let stage = |e: io::Error, message| io::Error::new(e.kind(), message);
+    let mut stream = TcpStream::connect_timeout(&peer.address, budget(IO_TIMEOUT)?)
+        .map_err(|e| stage(e, "TCP 连接未建立"))?;
     let deadline = Instant::now() + budget(IO_TIMEOUT)?;
     stream.set_write_timeout(Some(budget(IO_TIMEOUT)?))?;
     stream.set_nodelay(true)?;
-    stream.write_all(&client)?;
+    stream.write_all(&client).map_err(|e| stage(e, "随机数握手未完成"))?;
     let mut server = [0; 16];
-    read_before(&mut stream, &mut server, deadline)?;
+    read_before(&mut stream, &mut server, deadline).map_err(|e| stage(e, "随机数握手未完成"))?;
     let material = session_digest(peer.key.as_ref(), &client, &server);
     let key = key_from_digest(&material);
     let subkey = (mode == realtime::MODE).then(|| {
@@ -234,15 +238,15 @@ fn exchange_link_bounded(peer: &Peer, mode: u8, body: &[u8], response_max: Optio
     frame.extend_from_slice(&header);
     frame.extend_from_slice(&ciphertext);
     stream.set_write_timeout(Some(budget(IO_TIMEOUT)?))?;
-    stream.write_all(&frame)?;
+    stream.write_all(&frame).map_err(|e| stage(e, "未取得可验证的认证回执"))?;
     let deadline = Instant::now() + budget(response_timeout)?;
     let mut aad = header.to_vec();
     let length = if let Some(max) = response_max {
         let mut bytes = [0; 2];
-        read_before(&mut stream, &mut bytes, deadline)?;
+        read_before(&mut stream, &mut bytes, deadline).map_err(|e| stage(e, "未取得可验证的认证回执"))?;
         let length = u16::from_be_bytes(bytes) as usize;
         if !(1..=max).contains(&length) {
-            return Err(invalid());
+            return Err(stage(invalid(), "认证回执长度无效"));
         }
         aad.extend_from_slice(&bytes);
         length
@@ -250,9 +254,9 @@ fn exchange_link_bounded(peer: &Peer, mode: u8, body: &[u8], response_max: Optio
         0
     };
     let mut reply = vec![0; length + aead::AES_128_GCM.tag_len()];
-    read_before(&mut stream, &mut reply, deadline)?;
+    read_before(&mut stream, &mut reply, deadline).map_err(|e| stage(e, "未取得可验证的认证回执"))?;
     let length = key.open_in_place(nonce(1), aead::Aad::from(aad), &mut reply)
-        .map_err(|_| invalid())?.len();
+        .map_err(|_| stage(invalid(), "认证回执验证失败"))?.len();
     reply.truncate(length);
     Ok(AuthenticatedLink { stream, key, reply, subkey })
 }
@@ -272,10 +276,14 @@ pub(crate) struct LanDeviceStatus {
     component_delivery: bool,
     #[serde(default)]
     component_bundle: bool,
+    #[serde(default, skip_deserializing)]
+    center_thumb: bool,
     #[serde(default, rename(deserialize = "ac"))]
     appearance_capacity: u32,
     #[serde(default, rename(deserialize = "wd"))]
     widget_data_delivery: bool,
+    #[serde(default, rename(deserialize = "a"))]
+    component_host_flags: u8,
     #[serde(default, rename(deserialize = "ptt"))]
     wireless_voice_input: bool,
     #[serde(default, rename(deserialize = "pf"))]
@@ -297,6 +305,8 @@ pub(crate) struct LanDeviceStatus {
     wireless_realtime: bool,
     #[serde(default)]
     rtc_key: u8,
+    #[serde(skip_deserializing)]
+    global_audio_cues: bool,
     #[serde(default)]
     wireless_realtime_busy: Option<bool>,
     #[serde(default)]
@@ -306,14 +316,19 @@ pub(crate) struct LanDeviceStatus {
 // The retry here only applies to a read. A volume request is sent once.
 fn read_with_recovery<T>(read: impl Fn(&Peer) -> io::Result<T>, error: &str) -> Result<(Peer, T), String> {
     let peer = read_peer()?.ok_or("请先配对 Wi-Fi 设备。")?;
-    if let Ok(result) = read(&peer).or_else(|_| read(&peer)) {
-        return Ok((peer, result));
-    }
-    recover_pairing(&peer).map_err(|_| error)?;
+    read_peer_with_recovery(peer, read, error)
+}
+
+fn read_peer_with_recovery<T>(peer: Peer, read: impl Fn(&Peer) -> io::Result<T>, error: &str) -> Result<(Peer, T), String> {
+    let last = match read(&peer).or_else(|_| read(&peer)) {
+        Ok(result) => return Ok((peer, result)),
+        Err(last) => last,
+    };
+    recover_pairing(&peer).map_err(|reason| format!("{error} 已保存地址：{last}；{reason}"))?;
     let moved = read_peer()?.filter(|current| {
         current.address != peer.address && current.key.as_ref() == peer.key.as_ref()
-    }).ok_or(error)?;
-    let result = read(&moved).map_err(|_| error)?;
+    }).ok_or_else(|| format!("{error} 配对在重新发现期间已变更。"))?;
+    let result = read(&moved).map_err(|e| format!("{error} 新地址：{e}"))?;
     Ok((moved, result))
 }
 
@@ -326,22 +341,55 @@ fn query_status(peer: &Peer) -> io::Result<LanDeviceStatus> {
                 exchange_response(peer, DEVICE_STATUS, &[], Some(DEVICE_STATUS_MAX)),
             _ => Err(error),
         })?;
-    serde_json::from_slice(&reply).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    decode_status(&reply)
+}
+
+fn decode_status(reply: &[u8]) -> io::Result<LanDeviceStatus> {
+    let mut status: LanDeviceStatus = serde_json::from_slice(reply)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "认证已通过，状态格式无法解析"))?;
+    status.center_thumb = status.rtc_key & 32 != 0;
+    status.global_audio_cues = status.rtc_key & 16 != 0;
+    Ok(status)
 }
 
 #[tauri::command]
 pub(crate) async fn lan_device_status(app: tauri::AppHandle) -> Result<PairedLanStatus, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        read_with_recovery(query_status, "无法读取 Wi-Fi 设备状态，请确认设备在线且固件支持无线状态查询。")
-            .map(|(peer, device)| {
-                let (version, rollback_blocked) = ota::bundled_wifi6_status(&app, &device.board_device_id);
-                PairedLanStatus {
-                    address: peer.address.ip().to_string(),
-                    bundled_firmware_version: version,
-                    bundled_firmware_rollback_blocked: rollback_blocked,
-                    device,
-                }
-            })
+        current_status(&app, read_peer()?.ok_or("请先配对 Wi-Fi 设备。")?)
+    }).await.map_err(|_| "Wi-Fi 设备状态查询任务未完成。")?
+}
+
+fn current_status(app: &tauri::AppHandle, peer: Peer) -> Result<PairedLanStatus, String> {
+    let (peer, device) = read_peer_with_recovery(peer, query_status,
+        "无法读取 Wi-Fi 设备状态，请确认设备在线且固件支持无线状态查询。")?;
+    let (version, blocked) = ota::bundled_wifi6_status(app, &device.board_device_id);
+    Ok(PairedLanStatus {
+        address: peer.address.ip().to_string(),
+        bundled_firmware_version: version,
+        bundled_firmware_rollback_blocked: blocked,
+        device,
+    })
+}
+
+#[derive(serde::Serialize)]
+pub(crate) struct ConnectionSnapshot {
+    address: Option<String>,
+    status: Option<PairedLanStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+#[tauri::command]
+pub(crate) async fn lan_connection_snapshot(app: tauri::AppHandle) -> Result<ConnectionSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(peer) = read_peer()? else {
+            return Ok(ConnectionSnapshot { address: None, status: None, error: None });
+        };
+        let address = peer.address.ip().to_string();
+        Ok(match current_status(&app, peer) {
+            Ok(status) => ConnectionSnapshot { address: Some(status.address.clone()), status: Some(status), error: None },
+            Err(reason) => ConnectionSnapshot { address: Some(address), status: None, error: Some(reason) },
+        })
     }).await.map_err(|_| "Wi-Fi 设备状态查询任务未完成。")?
 }
 
@@ -363,9 +411,11 @@ pub(crate) async fn lan_bluetooth_keyboard_config(
     enabled: Option<bool>,
     slot: Option<u8>,
     chord: Option<u16>,
+    conditional: Option<crate::ConditionalKeyboardUpdate>,
 ) -> Result<Value, String> {
-    let payload = crate::bluetooth_keyboard_payload(enabled, slot, chord)?;
-    let reading = enabled.is_none() && slot.is_none();
+    let guarded = conditional.is_some();
+    let payload = crate::bluetooth_keyboard_payload(enabled, slot, chord, conditional)?;
+    let reading = !guarded && enabled.is_none() && slot.is_none();
     let usb = usb_manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         require_no_usb(&usb)?;
@@ -394,7 +444,7 @@ pub(crate) async fn lan_bluetooth_keyboard_config(
         if reply["ok"].as_bool() != Some(true) {
             return Err(reply["message"].as_str().unwrap_or("设备未接受蓝牙配置。").into());
         }
-        Ok(reply)
+        crate::verify_keyboard_update(reply, guarded)
     }).await.map_err(|_| "Wi-Fi 蓝牙配置任务未完成。")?
 }
 
@@ -419,6 +469,35 @@ pub(crate) struct LanComponentRemoval {
     component_id: String,
     preserve_save: bool,
     clear_device_save_confirmed: bool,
+}
+
+pub(crate) fn ensure_bubble_font(usb: &crate::usb_serial::UsbSerialManager, board: &str, boot: &str) -> Result<(), String> {
+    require_no_usb(usb)?;
+    let (peer, status) = read_with_recovery(query_status, "无法读取设备状态。")?;
+    if !status.control_trusted || !status.panel_control || !status.wifi_connected ||
+        status.board_device_id != board || status.boot_id != boot || !crate::usb_serial::bubble_pixels::valid_boot(boot) ||
+        !crate::shared_font::supports(&status.firmware) {
+        return Err("无线设备或配对状态已变化。".into());
+    }
+    let current = || {
+        require_no_usb(usb)?;
+        if !read_peer()?.is_some_and(|saved| widget_data::same_peer(&saved, &peer)) {
+            return Err("无线配对已变化。".into());
+        }
+        Ok(())
+    };
+    crate::shared_font::ensure_with_stream(board, |mut payload| {
+        current()?;
+        let rid = uuid::Uuid::new_v4().simple().to_string();
+        payload["requestId"] = json!(rid);
+        let mut body = boot.as_bytes().to_vec();
+        body.push(12); // PET_LAN_PANEL_BUBBLE_FONT
+        serde_json::to_writer(&mut body, &payload).map_err(|e| e.to_string())?;
+        let bytes = exchange_response_with_timeout(&peer, PANEL_CONTROL, &body, Some(512), Duration::from_secs(12)).map_err(|e| e.to_string())?;
+        let reply: Value = serde_json::from_slice(&bytes).map_err(|_| "设备未返回字库确认")?;
+        if reply["requestId"] != rid { return Err("无线字库确认标识不匹配。".into()); }
+        Ok(reply)
+    }, Some(&mut |id, bytes| component::send_font(&peer, boot, id, bytes, current, || require_no_usb(usb))), None, current)
 }
 
 #[tauri::command]
@@ -740,7 +819,7 @@ fn pair_exchange(address: SocketAddr, pin: &[u8], confirm:bool) -> io::Result<Pe
     }
     // A lost acknowledgement may follow a successful device commit. Verify
     // the derived key with a read-only probe, without replaying the pairing.
-    exchange(&peer, PROBE, &[])?;
+    retry_uncommitted_offer(|| exchange(&peer, PROBE, &[]))?;
     Ok(peer)
 }
 
@@ -775,6 +854,7 @@ fn save_peer(path:&std::path::Path, peer:&Peer)->Result<String,String>{
     let mut config=Zeroizing::new(format!("{address}\n"));
     for byte in peer.key.iter(){use std::fmt::Write as _;write!(config,"{byte:02x}").expect("String");}
     crate::secure_config::write(path,PURPOSE,config.as_bytes())?;
+    component_events::pairing_changed();
     Ok(address)
 }
 static DISCOVERED: Mutex<Vec<(String,SocketAddr,Instant,bool)>>=Mutex::new(Vec::new());
@@ -849,10 +929,15 @@ fn recover_pairing(previous: &Peer) -> Result<(), String> {
     let results = scan_network(Duration::from_millis(1700))?;
     let addresses = results.iter().filter(|item| item["paired"] != false)
         .filter_map(|item| parse_address(item["ip"].as_str()?).ok());
+    let mut failure = None;
     let Some(recovered) = find_paired_peer(previous, addresses, |candidate| {
-        exchange(candidate, PROBE, &[]).is_ok()
+        match exchange(candidate, PROBE, &[]) {
+            Ok(_) => true,
+            Err(error) => { failure = Some(error); false }
+        }
     }) else {
-        return Ok(());
+        return Err(failure.map_or_else(|| "未发现其他已配对候选地址。".into(),
+            |last| format!("发现了候选地址，最后一次原配对探测：{last}。")));
     };
     let _guard = PAIRING_MUTATION.lock().map_err(|_| "配对记录繁忙")?;
     if read_peer()?.is_some_and(|current| current.address == previous.address && current.key.as_ref() == previous.key.as_ref()) {
@@ -892,7 +977,7 @@ pub(crate) async fn lan_agent_pair_confirm(
 fn forget() -> Result<(), String> {
     let _guard = PAIRING_MUTATION.lock().map_err(|_| "配对记录繁忙")?;
     match std::fs::remove_file(config_path()?) {
-        Ok(()) => Ok(()),
+        Ok(()) => { component_events::pairing_changed(); Ok(()) },
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(_) => Err("Cannot remove the local LAN pairing.".into()),
     }
@@ -1017,6 +1102,11 @@ pub(crate) fn lan_agent_sessions(input: Value) -> Result<(), String> {
 }
 
 fn current_sessions(agent: &str) -> Option<Value> {
+    // The explicit follow request clears the old device cards once. Further
+    // empty snapshots would reset the Antigravity speech bubble.
+    if agent == "antigravity" {
+        return None;
+    }
     let snapshot = SESSIONS.lock().ok()?;
     let snapshot = snapshot.as_ref()?;
     let age = snapshot.observed.elapsed();
@@ -1041,6 +1131,7 @@ pub(crate) async fn lan_follow_agent(
     let usb = usb_manager.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let agent = crate::normalize_agent_id(&agent_id).ok_or("目标 Agent 无效。")?;
+        crate::require_detected_follow_target(&agent)?;
         require_no_usb(&usb)?;
         let _follow = FOLLOW.lock().map_err(|_| "切换跟随暂不可用。")?;
         let (peer, status) = read_with_recovery(query_status, "无法确认已配对的 Wi-Fi 设备。")?;

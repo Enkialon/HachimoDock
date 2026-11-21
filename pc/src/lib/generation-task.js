@@ -4,7 +4,7 @@
  *   survives navigation, distinguishes reference-image moderation and skipped actions,
  *   identifies unavailable models by request stage and actual model ID,
  *   replaces conversion progress with a truthful terminal summary, and guards
- *   terminal-result acknowledgement by completion epoch, with exclusive checkpoint transitions.
+ *   terminal-result acknowledgement by completion epoch, with retryable checkpoint reads and exclusive transitions.
  * [Pos] lib node in pc/src/lib
  * [Sync] If this file changes, update this header and any UI component subscribing
  *   via `subscribeGenerationTask` (currently App.jsx + AppearanceGallery.jsx).
@@ -12,8 +12,8 @@
 
 import { resolveThinkingModelName, runAvatarPipeline } from "./avatar-pipeline/run.js";
 import { CUSTOM_GENERATION_FAMILIES } from "./avatar-pipeline/families.js";
-import { getVolcanoInputImageRejection } from "./avatar-pipeline/providers/volcano.js";
-import { getArkImageEditPolicyRejection } from "./avatar-pipeline/providers/volcano-image.js";
+import { normalizeGenerationErrorMessage } from "./generation-issue.js";
+export { normalizeGenerationErrorMessage };
 import { replaceFamilyVideo, saveAppearance, prepareSavedAppearance } from "./appearance-store.js";
 import { recordDiagnostic } from "./avatar-pipeline/diagnostics.js";
 import { loadGenerationSession, saveGenerationSession, beginGenerationSession, publicGenerationConfig, resumeGenerationImageEdit, generationSessionNeedsProtection, summarizeGenerationSession, canAutoResume } from "./avatar-pipeline/session.js";
@@ -44,6 +44,7 @@ let state = {
   error: "",
   startedAt: 0,
   stageStartedAt: 0,
+  recoveryReadError: "",
   completionEpoch: 0,
 };
 
@@ -84,7 +85,10 @@ async function awaitPreview(kind, bytes, mime, message, signal) {
 }
 
 export function initializeGenerationRecovery() {
-  if (!initialization) initialization = loadGenerationSession().then(session => {
+  if (initialization) return initialization;
+  const retryingRead = Boolean(state.recoveryReadError);
+  initialization = loadGenerationSession().then(session => {
+    if (state.recoveryReadError) setState({ recoveryReadError: "" });
     if (session && !session.finished && !session.dismissed && state.status === "idle") {
       const summary = summarizeGenerationSession(session);
       setState({ status: summary.status, recoveryLabel: summary.label, resumable: true,
@@ -92,9 +96,16 @@ export function initializeGenerationRecovery() {
         appearanceName: session.appearanceName, startedAt: session.createdAt || 0,
         appearanceId: session.appearanceId || "", error: "",
         progress: { ...summary, stage: session.phase || "paused", message: `${summary.localInspectionNotice || summary.label}。已保存 ${summary.completed}/${summary.total} 段。恢复复用原参考图及已有结果，不会自动重发结果未知的请求。${session.skipProcessing ? "此旧任务使用原图，恢复不会重新去背景；需要清理背景请另建任务，已有视频保留。" : ""}` } });
-      scheduleResume(session);
+      // A read retry only restores the card. The user can explicitly resume
+      // even if the original task had enabled automatic generation.
+      if (!retryingRead) scheduleResume(session);
     }
-  }).catch(error => { console.warn("generation recovery unavailable", error.message); });
+  }).catch(error => {
+    initialization = null;
+    if (state.status === "idle") {
+      setState({ recoveryReadError: error?.message || "暂时无法读取本地任务记录" });
+    }
+  });
   return initialization;
 }
 
@@ -217,6 +228,7 @@ export function startGenerationTask(input) {
   clearTimeout(resumeTimer);
   setState({
     status: "running",
+    recoveryReadError: "",
     appearanceName: input.appearanceName?.trim() || "未命名形象",
     appearanceId: "",
     error: "",
@@ -238,7 +250,7 @@ export function startGenerationTask(input) {
     console.error("generation-task unexpected error:", err);
     setState({
       status: "failed",
-      error: normalizeGenerationErrorMessage(err?.message || String(err)),
+      error: normalizeGenerationErrorMessage(err),
       completionEpoch: state.completionEpoch + 1,
     });
   });
@@ -251,82 +263,6 @@ function compactText(value) {
 function truncateMessage(message, limit = 700) {
   const text = compactText(message);
   return text.length > limit ? `${text.slice(0, limit)}...` : text;
-}
-
-function stripDiagnosticTail(message) {
-  return String(message || "")
-    .split(/\nVolcano payload summary:/)[0]
-    .split(/\n诊断摘要：/)[0]
-    .trim();
-}
-
-function extractPrimaryError(message) {
-  const text = stripDiagnosticTail(message);
-  const originalIndex = text.indexOf("\n原始错误");
-  return originalIndex >= 0 ? text.slice(0, originalIndex).trim() : text.trim();
-}
-
-export function normalizeGenerationErrorMessage(error) {
-  const raw = compactText(error);
-  if (raw.startsWith("生成失败：所有动作都没有生成成功。")) {
-    return truncateMessage(raw, 1200);
-  }
-  const imageEditRejection = getArkImageEditPolicyRejection(raw);
-  if (imageEditRejection) return imageEditRejection.message;
-  const imageRejection = getVolcanoInputImageRejection(raw);
-  if (imageRejection) return imageRejection.message;
-  const primary = extractPrimaryError(raw);
-  if (!primary) return "生成失败：未收到具体错误信息。";
-
-  if (/模型未开通|模型不可用|ModelNotOpen|InvalidEndpointOrModel\.NotFound|has not activated the model/i.test(primary)) {
-    const requestModel = /(?:Ark image edit|thinking model|参考图检查|试片检查)\s*\(([^)\n]+)\)/i.exec(primary)?.[1];
-    const namedModel = /\b(?:doubao-[a-z0-9][a-z0-9._-]*|ep-[a-z0-9][a-z0-9_-]*)\b/i.exec(primary)?.[0];
-    const diagnosticModel = /"model"\s*:\s*"([^"\n]+)"/.exec(raw.split("\nVolcano payload summary:")[1] || "")?.[1];
-    const model = requestModel || namedModel || diagnosticModel || "模型 ID 未获取";
-    const stage = /Ark image edit|图片处理|seedream/i.test(primary) ? "图片处理"
-      : /参考图检查|试片检查|自动检查/.test(primary) ? "自动检查"
-      : /thinking model|图像理解/i.test(primary) ? "图像理解 / 提示词"
-      : /volcano (?:submit|task)|视频生成|视频模型|seedance/i.test(primary) ? "视频生成" : "形象生成";
-    const reason = /InvalidEndpointOrModel\.NotFound|模型不可用/i.test(primary) ? "模型不可用" : "模型未开通或无权限";
-    return `${stage}${reason}：${model}。请在 Ark 控制台确认该模型已开通、未下线，且当前 Key 有权调用。`;
-  }
-
-  if (/expected the height to be at least 300px/i.test(primary)) {
-    return "参考图尺寸不满足火山引擎要求：图片高度至少需要 300px。请重新上传更高分辨率的参考图，或开启当前的 400x300 快速参考帧处理。";
-  }
-
-  if (/Model do not support image input|do not support image input/i.test(primary)) {
-    return "文字分析模型不支持图片输入：请使用 Doubao 2.0 多模态 Responses 模型生成 prompt，不要把 Seedance 或 DeepSeek 文本模型作为图片分析模型。";
-  }
-
-  if (/可灵 AI|kling/i.test(primary)) {
-    if (/HTTP 401|Unauthorized/i.test(primary)) return "可灵 AI Key 无效或已过期，请在可灵开发者控制台检查后更新客户端配置。";
-    if (/HTTP 403|Forbidden/i.test(primary)) return "可灵 AI 账号没有访问权限，请检查所选模型的服务权限。";
-    if (/HTTP 429|RateLimit/i.test(primary)) return "可灵 AI 请求受限，请在可灵开发者控制台查看并发限制、额度和余额。";
-    return truncateMessage(primary);
-  }
-
-  if (/HTTP 401|Unauthorized|InvalidAuthentication|invalid api key|api key/i.test(primary)) {
-    return "API Key 无效或已过期：请检查火山引擎 Ark API Key 是否复制完整，并确认当前账号有对应服务权限。";
-  }
-
-  if (/HTTP 403|Forbidden|AccessDenied|PermissionDenied/i.test(primary)) {
-    return "账号没有访问权限：请检查 Ark 控制台中该模型服务、地域和账号权限是否已开通。";
-  }
-
-  if (/HTTP 429|RateLimit|TooManyRequests|quota|insufficient|余额|额度/i.test(primary)) {
-    return "请求被限流或额度不足：请稍后重试，或检查 Ark 控制台的并发限制、用量额度和账户余额。";
-  }
-
-  if (/InvalidParameter|BadRequest|HTTP 400/i.test(primary)) {
-    return `请求参数不被当前模型接受：请检查所选模型是否支持当前图生视频输入、首尾帧角色、比例和时长。${truncateMessage(primary, 360)}`;
-  }
-
-  if (/Failed to fetch|NetworkError|无法连接|timeout|timed out/i.test(primary)) {
-    return `网络或服务连接失败：请检查网络、代理和 Ark 服务地址后重试。${truncateMessage(primary, 360)}`;
-  }
-
-  return truncateMessage(primary);
 }
 
 function diagnosticLine(message) {
@@ -528,7 +464,7 @@ async function runTask(input) {
     await saveGenerationSession(session);
     scheduleResume(session);
     setState({ resumable: protectedWork, progress: { ...state.progress,
-      ...summarizeGenerationSession(session), message: err?.message || '生成暂停，已有成果保留' } });
+      ...summarizeGenerationSession(session), message: normalizeGenerationErrorMessage(err) || '生成暂停，已有成果保留' } });
     if (isAbort && savedId) {
       // Partial run that the user cancelled — surface what was persisted.
       setState({
@@ -550,7 +486,7 @@ async function runTask(input) {
       // Pipeline failed late but earlier families landed: surface them.
       setState({
         status: "failed",
-        error: normalizeGenerationErrorMessage(err?.message || String(err)),
+        error: normalizeGenerationErrorMessage(err),
         appearanceId: savedId,
         completionEpoch: state.completionEpoch + 1,
       });
@@ -558,7 +494,7 @@ async function runTask(input) {
     }
     setState({
       status: "failed",
-      error: normalizeGenerationErrorMessage(err?.message || String(err)),
+      error: normalizeGenerationErrorMessage(err),
       completionEpoch: state.completionEpoch + 1,
     });
   } finally {

@@ -25,29 +25,33 @@ const FRAME_TIMEOUT: Duration = Duration::from_secs(4);
 // Wi-Fi status identifies the board family. Offer a version comparison only
 // when both bundled chip variants agree; chip selection remains in the updater.
 pub(super) fn bundled_wifi6_status(app: &tauri::AppHandle, board_id: &str) -> (Option<&'static str>, bool) {
-    static BUNDLED: OnceLock<Option<(String, [[u8; 32]; 2])>> = OnceLock::new();
-    let Some((version, digests)) = BUNDLED
-        .get_or_init(|| {
-            let board = P4BoardModel::Wifi6;
-            let inspect = |target| {
-                let path = crate::bundled_p4_firmware_path(
-                    app,
-                    usb_serial::bundled_resource_for_device(board, target),
-                )
-                .ok()?;
-                let info = usb_serial::inspect_firmware_image(&path, target).ok()?;
-                board
-                    .image_version_matches(&info.version)
-                    .then_some(info)
+    static BUNDLED: OnceLock<(String, [[u8; 32]; 2])> = OnceLock::new();
+    static ATTEMPT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    if BUNDLED.get().is_none() {
+        let Ok(mut attempt) = ATTEMPT.lock() else { return (None, false); };
+        if BUNDLED.get().is_none() && attempt.is_none_or(|last| last.elapsed() >= Duration::from_secs(10)) {
+            *attempt = Some(Instant::now());
+            let inspect_bundle = || {
+                let board = P4BoardModel::Wifi6;
+                let inspect = |target| {
+                    let path = crate::bundled_p4_firmware_path(
+                        app,
+                        usb_serial::bundled_resource_for_device(board, target),
+                    )
+                    .ok()?;
+                    let info = usb_serial::inspect_firmware_image(&path, target).ok()?;
+                    board
+                        .image_version_matches(&info.version)
+                        .then_some(info)
+                };
+                let v1 = inspect(P4ChipTarget::LegacyV1)?;
+                let v3 = inspect(P4ChipTarget::Revision(302))?;
+                (v1.version == v3.version).then_some((v1.version, [v1.sha256, v3.sha256]))
             };
-            let v1 = inspect(P4ChipTarget::LegacyV1)?;
-            let v3 = inspect(P4ChipTarget::Revision(302))?;
-            (v1.version == v3.version).then_some((v1.version, [v1.sha256, v3.sha256]))
-        })
-        .as_ref()
-    else {
-        return (None, false);
-    };
+            if let Some(bundle) = inspect_bundle() { let _ = BUNDLED.set(bundle); }
+        }
+    }
+    let Some((version, digests)) = BUNDLED.get() else { return (None, false); };
     let blocked = app.path().app_data_dir().is_ok_and(|app_data| {
         let directory = firmware_rollback::directory(&app_data);
         // A board's chip revision cannot change, and installs can only record
@@ -322,7 +326,7 @@ fn install_bundled(
     super::require_no_usb(usb)?;
     let pending =
         wireless_ota::install(&mut link, &id, transfer, image, progress).map_err(error_text)?;
-    progress("reboot", 100);
+    progress(if pending.commit_confirmed() { "reboot" } else { "validate" }, 100);
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut next_scan = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
@@ -333,6 +337,12 @@ fn install_bundled(
                     progress("validate", 100);
                 }
                 if pending.validated(live.board_id(), &boot) {
+                    if crate::shared_font::supports(&info.version) {
+                        live.close();
+                        progress("font", 100);
+                        super::ensure_bubble_font(usb, &id, &boot.id)
+                            .map_err(|e| format!("固件已升级，气泡字库待同步。{e}"))?;
+                    }
                     return Ok(WirelessUpdateResult {
                         version: info.version,
                         board_device_id: id,
@@ -355,7 +365,7 @@ fn install_bundled(
             next_scan = Instant::now() + Duration::from_secs(8);
         }
     }
-    Err("设备已收到升级，但新固件启动状态尚未确认。".into())
+    Err("尚未验证目标镜像已成功启动。请恢复连接后核对固件状态。".into())
 }
 
 #[tauri::command]

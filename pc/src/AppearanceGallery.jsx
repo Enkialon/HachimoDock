@@ -1,6 +1,6 @@
 /**
  * [Input] Read appearances persisted by `lib/appearance-store.js`.
- * [Output] Card grid with the built-in Terrier first, filled hover-play previews,
+ * [Output] Card grid with the built-in Terrier first, near-viewport hover-play previews,
  *          compact source chooser and direct MP4-upload creation, cached local/Codex scans,
  *          cached initial render, unobstructed previews, gallery-only creation/import/detail management actions,
  *          and device-aware custom-appearance deletion with device-only or PC-and-device scope,
@@ -13,6 +13,8 @@
  * [Sync] If this file changes, update this header and `pc/src/.folder.md`.
  */
 
+import { appearanceStateLabel } from "./lib/appearance-state-label.js";
+import { useDialogFocus } from "./component-center/use-dialog-focus.js";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   RefreshCw,
@@ -67,6 +69,7 @@ import {
 } from "./lib/generation-task.js";
 import PersonaVoiceModal from "./PersonaVoiceModal.jsx";
 import { listPersonaSetupPending, clearPersonaSetupPending, personaSummaryLabel } from "./lib/persona-voice.js";
+import { usePersonaTtsSettings } from "./lib/use-persona-tts-settings.js";
 import PageShell from "./shell/PageShell.jsx";
 import Card from "./shell/Card.jsx";
 import { useDeviceContext } from "./shell/DeviceContext.jsx";
@@ -112,6 +115,7 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
     refreshAppearances,
   } = useDeviceContext();
   const { push } = useToast();
+  const { status: ttsSettings, loading: ttsLoading } = usePersonaTtsSettings();
   const onboarding = usePageOnboarding(ONBOARDING_PAGE_IDS.APPEARANCE_GALLERY);
 
   const [items, setItems] = useState(() => getCachedAppearances() || null);
@@ -422,7 +426,7 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
   return (
     <PageShell
       title="形象画廊"
-      subtitle="浏览默认形象与你的自定义形象，进入详情可预览每个 family 的视频。"
+      subtitle="选择形象可预览动作、试听提示音，也可以调整人设与声音。"
       actions={[refreshButton, addAppearanceActions]}
       help={onboarding.show}
     >
@@ -431,7 +435,7 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
         open={onboarding.open}
         onClose={onboarding.dismiss}
         title="创建并使用自定义形象，只要三步"
-        description="画廊负责创建和管理；设备页负责把形象应用给当前 Agent。"
+        description="在形象画廊创建和管理形象，在「桌宠伙伴」选择设备当前显示的形象。"
         steps={[
           {
             title: "选择来源",
@@ -443,7 +447,7 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
           },
           {
             title: "应用到设备",
-            description: "回到设备页为当前 Agent 更换形象，素材会随切换同步。",
+            description: "打开「桌宠伙伴」，跟随目标 Agent，再点顶部的「更换形象」。",
           },
         ]}
         actions={[
@@ -464,6 +468,14 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
         </div>
       )}
 
+      {task?.status === "idle" && task.recoveryReadError && (
+        <div className="message-banner message-banner--error" role="alert">
+          上次生成任务的记录读取失败：{task.recoveryReadError}
+          <button type="button" className="btn-secondary btn-sm" onClick={initializeGenerationRecovery}>
+            重新读取任务
+          </button>
+        </div>
+      )}
       {taskVisible && (
         <Card>
           <RunningTaskCard
@@ -481,7 +493,7 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
           <p className="muted small">旧任务已保留，不影响新建。恢复复用已有图片和视频；未完成的检查及未提交的动作可能产生费用，结果未知的视频提交不会重发。</p>
           {historyError && <p role="alert">{historyError}</p>}
           {generationHistory.map(row => <div key={row.key} className="inline-row">
-            <span>{row.appearanceName || "未命名形象"} · {row.createdAt ? new Date(row.createdAt).toLocaleString() : "时间未知"} · {row.label} · 已保存 {row.completed}/{row.total} 段 · {String(row.id || row.key).slice(0, 8)}</span>
+            <span>{row.appearanceName || "未命名形象"} · {row.createdAt ? new Date(row.createdAt).toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" }) : "时间未知"} · {row.label} · 已保存 {row.completed}/{row.total} 段 · {String(row.id || row.key).slice(0, 8)}</span>
             {!row.finished && !row.dismissed && <button type="button" disabled={task?.status === "running"}
               onClick={() => { setHistoryError(""); void resumeGenerationTask(row.key).catch(error => setHistoryError(error.message)); }}>恢复此任务</button>}
           </div>)}
@@ -510,6 +522,7 @@ export default function AppearanceGallery({ binding, onEnterWizard, onOpenDetail
             <AppearanceCard
               key={row.id}
               row={row}
+              ttsSettings={ttsLoading ? null : ttsSettings}
               isActive={row.id === activeAppearanceId}
               onOpenDetail={onOpenDetail}
               onRequestDelete={requestAppearanceDelete}
@@ -626,9 +639,10 @@ function CreationSourceModal({
     },
   ];
 
+  const dialogRef = useDialogFocus(onClose, false);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card modal-card--wide" onClick={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="新建自定义形象" tabIndex={-1} className="modal-card modal-card--wide" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3 className="modal-title">新建自定义形象</h3>
@@ -721,9 +735,10 @@ function VideoUploadModal({ onClose, onCreated }) {
     }
   }, [appearanceName, description, family, onClose, onCreated, saving, videoFile]);
 
+  const dialogRef = useDialogFocus(onClose, saving);
   return (
     <div className="modal-backdrop" onClick={saving ? undefined : onClose}>
-      <div className="modal-card modal-card--wide" onClick={(event) => event.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="自定义上传视频" tabIndex={-1} className="modal-card modal-card--wide" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3 className="modal-title">自定义上传视频</h3>
@@ -771,7 +786,7 @@ function VideoUploadModal({ onClose, onCreated }) {
                 >
                   {FAMILIES.map((item) => (
                     <option key={item.family} value={item.family}>
-                      {item.family} · {item.label}
+                      {appearanceStateLabel(item.family)}
                     </option>
                   ))}
                 </select>
@@ -819,9 +834,10 @@ function VideoUploadModal({ onClose, onCreated }) {
 }
 
 function CodexImportModal({ loading, pets, error, importingId, onClose, onPick }) {
+  const dialogRef = useDialogFocus(onClose, !!importingId);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="从 Codex 导入形象" tabIndex={-1} className="modal-card" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3 className="modal-title">从 Codex 导入形象</h3>
@@ -1034,9 +1050,10 @@ function CommunityImportModal({ importingId, importError, onClose, onImport }) {
   const initialLoading = baseline === null;
   const showResults = newPets !== null;
 
+  const dialogRef = useDialogFocus(onClose, !!importingId);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card modal-card--wide" onClick={(e) => e.stopPropagation()}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="从社区导入形象" tabIndex={-1} className="modal-card modal-card--wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3 className="modal-title">从社区导入形象</h3>
@@ -1431,14 +1448,41 @@ export function RunningTaskCard({ task, onAbort, onDismiss, onOpenDetail, onConf
   );
 }
 
+const previewObservers = new Map();
+let galleryObserver;
+
+function observeGalleryPreview(element, setNear) {
+  if (typeof IntersectionObserver !== "function") {
+    setNear(true);
+    return;
+  }
+  galleryObserver ??= new IntersectionObserver(entries => {
+    for (const entry of entries) previewObservers.get(entry.target)?.(entry.isIntersecting);
+  }, { rootMargin: "200px 0px" });
+  previewObservers.set(element, setNear);
+  galleryObserver.observe(element);
+  return () => {
+    previewObservers.delete(element);
+    galleryObserver.unobserve(element);
+    if (!previewObservers.size) {
+      galleryObserver.disconnect();
+      galleryObserver = null;
+    }
+  };
+}
+
 function AppearanceCard({
   row,
+  ttsSettings,
   isActive,
   onOpenDetail,
   onRequestDelete,
   onOpenPersona,
 }) {
   const [previewActive, setPreviewActive] = useState(false);
+  const [nearViewport, setNearViewport] = useState(false);
+  const cardRef = useRef(null);
+  useEffect(() => observeGalleryPreview(cardRef.current, setNearViewport), []);
   const okCount = row.families?.filter?.((f) => f.ok).length || 0;
   const totalCount = row.families?.length || 0;
   const isCodex = row.type === "codex-import";
@@ -1447,6 +1491,7 @@ function AppearanceCard({
 
   return (
     <article
+      ref={cardRef}
       className={"appearance-card appearance-card--clickable" + (isActive ? " appearance-card--active is-active" : "")}
       onPointerEnter={() => setPreviewActive(true)}
       onPointerLeave={() => setPreviewActive(false)}
@@ -1458,16 +1503,17 @@ function AppearanceCard({
       <div
         className={"appearance-channel-preview appearance-card-preview" + (isCodex ? " appearance-card-preview--codex" : "")}
         role="button"
+        aria-label={`查看${row.name}的形象详情`}
         tabIndex={0}
         onClick={() => onOpenDetail?.(row.id)}
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpenDetail?.(row.id); } }}
       >
-        <AppearancePreview
+        {(nearViewport || previewActive) && <AppearancePreview
           media={previewMedia}
           className="appearance-channel-preview__media"
           emptyClassName="appearance-channel-preview__empty"
           playing={previewMedia.kind === "video" && (isActive || previewActive)}
-        />
+        />}
         {isActive && (
           <span className="appearance-card__badge appearance-card__badge--active">
             <CheckCircle2 size={12} /> 使用中
@@ -1485,7 +1531,7 @@ function AppearanceCard({
           <h4>{row.name}</h4>
           <p>{row.description || (row.provider + " / " + (row.model || "未知模型"))}</p>
           <div className="muted small">
-            {okCount}/{totalCount} 个动画可用 · {new Date(row.created_at).toLocaleString()}
+            {okCount}/{totalCount} 个动画可用 · {new Date(row.created_at).toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" })}
           </div>
           <div className="appearance-card-tags">
             <span className="appearance-thumb__badge">
@@ -1496,7 +1542,7 @@ function AppearanceCard({
             className={"appearance-card__persona" + (row.personaVoice?.configured ? "" : " appearance-card__persona--missing")}
             title={row.personaVoice?.configured ? "实时对话使用的人设与音色" : "还没有设置人设与声音"}
           >
-            <Mic size={12} /> {personaSummaryLabel(row.personaVoice)}
+            <Mic size={12} /> {personaSummaryLabel(row.personaVoice, ttsSettings)}
           </div>
         </div>
         <div className="appearance-card-actions">

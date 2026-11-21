@@ -60,6 +60,15 @@ impl Default for Snapshot {
     }
 }
 impl Snapshot {
+    fn record_playing(&mut self, station: &Station, state: &str, heard: &mut bool) -> bool {
+        if state != "playing" || *heard { return false; }
+        *heard = true;
+        self.history.retain(|entry| entry.id != station.id);
+        self.history.insert(0, station.clone());
+        self.history.truncate(10);
+        true
+    }
+
     /// Favorites first; discovery never silently turns entries into favorites.
     fn queue(&self) -> Vec<Station> {
         let mut queue = Vec::new();
@@ -178,6 +187,7 @@ struct Service {
     generation: AtomicU64,
     operation: Mutex<()>,
     transport: Mutex<()>,
+    library_writer: Mutex<()>,
     session: Mutex<String>,
     device_state: RadioDeviceState,
     binding: Mutex<Option<RadioConnectionBinding>>,
@@ -406,6 +416,7 @@ impl Service {
         value
     }
     fn save(&self) -> Result<(), String> {
+        let _writer = self.library_writer.lock().unwrap();
         let s = self.data.lock().unwrap().clone();
         std::fs::create_dir_all(&self.dir).map_err(|_| "无法保存电台设置")?;
         let mut file =
@@ -587,9 +598,6 @@ impl Service {
         {
             let mut s = self.data.lock().unwrap();
             s.current = Some(station.clone());
-            s.history.retain(|t| t.id != station.id);
-            s.history.insert(0, station.clone());
-            s.history.truncate(10);
         }
         if let Err(e) = self.save() {
             self.stop("error", &e);
@@ -617,7 +625,11 @@ impl Service {
                     if auto_fallback && !ever_played {
                         if let Some(next)=candidates.iter().find(|t|!tried.contains(&t.id)) {
                             station=next.clone();tried.insert(station.id.clone());
-                            s.data.lock().unwrap().current=Some(station.clone());
+                            {
+                                let mut data = s.data.lock().unwrap();
+                                if !s.alive(g) { return Err(RadioPlaybackError::Stopped("播放已取消".into())); }
+                                data.current = Some(station.clone());
+                            }
                             let _=s.save();
                         }
                     }
@@ -631,8 +643,7 @@ impl Service {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                 }
-                let result=s.play(&station,g,&board.board_device_id);
-                ever_played|=s.data.lock().unwrap().state=="playing";
+                let result=s.play(&station,g,&board.board_device_id, &mut ever_played);
                 if let Err(error)=&result {
                     crate::realtime_chat_log::record("", "component_media_retry", json!({
                         "retries":attempt,"errorKind":crate::realtime_chat_log::error_kind(error.message()),
@@ -657,7 +668,7 @@ impl Service {
         });
         Ok(())
     }
-    fn play(self: &Arc<Self>, station: &Station, g: u64, board: &str) -> Result<(), RadioPlaybackError> {
+    fn play(self: &Arc<Self>, station: &Station, g: u64, board: &str, heard: &mut bool) -> Result<(), RadioPlaybackError> {
         self.device_state.ensure_known()?;
         if !self.extension.allows_station(station) {
             return Err("该电台已不在当前组件目录中".into());
@@ -695,10 +706,10 @@ impl Service {
         // Bounded 2.56 s PCM reservoir on both platforms; Mac uses shorter wire frames.
         let (tx, rx) = mpsc::sync_channel::<Result<Vec<u8>, String>>(RADIO_QUEUE_FRAMES);
         let net = self.clone();
-        let station = station.clone();
+        let network_station = station.clone();
         let errors = tx.clone();
         std::thread::spawn(move || {
-            let r = network::feed(&station, input, || net.alive(g));
+            let r = network::feed(&network_station, input, || net.alive(g));
             if let Err(e) = r {
                 let _ = errors.send(Err(e));
             }
@@ -814,7 +825,7 @@ impl Service {
                 if !matches!(state, "playing" | "buffering") {
                     return Err(RadioPlaybackError::Stopped("设备已停止电台播放".into()));
                 }
-                {
+                let history_changed = {
                     let mut s = self.data.lock().unwrap();
                     if !self.alive(g) {
                         break;
@@ -826,6 +837,11 @@ impl Service {
                         "正在缓冲直播"
                     }
                     .into();
+                    s.record_playing(station, state, heard)
+                };
+                drop(_wire);
+                if history_changed && self.save().is_err() {
+                    crate::realtime_chat_log::record("", "component_media_history", json!({"ok":false}));
                 }
                 if last.elapsed() > Duration::from_secs(15) {
                     return Err(RadioPlaybackError::Source("直播缓冲超时，请换台或重试".into()));
@@ -903,6 +919,7 @@ fn create_service_with_owner(
         generation: AtomicU64::new(0),
         operation: Mutex::new(()),
         transport: Mutex::new(()),
+        library_writer: Mutex::new(()),
         session: Mutex::new(String::new()),
         device_state,
         binding: Mutex::new(binding),
@@ -1485,6 +1502,20 @@ mod tests {
         let after_inventory=usb.query_widget_inventory(&board).unwrap();assert_eq!(inventory["items"].as_array().unwrap().len(),after_inventory["items"].as_array().unwrap().len());
         eprintln!("PASS: production lifecycle, automatic catalogue, auto playback, next, refresh continuity, stopped heartbeat, unchanged component count");
     }
+    #[test]
+    fn history_requires_first_playing_ack_for_the_actual_station() {
+        let mut library = Snapshot::default();
+        library.history = (0..10).map(|n| station(&n.to_string())).collect();
+        let mut heard = false;
+        assert!(!library.record_playing(&station("failed"), "buffering", &mut heard));
+        assert_eq!(library.history[9].id, "9");
+        assert!(library.record_playing(&station("fallback"), "playing", &mut heard));
+        assert!(!library.record_playing(&station("fallback"), "playing", &mut heard));
+        assert_eq!(library.history.len(), 10);
+        assert_eq!(library.history[0].id, "fallback");
+        assert_eq!(library.history[9].id, "8");
+    }
+
     fn station(id: &str) -> Station {
         Station {
             id: id.into(),

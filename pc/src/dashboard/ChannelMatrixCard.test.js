@@ -32,7 +32,7 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
   assert.match(source, /is-undetected/);
   assert.match(source, /未检测到客户端或 CLI/);
   assert.match(source, /安装对应客户端或 CLI 后重新扫描/);
-  assert.match(source, /disabled=\{syncing \|\| !isDetected\}/);
+  assert.doesNotMatch(source, /channel-row__change-inline/);
   assert.match(source, /!isDetected \? \(/);
   assert.match(source, /className="channel-row__unavailable"/);
   assert.match(source, /不可用/);
@@ -42,7 +42,7 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
   assert.match(source, /当前固件仅支持通过 Wi-Fi 切换跟随，设备继续使用当前形象/);
   assert.match(source, /将核对设备上的内置/);
   assert.match(source, /设备缺少该形象时才传输素材/);
-  assert.match(source, /设备形象待确认/);
+  assert.match(source, /已配置形象 · 待设备确认/);
 
   const unavailableRule = extractCssRule(styles, ".channel-row.is-undetected");
   assert.match(unavailableRule, /border-style:\s*dashed/);
@@ -63,8 +63,8 @@ test("ChannelMatrixCard destructures multiple fields from useDeviceContext", () 
   assert.match(source, /refresh/);
 });
 
-test("Devin configuration sits after the appearance control and requires detection", () => {
-  assert.match(source, /更换形象\s*<\/button>\s*\{agent\.id === "devin" && <DevinConfigurationButton disabled=\{!isDetected\} \/>\}/);
+test("Devin configuration remains available in its row and requires detection", () => {
+  assert.match(source, /agent\.id === "devin"[\s\S]*?<DevinConfigurationButton disabled=\{!isDetected\} \/>/);
   const config = readFileSync(join(here, "DevinConfigurationButton.jsx"), "utf8");
   assert.match(config, /disabled=\{disabled\}/);
   assert.match(config, /invoke\("devin_cloud_get_config"\)/);
@@ -108,7 +108,7 @@ test("Opening the appearance picker is immediate while disk records refresh in t
   assert.match(source, /setPickerState\(\{\s*agentId\s*\}\);[\s\S]*refreshAppearances\(\)\.catch/);
   assert.doesNotMatch(source, /await\s+refresh\(\)/);
   assert.ok(source.indexOf("setPickerState({ agentId })") < source.indexOf("refreshAppearances().catch"));
-  assert.match(source, /onClick=\{\(\)\s*=>\s+openPicker\(agent\.id\)\}/);
+  assert.match(source, /onClick=\{\(\)\s*=>\s+openPicker\(activeAgentId\)\}/);
 });
 
 test("Follow confirmation describes appearance handling for the active connection", () => {
@@ -119,7 +119,7 @@ test("Follow confirmation describes appearance handling for the active connectio
   assert.match(source, /当前固件仅支持通过 Wi-Fi 切换跟随，设备继续使用当前形象/);
   assert.match(source, /将核对设备上的内置/);
   assert.match(source, /设备缺少该形象时才传输素材/);
-  assert.match(source, /设备形象待确认/);
+  assert.match(source, /已配置形象 · 待设备确认/);
 });
 
 test("USB appearance sync progress stays inline and survives dashboard tab unmounts", () => {
@@ -181,21 +181,11 @@ test("FormosaPickerModal CSS stays compact when only a few appearances exist", (
   assert.match(pickerStageRule, /background:\s*#000/);
   assert.match(pickerMediaRule, /object-fit:\s*contain/);
   assert.match(pickerMediaRule, /object-position:\s*center\s+center/);
-  assert.match(styles, /\.channel-row__formosa\s*\{[\s\S]*grid-template-columns:\s*72px\s+minmax\(0,\s*1fr\)/);
-  assert.match(styles, /\.channel-row__thumb-wrap\s*\{[\s\S]*background:\s*#000/);
-  assert.match(styles, /\.channel-row__thumb:is\(img,\s*video\)\s*\{[\s\S]*object-fit:\s*contain/);
+  assert.doesNotMatch(source, /className="channel-row__thumb-wrap"/);
+  assert.match(source, /className="companion-media"/);
   assert.match(styles, /\.modal-card--formosa-picker\s+\.modal-footer\s*\{/);
 });
 
-test("DSH row exposes a persisted approval timeout selector", () => {
-  assert.match(source, /load_dsh_approval_timeout/);
-  assert.match(source, /save_dsh_approval_timeout/);
-  assert.match(source, /dshApprovalTimeoutMs/);
-  assert.match(source, /DSH_APPROVAL_TIMEOUT_OPTIONS/);
-  assert.match(source, /agent\.id === "deepseek-harness"/);
-  assert.match(source, /超时时间/);
-  assert.match(source, /永不超时/);
-  assert.match(extractCssRule(styles, ".channel-row__approval-timeout-trigger"), /border-radius:\s*var\(--radius-md\)/);
-  assert.match(source, /channel-row__approval-timeout-menu/);
-  assert.match(source, /channel-row__approval-timeout-option/);
+test("The Agent list does not read, overwrite or expose the saved DeepSeek timeout", () => {
+  assert.doesNotMatch(source, /(?:load|save)_dsh_approval_timeout|channel-row__approval-timeout|审批超时时间/);
 });

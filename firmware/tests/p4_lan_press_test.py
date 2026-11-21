@@ -30,10 +30,16 @@ def test_status_current_old_peer_and_future_version_capacity():
     fields['firmware'] = 'v' * 31  # maximum NUL-terminated ESP app descriptor version
     assert '!extended || (cJSON_AddNumberToObject(status, "ac"' in source
     assert 'cJSON_AddBoolToObject(status, "wd", true)' in source
+    assert '(extended ? (8 | PET_LAN_STATUS_GLOBAL_CUES) : 0)' in section  # timed captions on an extended RTC status request
+    assert '(extended ? 32 : 0)' in section
+    fields['rtcKey'] |= 8 | 16 | 32
     fields['ac'] = 16 * 1024 * 1024
     fields['wd'] = True
+    fields.update(a=3, ptt=True, pf=False)
     future = json.dumps(fields, separators=(',', ':')).encode()
-    assert len(future) + 6 <= 576  # includes conservative cJSON print slack
+    assert len(future) <= 576
+    assert "LAN_STATUS_MAX + 6, false)" in source  # print slack outside the wire budget
+    assert "strlen((char *)plain) <= LAN_STATUS_MAX" in source
     assert '#define LAN_STATUS_MAX 576' in source
     pc = (ROOT.parent / 'pc/src-tauri/src/lan_agent.rs').read_text()
     assert 'const DEVICE_STATUS_MAX: usize = 576;' in pc

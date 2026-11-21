@@ -8,6 +8,7 @@
  * [Sync] If this component changes, update `pc/src/.folder.md` and
  *        `./lib/device-guide-content.js` headline copy where relevant.
  */
+import { useDialogFocus } from "./component-center/use-dialog-focus.js";
 import React, { useEffect, useState } from "react";
 import {
   ArrowLeftRight,
@@ -194,7 +195,6 @@ export default function DeviceGuideModal({ isOpen, onClose, runtime = "" }) {
     }
   }, [isOpen, runtime]);
 
-  if (!isOpen) return null;
 
   const cards = String(runtime).toLowerCase() === "esp-p4" ? P4_CARDS : CARDS;
   const card = cards[index];
@@ -207,9 +207,12 @@ export default function DeviceGuideModal({ isOpen, onClose, runtime = "" }) {
     onClose();
   };
 
+  const dialogRef = useDialogFocus(handleClose, false, isOpen);
+  if (!isOpen) return null;
   return (
     <div className="modal-backdrop" onClick={handleClose}>
       <div
+        ref={dialogRef} tabIndex={-1}
         className="modal-card device-guide-modal"
         role="dialog"
         aria-modal="true"

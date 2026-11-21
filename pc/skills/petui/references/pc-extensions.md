@@ -39,7 +39,7 @@
 
 新能力 `widgetMediaQueueMax=128`、`widgetMediaLifecycle=p4-media-lifecycle-v1` 才支持完整自动目录。自动目录不混入旧收藏，旧收藏数据保留。超过 128 条返回明确错误并保留缓存，不能静默截断后声称全部。旧包仍用 20 条收藏优先队列。媒体主视图、列表、触屏和 PC 预览均使用同一队列，更新按 key 保留选择、不打断音频。
 
-`media/event` 的 `visibility` 含 source、boot、epoch、visible。设备进入/离开增加 epoch，处于页面时每 2 秒刷新；宿主按线序消费、忽略过期 epoch，只有当前可见且尚未消费的进入事件允许延迟自动播放。停止、退出（尚未开始的准备）、实时录音和停用取消待播；不因列表刷新重新播放。PC 面板 status、预览、仅安装包不启动播放；退出后已经播放的音频保留原后台策略，全局停止仍有效。刷新失败保留已有缓存和当前流。
+`media/event` 的 `visibility` 含 source、boot、epoch、visible。设备进入或离开时增加 epoch，处于页面时每 2 秒刷新。宿主按线序消费并忽略过期 epoch，只有当前可见且尚未消费的进入事件允许延迟自动播放。退出时设备停止当前组件的音频，并通过带 source 的 `stop` 事件取消电脑代播和准备任务。PC 面板 status、预览和仅安装包均不启动播放。刷新失败保留已有缓存和当前流。
 
 `runtime.surface={background:<RGB565>,elements:[...]}`，最多 20 个节点，仍计入 widget.json 紧凑 JSON 的 4095 字节总限额。
 

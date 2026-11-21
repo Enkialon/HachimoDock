@@ -125,7 +125,7 @@ test("current-Agent P4 session visibility is always on and follows adjacent snap
   assert.match(sessionFeed, /buildP4ConversationQueue\(/);
   assert.match(source, /useAgentSessionFeed\(\{[\s\S]*displayEnabled: true,/);
   assert.match(source, /useP4SessionSync\(\{[\s\S]*displayEnabled: true,/);
-  assert.match(source, /<ChannelMatrixCard \/>/);
+  assert.match(source, /<ChannelMatrixCard\b/);
   assert.doesNotMatch(source, /showSessionDisplaySetting/);
   assert.doesNotMatch(source, /sessionDisplayEnabled/);
   assert.doesNotMatch(source, /onSessionDisplayEnabledChange/);
@@ -224,7 +224,7 @@ test("voice button configuration groups physical controls before device sync", (
   assert.match(css, /\.board-button-panel__toolbar\s*\{/);
 });
 
-test("dashboard keeps the client button map authoritative across reconnect and firmware OTA", () => {
+test("dashboard compares the button maps on reconnect and writes only on explicit sync", () => {
   const dashboard = readSource("DeviceDashboard.jsx");
   const rust = readRepoFile("src-tauri", "src", "lib.rs");
   const usb = readRepoFile("src-tauri", "src", "usb_serial.rs");
@@ -233,8 +233,8 @@ test("dashboard keeps the client button map authoritative across reconnect and f
 
   assert.match(dashboard, /invoke\("usb_get_button_config"/);
   assert.match(dashboard, /boardButtonConfigMatchesClient\(clientConfig, boardConfig, usb\.runtime, usb\.capabilities/);
-  assert.match(dashboard, /await syncClientConfig\(\)/);
-  assert.match(dashboard, /已同步并核对设备按钮配置/);
+  assert.doesNotMatch(dashboard, /await syncClientConfig\(\)/);
+  assert.match(dashboard, /采用设备配置/);
   const queryFailure=dashboard.slice(dashboard.indexOf("} catch (error) {",dashboard.indexOf("const refreshButtonConfigFromBoard")),dashboard.indexOf("}, [",dashboard.indexOf("const refreshButtonConfigFromBoard")));
   assert.match(queryFailure, /已停止自动写入/);
   assert.doesNotMatch(queryFailure, /await syncClientConfig/);
@@ -439,7 +439,7 @@ test("board audio enable starts local runtimes and targets the active board", ()
   const source = readSource("DeviceDashboard.jsx");
   const rust = readRepoFile("src-tauri", "src", "lib.rs");
 
-  assert.match(source, /const targetBoardDeviceId = onlineBoardDeviceId \|\| usb\.boardDeviceId \|\| binding\.boardDeviceId;/);
+  assert.match(source.slice(source.indexOf("const toggleAudioBridge =")), /const targetBoardDeviceId = wifiTarget\?\.boardDeviceId \|\| usb\.boardDeviceId;/);
   assert.match(source, /if \(action === "start"\) \{[\s\S]*ensureBridgeRuntime\(\)/);
   assert.match(source, /ensure_device_voice_runtime/);
   assert.match(source, /p4VoiceRuntime \? "ensure_device_voice_runtime" : "ensure_voice_runtime"/);
@@ -1060,7 +1060,7 @@ test("button configuration only renders on the keyboard page", () => {
   const home = source.slice(source.indexOf("{active && <PageShell"));
   assert.match(source, /\{keyboardActive && <KeyboardConfiguration[\s\S]*<BoardButtonPanel[\s\S]*<\/KeyboardConfiguration>/);
   assert.doesNotMatch(home, /<BoardButtonPanel/);
-  assert.match(home, /<DeviceStatusBar[\s\S]*<ChannelMatrixCard[\s\S]*<VoiceAssistantPanel/);
+  assert.match(home, /<ChannelMatrixCard\b[\s\S]*<DeviceStatusBar[\s\S]*<\/ChannelMatrixCard>[\s\S]*<VoiceAssistantPanel/);
 });
 
 test("dashboard pulls device state from useDeviceContext (no local polling)", () => {

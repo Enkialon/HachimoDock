@@ -66,6 +66,7 @@
 #include "pet_p4_widget_trace.h"
 #include "pet_p4_media.h"
 #include "pet_p4_app_host.h"
+#include "pet_p4_app_store.h"
 #include "pet_p4_ota.h"
 #include "pet_p4_raw_assets.h"
 #include "pet_p4_renderer.h"
@@ -76,6 +77,7 @@
 #include "pet_p4_wifi_clock.h"
 #include "pet_p4_lan.h"
 #include "pet_p4_wifi_data.h"
+#include "pet_p4_mqtt_feed.h"
 
 #define PET_P4_WIRE_PROTOCOL "pet-usb-jsonl-v3"
 #define PET_P4_SPIFFS_PREFIX "/spiffs"
@@ -542,22 +544,52 @@ static void send_topic_payload(pet_p4_send_line_fn send_line, void *ctx, const c
 }
 
 #if PET_P4_SYSTEM_WIFI
+static bool keyboard_integer(const cJSON *field, int maximum) {
+  return cJSON_IsNumber(field) && field->valueint >= 0 &&
+    field->valueint <= maximum && field->valuedouble == field->valueint;
+}
+
+/* USB, trusted LAN delivery and local settings all mutate keyboard state while
+ * holding g_state_mutex. Keep comparison, setter (including NVS) and snapshot
+ * in this dispatch. Separate set fields make conditional requests inert on v1. */
 cJSON *pet_p4_keyboard_config(const cJSON *request, const char *board) {
   const cJSON *enabled = cJSON_GetObjectItemCaseSensitive(request, "enabled");
   const cJSON *slot = cJSON_GetObjectItemCaseSensitive(request, "slot");
   const cJSON *chord = cJSON_GetObjectItemCaseSensitive(request, "chord");
-  const bool valid_slot = cJSON_IsNumber(slot) && slot->valueint >= 0 &&
-    slot->valueint < PET_BLE_GESTURE_COUNT && slot->valuedouble == slot->valueint;
-  const bool valid_chord = cJSON_IsNumber(chord) && chord->valueint >= 0 &&
-    chord->valueint <= UINT16_MAX && chord->valuedouble == chord->valueint;
+  const cJSON *set_mode = cJSON_GetObjectItemCaseSensitive(request, "setEnabled");
+  const cJSON *set_chord = cJSON_GetObjectItemCaseSensitive(request, "setChord");
+  const cJSON *old_mode = cJSON_GetObjectItemCaseSensitive(request, "expectedEnabled");
+  const cJSON *old_chord = cJSON_GetObjectItemCaseSensitive(request, "expectedChord");
+  const bool conditional = set_mode || set_chord || old_mode || old_chord;
   bool ok = pet_p4_is_wifi6_hardware();
+#if CONFIG_BT_NIMBLE_ENABLED
+  const bool supports_conditional = ok;
+#else
+  const bool supports_conditional = false;
+#endif
+  bool conflict = false;
   const char *error = "当前设备不支持蓝牙键盘配置";
-  if (ok && enabled) {
-    ok = !slot && !chord && cJSON_IsBool(enabled) && pet_ble_keyboard_set_mode(cJSON_IsTrue(enabled));
+  if (conditional) {
+    ok = supports_conditional && !enabled && !chord;
+    error = "条件更新参数无效或固件不支持";
+  }
+  if (ok && (enabled || set_mode)) {
+    const cJSON *value = conditional ? set_mode : enabled;
+    ok = cJSON_IsBool(value) && !slot && !set_chord && !old_chord &&
+      (!conditional || cJSON_IsBool(old_mode));
+    if (ok) {
+      conflict = conditional && pet_ble_keyboard_enabled() != (bool)cJSON_IsTrue(old_mode);
+      ok = !conflict && pet_ble_keyboard_set_mode(cJSON_IsTrue(value));
+    }
     error = "无法保存蓝牙模式";
-  } else if (ok && (slot || chord)) {
-    ok = valid_slot && valid_chord &&
-         pet_ble_keyboard_set_chord((unsigned)slot->valueint, (uint16_t)chord->valueint);
+  } else if (ok && (slot || chord || conditional)) {
+    const cJSON *value = conditional ? set_chord : chord;
+    ok = keyboard_integer(slot, PET_BLE_GESTURE_COUNT - 1) && keyboard_integer(value, UINT16_MAX) &&
+      !old_mode && (!conditional || keyboard_integer(old_chord, UINT16_MAX));
+    if (ok) {
+      conflict = conditional && pet_ble_keyboard_chord(slot->valueint) != old_chord->valueint;
+      ok = !conflict && pet_ble_keyboard_set_chord(slot->valueint, value->valueint);
+    }
     error = "无法保存蓝牙快捷键";
   }
   cJSON *result = cJSON_CreateObject();
@@ -566,6 +598,8 @@ cJSON *pet_p4_keyboard_config(const cJSON *request, const char *board) {
   cJSON_AddStringToObject(result, "boardDeviceId", board);
   cJSON_AddBoolToObject(result, "ok", ok);
   if (ok) {
+    if (supports_conditional) cJSON_AddStringToObject(result, "conditionalUpdate", "keyboard-cas-v1");
+    if (conditional) cJSON_AddBoolToObject(result, "conditionalApplied", true);
     cJSON_AddBoolToObject(result, "enabled", pet_ble_keyboard_enabled());
     cJSON_AddBoolToObject(result, "connected", pet_ble_keyboard_connected());
     cJSON_AddBoolToObject(result, "paired", pet_ble_shortcut_paired());
@@ -575,7 +609,10 @@ cJSON *pet_p4_keyboard_config(const cJSON *request, const char *board) {
     int values[PET_BLE_GESTURE_COUNT];
     for (unsigned i = 0; i < PET_BLE_GESTURE_COUNT; ++i) values[i] = pet_ble_keyboard_chord(i);
     cJSON_AddItemToObject(result, "keys", cJSON_CreateIntArray(values, PET_BLE_GESTURE_COUNT));
-  } else cJSON_AddStringToObject(result, "message", error);
+  } else {
+    if (conflict) cJSON_AddStringToObject(result, "error", "keyboard_conflict");
+    cJSON_AddStringToObject(result, "message", conflict ? "设备上的键盘设置已变化，请重新核对。" : error);
+  }
   return result;
 }
 
@@ -603,14 +640,25 @@ static void send_wifi_status(const cJSON *request, pet_p4_send_line_fn send_line
   cJSON_AddNumberToObject(reply,"bleDisconnectReason",pet_ble_shortcut_link_counter(1));
   cJSON_AddNumberToObject(reply,"bleSecurityResult",pet_ble_shortcut_link_counter(2));
   cJSON_AddNumberToObject(reply,"bleIdentityHash",pet_ble_shortcut_link_counter(3));
+  pet_p4_lan_add_diagnostics(reply);
   cJSON_AddNumberToObject(reply,"blePressSent",pet_ble_shortcut_report_counter(0));
   cJSON_AddNumberToObject(reply,"bleReleaseSent",pet_ble_shortcut_report_counter(1));
   cJSON_AddNumberToObject(reply,"bleReportErrors",pet_ble_shortcut_report_counter(2));
+  cJSON_AddNumberToObject(reply,"bleQueueFull",pet_ble_shortcut_report_counter(3));
+  cJSON_AddNumberToObject(reply,"blePressDropped",pet_ble_shortcut_report_counter(4));
+  cJSON_AddNumberToObject(reply,"bleNotReady",pet_ble_shortcut_report_counter(5));
   cJSON_AddBoolToObject(reply, "connected", supported && pet_device_wifi_online());
   cJSON_AddBoolToObject(reply, "clockSynchronized", clock_ready);
   if (clock_ready) cJSON_AddNumberToObject(reply, "clockAgeMs", age_ms);
   if (supported) {
     const pet_wifi_link_status_t link = pet_device_wifi_link_status();
+#if PET_P4_SYSTEM_WIFI
+    unsigned subscriptions,messages,applied;
+    pet_mqtt_feed_counts(&subscriptions,&messages,&applied);
+    cJSON_AddNumberToObject(reply,"mqttSubscriptions",subscriptions);
+    cJSON_AddNumberToObject(reply,"mqttMessages",messages);
+    cJSON_AddNumberToObject(reply,"mqttApplied",applied);
+#endif
     cJSON_AddNumberToObject(reply, "httpsSuccesses", link.successes);
     cJSON_AddNumberToObject(reply, "httpsFailures", link.failures);
     cJSON_AddNumberToObject(reply, "httpsLastStage", link.last_stage);
@@ -1310,7 +1358,9 @@ static __attribute__((optimize("Os"))) void send_asset_slot_query_ack(pet_p4_run
   appearance_io_observation_t before=appearance_io_observe(state);
   int slot=atomic_load_explicit(&g_asset_active_slot,memory_order_acquire);
   unsigned revision=state->asset_revision;uint64_t generation=g_appearance_session.generation;
-  bool video_snapshot=slot==PET_P4_RAW_APPEARANCE_SLOT&&asset_query_snapshot_videos(&state->asset_catalog);
+  /* Global cues use the active pack as authority and never compare videos. */
+  bool video_snapshot=slot==PET_P4_RAW_APPEARANCE_SLOT&&strcmp(json_string(request,"scope"),"global")
+    &&asset_query_snapshot_videos(&state->asset_catalog);
   /* The read owns exclusion too; it is not an active appearance mutation and
    * does not create a durable result/ACK. Own exclusion is removed before the
    * second sample, while the caller still holds the state mutex. */
@@ -2237,6 +2287,13 @@ static void serial_retire_locked(pet_p4_runtime_state_t *state){
   g_asset_sender=NULL;g_asset_route=NULL;g_asset_transfer_slot=-1;g_asset_transfer_id[0]=0;
   g_asset_transfer_last_activity_ms=0;state->asset_transfer_active=false;
 }
+#ifdef ESP_PLATFORM
+#include "pet_p4_font_delivery.inc"
+static bool font_usb_current(void *owner, uint32_t generation) {
+  (void)generation;
+  return pet_p4_native_usb_route_current(owner);
+}
+#endif
 #include "pet_p4_protocol_audio_patch.inc"
 
 static __attribute__((optimize("Os"))) void handle_asset_topic(pet_p4_runtime_state_t *state,const char *topic,
@@ -2351,9 +2408,17 @@ static __attribute__((optimize("Os"))) void handle_asset_topic(pet_p4_runtime_st
 void pet_p4_handle_lan_appearance(pet_p4_runtime_state_t *state, unsigned phase,
                                   const cJSON *payload, void *route) {
   static const char *const topics[] = {
-    "asset/slot-query", "asset/activate", "asset/begin", "asset/chunk", "asset/file", "asset/commit"
+    "asset/slot-query", "asset/activate", "asset/begin", "asset/chunk", "asset/file", "asset/commit",
+    "asset/audio-begin", "asset/audio-chunk", "asset/audio-commit", "asset/audio-abort"
   };
   if (phase >= sizeof(topics) / sizeof(topics[0])) return;
+  if (phase >= PET_LAN_AUDIO_BEGIN && strcmp(json_string(payload, "scope"), "global")) return;
+  if (phase == PET_LAN_AUDIO_COMMIT) {
+    uint32_t count, bytes;
+    if (!pet_audio_patch_number(payload, "files", PET_AUDIO_PATCH_MAX_FILES, &count) ||
+        !pet_audio_patch_number(payload, "totalBytes", PET_AUDIO_PATCH_MAX_BYTES, &bytes) ||
+        count != pet_audio_patch_file_count() || bytes != pet_audio_patch_total_bytes()) return;
+  }
   /* Slot 1 may only be erased while the protected factory appearance is active. */
   if (phase == 2 && g_asset_active_slot != PET_P4_BUILTIN_APPEARANCE_SLOT) return;
   handle_asset_topic(state, topics[phase], payload, pet_p4_lan_appearance_reply, route);
@@ -2641,6 +2706,7 @@ void pet_p4_state_set_native_usb_mounted(
   unsigned long long now_ms
 ) {
   if (!state) return;
+  if (state->native_usb_mounted && !mounted) pet_voice_feedback_clear(&state->voice_feedback);
   state->native_usb_mounted = mounted;
   if (mounted) state->host_last_seen_ms = now_ms;
   state->last_update_ms += 1;
@@ -2878,6 +2944,11 @@ static void send_miniapp_state(pet_p4_send_line_fn send_line, void *ctx, const c
   bool active = view && view->active;
   cJSON_AddBoolToObject(payload, "active", active);
   if (active) {
+    uint64_t oldest_edit_ms;
+    const char *cached_save=pet_app_store_cached_state(snapshot.widget_id,&oldest_edit_ms);
+    cJSON_AddStringToObject(payload,"cachedSaveState",cached_save);
+    if(!strcmp(cached_save,"pending"))
+      cJSON_AddNumberToObject(payload,"oldestPendingEditMs",(double)oldest_edit_ms);
     cJSON_AddStringToObject(payload, "state", view->state);
     cJSON_AddStringToObject(payload, "page", view->page);
     cJSON_AddStringToObject(payload, "title", view->title);
@@ -3207,6 +3278,7 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
 #else
   cJSON_AddStringToObject(capabilities, "widgetQuota", "p4-quota-v2");
 #endif
+  cJSON_AddStringToObject(capabilities, "widgetCenterThumb", "p4t-64x48-v1");
   cJSON_AddStringToObject(capabilities, "widgetCenterTitle", "rle4-v1");
 #if PET_P4_CELLS_V1
   cJSON_AddStringToObject(capabilities, "widgetCells", PET_CELLS_ENGINE);
@@ -3229,6 +3301,11 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
 #endif
 #if PET_P4_EVENTS
   cJSON_AddStringToObject(capabilities, "widgetEvents", "p4-events-v1");
+  cJSON_AddStringToObject(capabilities, "widgetLocalAlarms", "p4-local-alarms-v1");
+#if PET_COMPONENT_BACKGROUND_ENABLED
+  if (pet_p4_miniapp_background_available())
+    cJSON_AddStringToObject(capabilities,"widgetLocalProgramResume","p4-local-program-v1");
+#endif
 #endif
   cJSON_AddStringToObject(capabilities, "widgetMotion", "p4-motion-v1");
   cJSON_AddStringToObject(capabilities, "widgetPlatformTrack", "p4-platform-track-v1");
@@ -3267,6 +3344,7 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
   cJSON_AddNumberToObject(capabilities,"widgetServiceBridgeImageSide",192);
 #endif
   cJSON_AddStringToObject(capabilities,"widgetAppNavigation","p4-app-navigation-v1");
+  cJSON_AddStringToObject(capabilities, "voiceFeedback", "p4-voice-feedback-v2");
   cJSON_AddStringToObject(capabilities,"widgetActivation","p4-widget-activation-v1");
 #if PET_P4_STORAGE_PRESERVE_UNCHANGED
   cJSON_AddStringToObject(capabilities,"widgetPreserveUnchanged","p4-preserve-unchanged-v1");
@@ -3481,7 +3559,11 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
   cJSON_AddBoolToObject(widget_limits, "fetchers", false);
   cJSON_AddBoolToObject(widget_limits, "readers", false);
   cJSON_AddItemToObject(capabilities, "widgetLimits", widget_limits);
+#if PET_BLE_ACCESSORY
+  if (pet_accessory_ready()) cJSON_AddStringToObject(capabilities,"widgetBleAccessory","p4-ble-read-v1");
+#endif
   bool audio_ready = pet_p4_audio_ready();
+  if (audio_ready) cJSON_AddStringToObject(capabilities, "widgetMicLevel", "microphone-level-v1");
   bool audio_playback_ready = pet_p4_audio_playback_ready();
   bool touch_ready = pet_p4_touch_ready();
   cJSON_AddBoolToObject(capabilities, "voice", audio_ready);
@@ -3520,6 +3602,10 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
     cJSON_AddStringToObject(capabilities, "widgetWifiFeed", PET_WIFI_DATA_FEED_CAPABILITY);
     cJSON_AddStringToObject(capabilities, "widgetWifiFeedMap", PET_WIFI_DATA_FEED_MAP_CAPABILITY);
     cJSON_AddStringToObject(capabilities, "widgetWifiFeedHttp", PET_WIFI_FEED_HTTP_CAPABILITY);
+#if PET_P4_SCOPED_WRITE
+    cJSON_AddStringToObject(capabilities, "widgetDeviceProvider", "github-account-v1");
+    cJSON_AddStringToObject(capabilities, "widgetScopedWrite", "p4-scoped-write-v1");
+#endif
     cJSON_AddStringToObject(capabilities, "widgetPrivateFeed", PET_PRIVATE_FEED_CAPABILITY);
     cJSON_AddStringToObject(capabilities, "widgetPublicMqtt", "p4-public-mqtt-v1");
     cJSON_AddBoolToObject(capabilities, "widgetCredentialStorageReady", pet_private_storage_ready());
@@ -3562,8 +3648,8 @@ __attribute__((optimize("Oz"))) void pet_p4_send_hello_for_board(const char *boa
   cJSON_AddStringToObject(capabilities, "bubblePixels", "p4-text-alpha-v2");
   cJSON_AddStringToObject(capabilities, "bubblePixelsBoot", pet_bubble_pixels_boot());
   cJSON_AddBoolToObject(capabilities, "bubbleGlyphCells", true);
-  cJSON_AddBoolToObject(capabilities, "bubbleBodyMasks", true);
-  cJSON_AddBoolToObject(capabilities, "bubbleTitleMasks", true);
+  cJSON_AddBoolToObject(capabilities, "bubbleBodyMasks", !pet_shared_font_ready());
+  cJSON_AddBoolToObject(capabilities, "bubbleTitleMasks", !pet_shared_font_ready());
   cJSON_AddBoolToObject(capabilities, "screenshot", true);
   cJSON_AddStringToObject(capabilities, "screenshotTransfer", "pull-fnv1a32-v1");
 #if PET_P4_SCREENSHOT_CLOSE_ACK
@@ -4292,6 +4378,21 @@ bool pet_p4_handle_line_with_reply(
       || !strcmp(topic, "audio/play_subtitle")) {
     pet_bubble_pixels_desire(payload, ctx, topic, (uint64_t)(esp_timer_get_time() / 1000));
   }
+  if (!strcmp(topic, "ui/voice-feedback")) {
+    uint64_t now = (uint64_t)esp_timer_get_time() / 1000;
+    pet_p4_audio_feedback_sync(state, now);
+    uint32_t token = json_bounded_u64(payload, "token", UINT32_MAX, 0);
+    uint64_t revision = json_bounded_u64(payload, "revision", UINT32_MAX, UINT64_MAX);
+    if (g_boot_identity.ready && !strcmp(json_string(payload, "bootId"), g_boot_identity.id)
+        && !strcmp(json_string(payload, "boardDeviceId"), state->board_device_id)
+        && revision != UINT64_MAX) {
+      pet_voice_feedback_update(&state->voice_feedback, token, json_string(payload, "captureId"),
+        (uint32_t)revision, json_string(payload, "phase"), json_string(payload, "text"),
+        cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(payload, "draftInserted")), now);
+    }
+    cJSON_Delete(root);
+    return true;
+  }
   pet_p4_state_note_host_activity(
     state,
     (unsigned long long) (esp_timer_get_time() / 1000ULL)
@@ -4304,7 +4405,11 @@ bool pet_p4_handle_line_with_reply(
       cJSON_Delete(root);return false;
     }
 #endif
-    copy_text(state->desktop_device_id, sizeof(state->desktop_device_id), json_string(payload, "desktopDeviceId"));
+    const char *desktop = json_string(payload, "desktopDeviceId");
+    if (!strcmp(topic, "bind") || strcmp(desktop, state->desktop_device_id)
+        || !pet_p4_state_usb_client_connected(state, state->host_last_seen_ms))
+      pet_voice_feedback_clear(&state->voice_feedback);
+    copy_text(state->desktop_device_id, sizeof(state->desktop_device_id), desktop);
     state->usb_client_last_seen_ms = state->desktop_device_id[0] ? state->host_last_seen_ms : 0;
 #if PET_P4_SYSTEM_WIFI
     if (state->desktop_device_id[0]) pet_p4_lan_usb_active();
@@ -4315,6 +4420,8 @@ bool pet_p4_handle_line_with_reply(
     char elf[65]={0};if(app)for(unsigned i=0;i<32;i++)snprintf(elf+2*i,3,"%02x",app->app_elf_sha256[i]);
     int64_t uptime=esp_timer_get_time();
     cJSON *identity=request&&uptime>=0?pet_evidence_identity(&g_boot_identity,request,state->board_device_id,PET_P4_BUILD_ID,PET_P4_BUILD_GIT_SHA,elf,PET_P4_BUILD_DIRTY!=0,PET_P4_PROTOCOL_SCHEMA,(uint64_t)uptime):NULL;
+    if(identity && g_factory_board_model) cJSON_AddStringToObject(identity,"hardwareBoardModel",g_factory_board_model);
+    else if(identity && pet_p4_is_wifi6_hardware()) cJSON_AddStringToObject(identity,"hardwareBoardModel","wifi6");
     if(identity)send_topic_payload(send_line,ctx,"debug/identity",identity);
     else send_protocol_ack(send_line,ctx,topic,payload,false,"identity_unavailable","bounded identity request or identity unavailable");
   } else if (strcmp(topic, "approval/cancel") == 0) {
@@ -4335,6 +4442,14 @@ bool pet_p4_handle_line_with_reply(
   } else if (strncmp(topic, "state/", 6) == 0) {
     handle_state_topic(state, topic, payload);
     send_protocol_ack_if_requested(send_line, ctx, topic, payload);
+#ifdef ESP_PLATFORM
+  } else if (!strcmp(topic, "resources/bubble-font")) {
+    cJSON *result = pet_p4_font_delivery(payload, (pet_font_route_t){
+        .owner = ctx, .resume = send_line == pet_p4_native_usb_send_json_line ? font_usb_current : NULL
+      }, state->board_device_id,
+        !state->asset_transfer_active && !pet_p4_ota_active() && !pet_p4_audio_conversation_active());
+    send_topic_payload(send_line, ctx, "resources/bubble-font/status", result);
+#endif
   } else if (strcmp(topic, "ui/text-pixels") == 0) {
     cJSON *reply = cJSON_CreateObject();
     if (reply) {

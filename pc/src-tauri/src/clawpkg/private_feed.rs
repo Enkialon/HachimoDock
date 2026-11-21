@@ -38,14 +38,45 @@ pub(crate) fn parse(data: &Value) -> Result<Feed<'_>, &'static str> {
     if data["source"] != "wifi.feed" || data.get("http").is_some() {
         return Err(INVALID);
     }
-    let topic = match auth.get("type").and_then(Value::as_str) {
+    let kind = auth.get("type").and_then(Value::as_str);
+    let write = matches!(kind, Some("https-submit" | "mqtt-publish"));
+    if (write || kind == Some("github-account")) && data.get("response_map").is_some() {
+        return Err(INVALID);
+    }
+    if write {
+        if data.get("refresh_action").is_some() {
+            return Err(INVALID);
+        }
+        let value = auth.get("value").and_then(Value::as_str).ok_or(INVALID)?;
+        if !(1..=24).contains(&value.len())
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        {
+            return Err(INVALID);
+        }
+        let (_, authority) = url.split_once("://").ok_or(INVALID)?;
+        let (host, path) = authority.split_once('/').unwrap_or((authority, ""));
+        if host.split(':').next().unwrap_or("").len() > 32 || path.len() + 1 > 40 {
+            return Err(INVALID);
+        }
+    }
+    let topic = match kind {
+        Some("github-account") if auth.len() == 1 && url == "https://api.github.com/user" => None,
+        Some("https-submit")
+            if auth.len() == 2 && !url.contains('?') && wifi_endpoint::valid(url) =>
+        {
+            None
+        }
         Some("bearer") if auth.len() == 1 && !url.contains('?') && wifi_endpoint::valid(url) => {
             None
         }
-        Some("mqtt" | "mqtt-public") if auth.len() == 2 && mqtt_url(url) => {
+        Some("mqtt" | "mqtt-public" | "mqtt-publish")
+            if auth.len() == (if write { 3 } else { 2 }) && mqtt_url(url) =>
+        {
             let topic = auth.get("topic").and_then(Value::as_str).ok_or(INVALID)?;
             if topic.is_empty()
-                || topic.len() > 127
+                || topic.len() > (if write { 40 } else { 127 })
                 || topic.starts_with('$')
                 || topic
                     .bytes()
@@ -64,6 +95,51 @@ pub(crate) fn parse(data: &Value) -> Result<Feed<'_>, &'static str> {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn scoped_component_devices_require_their_own_capability() {
+        for (kind, url, connection, cap, version) in [
+            (
+                "https-submit",
+                "https://checkin.example.org/visits",
+                json!({"type":"https-submit","value":"arrived"}),
+                "widgetScopedWrite",
+                "p4-scoped-write-v1",
+            ),
+            (
+                "mqtt-publish",
+                "mqtts://desk.example.org:8883",
+                json!({"type":"mqtt-publish","topic":"room/light","value":"on"}),
+                "widgetScopedWrite",
+                "p4-scoped-write-v1",
+            ),
+            (
+                "github-account",
+                "https://api.github.com/user",
+                json!({"type":"github-account"}),
+                "widgetDeviceProvider",
+                "github-account-v1",
+            ),
+        ] {
+            let mut data =
+                json!({"source":"wifi.feed","page_var":"page","url":url,"connection":connection});
+            assert!(parse(&data).is_ok());
+            let requirements =
+                crate::clawpkg::ComponentSyncRequirements::from_runtime(&json!({"data":data}));
+            assert_eq!(requirements.usb_capabilities.get(cap), Some(&version));
+            data["connection"]["token"] = json!("forbidden");
+            assert!(parse(&data).is_err());
+            data["connection"].as_object_mut().unwrap().remove("token");
+            match kind {
+                "https-submit" => {
+                    data["url"] = json!("https://checkin.example.org/visits?secret=x")
+                }
+                "mqtt-publish" => data["connection"]["topic"] = json!("room/#"),
+                _ => data["url"] = json!("https://other.example.org/user"),
+            }
+            assert!(parse(&data).is_err());
+        }
+    }
+
     #[test]
     fn declarations_cannot_carry_credentials_or_wildcard_subscriptions() {
         let mut feed = json!({"source":"wifi.feed","url":"https://api.example.org/data",

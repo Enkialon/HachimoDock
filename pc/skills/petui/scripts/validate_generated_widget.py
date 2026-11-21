@@ -166,9 +166,23 @@ def valid_private_feed(data):
     if (data.get("source") != "wifi.feed" or "http" in data or
             not isinstance(connection, dict) or not isinstance(url, str)):
         return False
+    kind = connection.get("type")
+    write = kind in ("https-submit", "mqtt-publish")
+    if kind == "github-account":
+        return set(connection) == {"type"} and url == "https://api.github.com/user" and "response_map" not in data
+    if write:
+        value = connection.get("value")
+        if ("response_map" in data or "refresh_action" in data or not isinstance(value, str) or
+                not re.fullmatch(r"[a-zA-Z0-9._-]{1,24}", value)):
+            return False
+        authority, _, path = url.partition("://")[2].partition("/")
+        if len(authority.partition(":")[0]) > 32 or len(path) + 1 > 40:
+            return False
+        if kind == "https-submit":
+            return set(connection) == {"type", "value"} and "?" not in url and valid_wifi_endpoint(url)
     if connection == {"type": "bearer"}:
         return "?" not in url and valid_wifi_endpoint(url)
-    if set(connection) != {"type", "topic"} or connection["type"] not in ("mqtt", "mqtt-public"):
+    if set(connection) != ({"type", "topic", "value"} if write else {"type", "topic"}) or kind not in ("mqtt", "mqtt-public", "mqtt-publish"):
         return False
     if not url.startswith("mqtts://") or any(c in url[8:] for c in "/?#@"):
         return False
@@ -176,7 +190,7 @@ def valid_private_feed(data):
     topic = connection["topic"]
     return (valid_wifi_endpoint("https://" + host)
             and (not colon or bool(re.fullmatch(r"[0-9]{1,5}", port)) and 1 <= int(port) <= 65535)
-            and isinstance(topic, str) and 1 <= len(topic) <= 127 and not topic.startswith("$")
+            and isinstance(topic, str) and 1 <= len(topic) <= (40 if write else 127) and not topic.startswith("$")
             and all(33 <= ord(c) <= 126 and c not in "+#" for c in topic))
 
 
@@ -253,6 +267,12 @@ DEFAULT_CAPABILITIES = {
     "widgetState": "p4-app-state-v1",
     "widgetLyrics": "p4-lrc-v1",
     "widgetData": "p4-data-list-v1",
+    "widgetMicLevel": "microphone-level-v1",
+    "widgetBleAccessory": "p4-ble-read-v1",
+    "widgetWifiFeed": "p4-wifi-feed-v1",
+    "widgetPrivateFeed": "p4-private-feed-v1",
+    "widgetScopedWrite": "p4-scoped-write-v1",
+    "widgetDeviceProvider": "github-account-v1",
     # The PC host's own adapter capability (pc-fetch-v1 lives in the client, not the firmware).
     "widgetPcFetch": "pc-fetch-v1",
     "widgetRuntime": RUNTIME_ENGINE,
@@ -665,13 +685,17 @@ def normalize_preview_value(slot: str, value: Any) -> Any:
     return {"value": number, "label": str(value.get("label", ""))}
 
 
-def validate_package_files(widget_dir: Path, errors: list[str], *, allow_wasm_audio: bool = False) -> None:
+def validate_package_files(widget_dir: Path, errors: list[str], *, allow_wasm_audio: bool = False) -> list[Path] | None:
+    from pack_hachiapp import package_entries
+    from python_plugin import ENTRY as python_entry
     if not widget_dir.is_dir():
         errors.append(f"组件目录不存在: {widget_dir}")
         return
-    entries = list(widget_dir.rglob("*"))
-    if len(entries) > CLAWPKG_MAX_ENTRIES:
-        errors.append(f"组件包文件数超过 {CLAWPKG_MAX_ENTRIES} 个上限")
+    try:
+        entries = list(package_entries(widget_dir, CLAWPKG_MAX_ENTRIES))
+    except (OSError, ValueError) as error:
+        errors.append(str(error))
+        return None
     expanded_bytes = 0
     present: set[str] = set()
     for path in entries:
@@ -691,7 +715,7 @@ def validate_package_files(widget_dir: Path, errors: list[str], *, allow_wasm_au
         expanded_bytes += size
         if size > CLAWPKG_MAX_ENTRY_BYTES:
             errors.append(f"组件文件超过 4 MiB 上限: {relative_name}")
-        if path.suffix.lower() in FORBIDDEN_SUFFIXES:
+        if path.suffix.lower() in FORBIDDEN_SUFFIXES and relative_name != python_entry:
             errors.append(f"组件包不允许可执行或脚本文件: {relative_name}")
         if relative.parts and relative.parts[0] == "assets":
             if allow_wasm_audio and relative_name == "assets/speech.hab":
@@ -706,6 +730,7 @@ def validate_package_files(widget_dir: Path, errors: list[str], *, allow_wasm_au
         errors.append("缺少目录: assets/")
     if not (widget_dir / "runtime").is_dir():
         errors.append("缺少目录: runtime/")
+    return entries
 
 
 def validate_png_asset_inventory(widget_dir: Path, runtime: Any, errors: list[str]) -> None:
@@ -1508,6 +1533,25 @@ def validate_runtime(
         errors.append(f"runtime/widget.json.engine 只支持: {', '.join(sorted(RUNTIME_ENGINES))}")
     elif not capability_supports(capabilities, "widgetRuntime", "widgetRuntimes", runtime_engine):
         errors.append(f"目标能力不支持统一组件运行时: {runtime_engine}")
+    if "accessory" in runtime:
+        shell = {"schema_version", "engine", "accessory", "vars", "states", "initial_state", "transitions", "tick", "dashboard"}
+        if (runtime_engine != RUNTIME_ENGINE or set(runtime) - shell
+                or runtime["accessory"] not in ("battery-level", "ambient-temperature")
+                or runtime.get("vars", {}) != {} or runtime.get("tick", []) != []
+                or runtime.get("transitions", []) != []):
+            errors.append("accessory 需要独立的前台蓝牙电量或温度面板")
+        if capabilities.get("widgetBleAccessory") != "p4-ble-read-v1":
+            errors.append("目标设备未声明 widgetBleAccessory=p4-ble-read-v1")
+    if "hardware" in runtime:
+        hardware = runtime["hardware"]
+        shell = {'hardware', 'transitions', 'engine', 'readers', 'tick', 'dashboard', 'fetchers', 'vars', 'states', 'initial_state', 'schema_version'}
+        if (runtime_engine != RUNTIME_ENGINE or set(runtime) - shell or not isinstance(hardware, dict)
+                or set(hardware) - {"service", "quiet_below"} or hardware.get("service") != "microphone-level-v1"
+                or ("quiet_below" in hardware and (type(hardware["quiet_below"]) is not int
+                    or not 1 <= hardware["quiet_below"] <= 100))):
+            errors.append("hardware 需要独立 v4 前台麦克风电平声明，安静阈值取 1–100 整数")
+        if capabilities.get("widgetMicLevel") != "microphone-level-v1":
+            errors.append("目标设备未声明 widgetMicLevel=microphone-level-v1")
     variables = runtime.get("vars")
     if isinstance(variables, dict) and "petui.wifi_data" in variables:
         surface = runtime.get("surface")
@@ -1546,6 +1590,9 @@ def validate_runtime(
         # p4-component-program-v2 supersedes v1 in the single-valued key; widgetPrograms lists both when present.
         declared_program=runtime['program'].get('engine') if isinstance(runtime.get('program'),dict) else None
         required_program=declared_program if declared_program in PROGRAM_ENGINES else PROGRAM_ENGINE
+        if (isinstance(runtime.get('program'), dict) and runtime['program'].get('background') is True
+                and capabilities.get('widgetLocalProgramResume') != 'p4-local-program-v1'):
+            errors.append('设备未开放本机后台程序授权 widgetLocalProgramResume=p4-local-program-v1')
         if not superseding_capability(capabilities,'widgetProgram','widgetPrograms',required_program,PROGRAM_ENGINES):errors.append(f'设备未开放受限组件程序 widgetProgram={required_program}，未安装不兼容资源')
     if 'form' in runtime and runtime.get('form',{}).get('engine')!='p4-app-form-v3':
         mixed=runtime.get('form',{}).get('engine')=='p4-app-form-v2'
@@ -1691,10 +1738,18 @@ def validate_runtime(
             errors.append("runtime/widget.json.data 需要受控 source 和整数 page_var，只用于 v4 列表工具")
         if isinstance(data, dict) and data.get("source") == "wifi.feed" and capabilities.get("widgetWifiFeed") != "p4-wifi-feed-v1":
             errors.append("目标固件不支持设备 HTTPS 数据源 p4-wifi-feed-v1")
-        if isinstance(data, dict) and isinstance(data.get("connection"), dict) and data["connection"].get("type") == "mqtt-public":
+        connection = data.get("connection") if isinstance(data, dict) else None
+        kind_name = connection.get("type") if isinstance(connection, dict) else None
+        if kind_name in ("https-submit", "mqtt-publish"):
+            if capabilities.get("widgetScopedWrite") != "p4-scoped-write-v1":
+                errors.append("目标固件缺少组件限域发送能力")
+        elif kind_name == "github-account":
+            if capabilities.get("widgetDeviceProvider") != "github-account-v1":
+                errors.append("目标固件缺少设备 GitHub 账号能力")
+        elif kind_name == "mqtt-public":
             if capabilities.get("widgetPublicMqtt") != "p4-public-mqtt-v1":
                 errors.append("目标固件缺少公开 MQTT 订阅能力")
-        elif isinstance(data, dict) and "connection" in data and capabilities.get("widgetPrivateFeed") != "p4-private-feed-v1":
+        if kind_name != "mqtt-public" and isinstance(data, dict) and "connection" in data and capabilities.get("widgetPrivateFeed") != "p4-private-feed-v1":
             errors.append("目标固件不支持设备私有数据源 p4-private-feed-v1")
         if isinstance(data, dict) and "response_map" in data:
             if data.get("source") != "wifi.feed" or not valid_wifi_feed_map(data["response_map"]):
@@ -2061,8 +2116,8 @@ def validate_widget(
         # Review checks declared contracts, never the uploader's attached board.
         capabilities = {**DEFAULT_CAPABILITIES, **capabilities}
     errors: list[str] = []
-    validate_package_files(widget_dir, errors, allow_wasm_audio=verified_wasm_gameplay)
-    if not widget_dir.is_dir():
+    entries = validate_package_files(widget_dir, errors, allow_wasm_audio=verified_wasm_gameplay)
+    if entries is None:
         return errors
     manifest = load_json(widget_dir / "component.json", errors)
     negative = load_json(widget_dir / "negative-screen.json", errors)
@@ -2106,17 +2161,30 @@ def validate_widget(
         errors.append("WASM 语音资源缺少已验证的模块声明")
     wasm_actions = frozenset({"lab.a", "lab.b", "lab.up", "lab.down", "lab.left", "lab.right"}) if wasm_owns_gameplay else frozenset()
     from capability_ext import media_files
+    from python_plugin import ENTRY as python_entry, declared as has_python, validate_source as validate_python
     application_file=widget_dir/'pc/application.json'
+    python_file=widget_dir/python_entry
     if application_file.exists() or isinstance(runtime,dict) and 'host' in runtime:
         from app_services import application_errors
-        errors.extend(application_errors(load_json(application_file,errors),runtime))
         application=load_json(application_file,errors)
+        errors.extend(application_errors(application,runtime))
+        python_declared=has_python(application)
+        if python_declared != python_file.is_file():
+            errors.append("Python 声明与入口不匹配，需要 pc/plugin.py")
+        if python_declared and python_file.is_file():
+            try:
+                with python_file.open("rb") as script:
+                    validate_python(script.read(16 * 1024))
+            except (ValueError,OSError) as error:
+                errors.append(str(error))
         application_limit=65536 if isinstance(application,dict) and application.get('engine')=='pc-service-bridge-v1' else 32768 if isinstance(application,dict) and application.get('engine') in ('pc-app-composition-v2','pc-app-composition-v3') else 4*1024*1024 if isinstance(application,dict) and (application.get('engine')=='pc-app-services-v3' and application.get('service')=='knowledge' or application.get('engine')=='pc-app-calendar-v1' and application.get('service')=='calendar' or application.get('engine')=='pc-app-books-v1' and application.get('service')=='books') else 16384
         if application_file.exists() and application_file.stat().st_size>application_limit:errors.append('PC 应用声明超过有界容量')
-        for f in widget_dir.rglob('*'):
+        for f in entries:
             relative=f.relative_to(widget_dir).as_posix()
             notice=relative in {'LICENSE.txt','THIRD_PARTY_NOTICES.txt'} or bool(re.fullmatch(r'licenses/[A-Za-z0-9_.-]+\.(?:txt|md)',relative))
-            if f.is_file() and not notice and relative not in REQUIRED_FILES|{'hachiapp.json','pc/application.json','pc/cover.png','assets/.keep'}|set(media_files(runtime))|{i.get('asset') for i in runtime.get('surface',{}).get('images',[]) if isinstance(i,dict)}:errors.append('PC 应用包含额外文件')
+            if f.is_file() and not notice and not (python_declared and relative==python_entry) and relative not in REQUIRED_FILES|{'hachiapp.json','pc/application.json','pc/cover.png','assets/.keep'}|set(media_files(runtime))|{i.get('asset') for i in runtime.get('surface',{}).get('images',[]) if isinstance(i,dict)}:errors.append('PC 应用包含额外文件')
+    elif python_file.exists():
+        errors.append("pc/plugin.py 需要唯一的 Python 数据源声明")
     pc_file=widget_dir / "pc" / "extension.json"
     source=runtime.get("media",{}).get("source","") if isinstance(runtime,dict) else ""
     if pc_file.exists() or source.startswith("pc."):
@@ -2132,7 +2200,7 @@ def validate_widget(
         declared=isinstance(extension,dict) and isinstance(extension.get("search"),dict) and extension["search"].get("catalog")=="pc/catalog.json"
         if declared: errors.extend(catalog_errors(catalog_file.read_bytes() if catalog_file.is_file() else None))
         elif catalog_file.exists(): errors.append("pc/catalog.json 必须由 pc/extension.json 的 search.catalog 声明")
-        for f in widget_dir.rglob("*"):
+        for f in entries:
             relative = f.relative_to(widget_dir).as_posix()
             legal_notice = relative in {"LICENSE.txt", "THIRD_PARTY_NOTICES.txt"} or bool(re.fullmatch(r"licenses/[A-Za-z0-9_.-]+\.(?:txt|md)", relative))
             if f.is_file() and not legal_notice and relative not in REQUIRED_FILES | {"hachiapp.json", "pc/extension.json", "pc/catalog.json", "pc/cover.png", "assets/.keep"} | set(media_files(runtime)) | {im.get("asset") for im in runtime.get("surface",{}).get("images",[]) if isinstance(im,dict)}:
@@ -2157,6 +2225,8 @@ def validate_widget(
         )
     transition_actions = validate_runtime(runtime, kind, widget_dir, capabilities, errors,
                                           wasm_canvas=wasm_canvas, optional_visuals=community_publication)
+    if isinstance(runtime, dict) and "accessory" in runtime and buttons != []:
+        errors.append("蓝牙配件面板须使用空按键声明")
     validate_buttons(buttons, transition_actions, capabilities, runtime, errors, wasm_actions=wasm_actions)
     if isinstance(runtime, dict) and isinstance(buttons, list):
         from app_form import errors as form_errors

@@ -9,6 +9,12 @@
  * Empty id in tick revokes the previous host view (including non-host navigation).
  * Reply ownership is reset on reentry/replacement; hiding never retransmits an action.
  * A trusted device HOST_VIEW lease gates this lifetime; no package-supplied token. */
+#if PET_P4_SYSTEM_WIFI
+bool pet_app_host_lan_needed(void);
+bool pet_app_host_lan_owns(uint32_t token);
+void pet_app_host_lan_route(uint32_t token, const char *board);
+bool pet_app_host_lan_current(uint32_t token, const cJSON *event);
+#endif
 void pet_app_host_transport(pet_p4_send_line_fn send,void *ctx,const char *board);
 void pet_app_host_tick(const char *id,uint32_t revision,uint8_t page,bool visible,uint64_t now);
 bool pet_app_host_action(const char *id,uint32_t revision,uint8_t page,const char *action,uint64_t now);

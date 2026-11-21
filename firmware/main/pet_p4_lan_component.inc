@@ -10,7 +10,7 @@ typedef struct {
   cJSON *manifest;
   const uint8_t *record;
   size_t size;
-  uint32_t sequence;
+  uint32_t sequence, generation;
 } bundle_job_t;
 
 enum component_phase { COMPONENT_EMPTY, COMPONENT_QUEUED, COMPONENT_RUNNING, COMPONENT_DONE };
@@ -32,7 +32,7 @@ static struct {
   cJSON **keyboard_reply;
   uint32_t paired_generation;
   char *appearance_reply;
-  const uint8_t *widget_data_board;
+  const uint8_t *target_prefix;
 } delivery;
 
 static uint32_t next_component_token;
@@ -126,7 +126,9 @@ static bool bundle_begin(bundle_job_t *job, char *error, size_t error_size) {
   if (memchr(p + 39, 0, job->size - 39)) return false;
   memcpy(id, p + 39, p[1]);
   id[p[1]] = 0;
-  if (replace) {
+  if (p[0]==6) {
+    if (p[2]!=2 || bundle_u32(p+3)!=32+PET_CENTER_THUMB_BYTES || !pet_p4_miniapp_lan_install_idle()) return false;
+  } else if (replace) {
     if (!pet_p4_miniapp_lan_install_idle() || pet_p4_miniapp_catalog_recovery_blocked()) return false;
     bool matched = false;
     const size_t count = pet_p4_miniapp_catalog_count();
@@ -146,6 +148,7 @@ static bool bundle_begin(bundle_job_t *job, char *error, size_t error_size) {
   cJSON *manifest = cJSON_CreateObject();
   if (manifest && cJSON_AddStringToObject(manifest, "transferId", transfer) &&
       cJSON_AddStringToObject(manifest, "widgetId", id) &&
+      (p[0]!=6 || cJSON_AddTrueToObject(manifest,"thumbOnly")) &&
       cJSON_AddStringToObject(manifest, "transferProtocol", PET_P4_WIDGET_TRANSFER_PROTOCOL) &&
       cJSON_AddStringToObject(manifest, "packageSha256", digest) &&
       cJSON_AddNumberToObject(manifest, "fileCount", p[2]) &&
@@ -158,6 +161,27 @@ static bool bundle_begin(bundle_job_t *job, char *error, size_t error_size) {
   return false;
 }
 
+#ifdef ESP_PLATFORM
+static void lan_font_unlock(void) { xSemaphoreGive(lock); }
+
+static bool lan_font_current(uint32_t paired_generation) {
+  return paired_generation == generation && volume_available() && !atomic_load(&usb_client_active) &&
+    component_socket_live(NULL) && !pet_p4_ota_active() && !pet_p4_audio_conversation_active();
+}
+static bool lan_font_resume(void *owner, uint32_t paired_generation) {
+  (void)owner;
+  xSemaphoreTake(lock, portMAX_DELAY);
+  return lan_font_current(paired_generation);
+}
+static pet_font_route_t lan_font_route(uint32_t paired_generation) {
+  return (pet_font_route_t){.generation = paired_generation, .unlock = lan_font_unlock,
+                            .resume = lan_font_resume};
+}
+static pet_font_route_t lan_panel_font_route(void) {
+  return lan_font_route(delivery.paired_generation);
+}
+#endif
+
 static bool bundle_step(bundle_job_t *job, bool admitted) {
   if (!job->record) {
     if (job->manifest) pet_p4_miniapp_lan_abort(job->manifest);
@@ -166,7 +190,18 @@ static bool bundle_step(bundle_job_t *job, bool admitted) {
   if (!admitted || !component_socket_live(NULL)) return false;
   char error[160] = {0};
   const uint8_t *p = job->record;
-  if (p[0] == 1 || p[0] == 4) return bundle_begin(job, error, sizeof(error));
+#ifdef ESP_PLATFORM
+  /* Fixed font bytes use the existing mutually authenticated record channel.
+   * The panel transaction supplies ownership and the final digest check. */
+  if (p[0] == 5 && !job->manifest && job->size > 37) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const bool ok = lan_font_current(job->generation)
+      && pet_p4_font_write((const char *)p+1, lan_font_route(job->generation), bundle_u32(p+33), p+37, job->size-37);
+    xSemaphoreGive(lock);
+    return ok;
+  }
+#endif
+  if (p[0] == 1 || p[0] == 4 || p[0] == 6) return bundle_begin(job, error, sizeof(error));
   if (!job->manifest) return false;
   if (p[0] == 3 && job->size == 1)
     return pet_p4_miniapp_lan_commit(job->manifest, component_publish, NULL, error, sizeof(error));
@@ -219,7 +254,7 @@ void pet_p4_lan_control_run(pet_p4_runtime_state_t *state, uint32_t token, bool 
   } else if (delivery.operation == PET_LAN_CONTROL_PANEL) {
     /* Linearize each bitmap phase with pairing revocation. The state lane
      * already excludes concurrent USB protocol application. */
-    const bool pixels = delivery.action == PET_LAN_PANEL_TEXT_PIXELS;
+    const bool pixels = delivery.action == PET_LAN_PANEL_TEXT_PIXELS || delivery.action == PET_LAN_PANEL_BUBBLE_FONT;
     if (pixels) xSemaphoreTake(lock, portMAX_DELAY);
     if ((!pixels || (delivery.paired_generation == generation && volume_available()
           && !pet_p4_state_usb_client_connected(state, clock_ms())))
@@ -228,12 +263,25 @@ void pet_p4_lan_control_run(pet_p4_runtime_state_t *state, uint32_t token, bool 
       installed = *delivery.keyboard_reply != NULL;
     }
     if (pixels) xSemaphoreGive(lock);
+  } else if (delivery.operation == PET_LAN_CONTROL_APP_HOST) {
+    xSemaphoreTake(lock, portMAX_DELAY);
+    const uint64_t now = clock_ms();
+    if (admitted && delivery.paired_generation == generation && volume_available() &&
+        !pet_p4_state_usb_client_connected(state, now) && !atomic_load(&usb_client_active) &&
+        component_socket_live(NULL)) {
+      uint8_t *reply = (uint8_t *)delivery.appearance_reply;
+      installed = app_exchange(delivery.target_prefix, delivery.keyboard_request, reply,
+                               state->board_device_id, now);
+      if (installed && !reply[0]) reply[0] = 1;
+      if (installed && delivery.action >= APP_SNAPSHOT) state->last_update_ms++;
+    }
+    xSemaphoreGive(lock);
   } else if (delivery.operation == PET_LAN_CONTROL_WIDGET_DATA) {
     const uint64_t now = clock_ms();
     if (admitted && !atomic_load(&usb_client_active) &&
         !pet_p4_state_usb_client_connected(state, now) &&
         strlen(state->board_device_id) == LAN_WIDGET_BOARD_BYTES &&
-        !memcmp(delivery.widget_data_board, state->board_device_id, LAN_WIDGET_BOARD_BYTES) &&
+        !memcmp(delivery.target_prefix + 16, state->board_device_id, LAN_WIDGET_BOARD_BYTES) &&
         component_socket_live(NULL) && pet_p4_widget_data_apply_lan(delivery.keyboard_request, now)) {
       state->last_update_ms += 1;
       installed = true;
@@ -347,7 +395,7 @@ static uint8_t queue_delivery(bool cleanup) {
       }
     }
     xSemaphoreGive(lock);
-    vTaskDelay(delivery.bundle || delivery.operation == PET_LAN_CONTROL_APPEARANCE ? 1 : pdMS_TO_TICKS(50));
+    vTaskDelay(delivery.bundle || delivery.operation == PET_LAN_CONTROL_APP_HOST || delivery.operation == PET_LAN_CONTROL_APPEARANCE ? 1 : pdMS_TO_TICKS(50));
   }
 }
 
@@ -375,9 +423,11 @@ static uint8_t control_deliver(int fd, unsigned operation, uint8_t *body, size_t
   delivery.bundle = NULL;
   delivery.keyboard_request = keyboard_request;
   delivery.keyboard_reply = keyboard_reply;
-  if (operation == PET_LAN_CONTROL_WIDGET_DATA) delivery.widget_data_board = body + 16;
+  if (operation == PET_LAN_CONTROL_APP_HOST) delivery.action = body[LAN_APP_PREFIX-1];
+  if (operation == PET_LAN_CONTROL_WIDGET_DATA || operation == PET_LAN_CONTROL_APP_HOST)
+    delivery.target_prefix = body;
   delivery.until = esp_timer_get_time() +
-    (operation == PET_LAN_CONTROL_WIDGET_DATA ? LAN_WIDGET_DATA_WORK_US :
+    ((operation == PET_LAN_CONTROL_WIDGET_DATA || operation == PET_LAN_CONTROL_APP_HOST) ? LAN_WIDGET_DATA_WORK_US :
      (operation == PET_LAN_CONTROL_COMPONENT || operation == PET_LAN_CONTROL_APPEARANCE)
       ? LAN_COMPONENT_WORK_US : LAN_REBOOT_WORK_US);
   return queue_delivery(false);

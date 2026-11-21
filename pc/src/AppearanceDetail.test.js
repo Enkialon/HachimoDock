@@ -31,7 +31,7 @@ test("appearance detail stays focused on preview, deletion, and gallery navigati
   const source = readSource("AppearanceDetail.jsx");
   const css = readSource("styles.css");
 
-  assert.match(source, /返回宠物图册/);
+  assert.match(source, /返回形象画廊/);
   assert.match(source, /删除形象/);
   assert.doesNotMatch(source, /应用到设备/);
   assert.doesNotMatch(source, /detail-apply-/);
@@ -133,7 +133,7 @@ test("appearance detail uses a preview-first workspace with a unified inspector 
 
 test("global audio downlink is separate from video transfer and has persistent reminders", () => {
  const source=readSource("GlobalAudioCuesPanel.jsx");
- assert.match(source,/globalAudioDirty/);assert.match(source,/markGlobalAudioDirty\(false,revision\)/);
+ assert.match(source,/globalAudioDirty/);assert.match(source,/confirmGlobalAudio\(target\.id,sentRevision\)/);
  assert.match(source,/audioOnly:true/);assert.match(source,/下发音效/);
  assert.doesNotMatch(source,/prepare_p4_appearance|replaceFamilyVideo/);
 });

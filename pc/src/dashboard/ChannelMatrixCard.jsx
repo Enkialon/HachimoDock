@@ -5,11 +5,12 @@
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md`.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import React, { useCallback, useMemo, useState } from "react";
 import {
   CheckCircle,
-  ChevronDown,
+  Pause,
+  Play,
+  Repeat2,
   Braces,
   Code,
   Loader,
@@ -31,6 +32,9 @@ import {
 import AppearancePreview from "../AppearancePreview.jsx";
 import { resolveDashboardPreviewMedia } from "../lib/appearance-preview.js";
 import { useDeviceContext } from "../shell/DeviceContext.jsx";
+import { useDialogFocus } from "../component-center/use-dialog-focus.js";
+import Card from "../shell/Card.jsx";
+import { appearanceStateLabel } from "../lib/appearance-state-label.js";
 import Button from "../shell/Button.jsx";
 import { useToast } from "../shell/ToastStack.jsx";
 import DevinConfigurationButton from "./DevinConfigurationButton.jsx";
@@ -44,16 +48,6 @@ const AGENT_ICONS = {
   devin: Code,
   "deepseek-harness": Braces,
 };
-
-export const DSH_APPROVAL_NEVER_TIMEOUT_MS = 99999;
-const DSH_APPROVAL_TIMEOUT_OPTIONS = [
-  { value: 10000, label: "10 秒" },
-  { value: 30000, label: "30 秒" },
-  { value: 60000, label: "1 分钟" },
-  { value: 300000, label: "5 分钟" },
-  { value: 600000, label: "10 分钟" },
-  { value: DSH_APPROVAL_NEVER_TIMEOUT_MS, label: "永不超时" },
-];
 
 function appearanceKindLabel(appearance) {
   if (appearance?.type === "codex-import") return "Codex pet";
@@ -84,7 +78,7 @@ function normalizeSyncProgress(progress = {}) {
   };
 }
 
-export default function ChannelMatrixCard() {
+export default function ChannelMatrixCard({ children, subtitle, actions }) {
   const {
     appearances,
     agentAppearanceMap,
@@ -103,9 +97,6 @@ export default function ChannelMatrixCard() {
 
   const [pickerState, setPickerState] = useState(null); // { agentId }
   const [pendingFollow, setPendingFollow] = useState(null); // { agentId, appearance }
-  const [dshApprovalTimeoutMs, setDshApprovalTimeoutMs] = useState(30000);
-  const [dshApprovalTimeoutSaving, setDshApprovalTimeoutSaving] = useState(false);
-  const [dshApprovalTimeoutOpen, setDshApprovalTimeoutOpen] = useState(false);
   const syncing = appearanceSync?.pending === true;
   const syncProgress = appearanceSync?.progress
     ? normalizeSyncProgress(appearanceSync.progress)
@@ -122,55 +113,6 @@ export default function ChannelMatrixCard() {
     },
     [agentAppearanceMap, appearances],
   );
-
-  useEffect(() => {
-    let disposed = false;
-    invoke("load_dsh_approval_timeout")
-      .then((value) => {
-        if (!disposed && Number.isFinite(Number(value))) setDshApprovalTimeoutMs(Number(value));
-      })
-      .catch((error) => {
-        console.warn("[ChannelMatrixCard] load DSH approval timeout failed", error);
-      });
-    return () => { disposed = true; };
-  }, []);
-
-  useEffect(() => {
-    if (!dshApprovalTimeoutOpen) return undefined;
-    const close = (event) => {
-      if (!event.target.closest?.('.channel-row__approval-timeout-control')) {
-        setDshApprovalTimeoutOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [dshApprovalTimeoutOpen]);
-
-  const updateDshApprovalTimeout = useCallback(async (nextValue) => {
-    const timeoutMs = Number(nextValue);
-    const previous = dshApprovalTimeoutMs;
-    setDshApprovalTimeoutOpen(false);
-    setDshApprovalTimeoutMs(timeoutMs);
-    setDshApprovalTimeoutSaving(true);
-    try {
-      await invoke("save_dsh_approval_timeout", { timeoutMs });
-      const timeoutLabel = timeoutMs === DSH_APPROVAL_NEVER_TIMEOUT_MS
-        ? "永不超时"
-        : DSH_APPROVAL_TIMEOUT_OPTIONS.find((item) => item.value === timeoutMs)?.label
-          || "已保存";
-      push({
-        tone: "success",
-        title: timeoutMs === DSH_APPROVAL_NEVER_TIMEOUT_MS
-          ? "DSH 审批将永不超时"
-          : `DSH 审批超时已设为 ${timeoutLabel}`,
-      });
-    } catch (error) {
-      setDshApprovalTimeoutMs(previous);
-      push({ tone: "error", title: "保存 DSH 审批超时失败", message: error?.message || String(error) });
-    } finally {
-      setDshApprovalTimeoutSaving(false);
-    }
-  }, [dshApprovalTimeoutMs, push]);
 
   const closePicker = useCallback(() => setPickerState(null), []);
 
@@ -271,8 +213,43 @@ export default function ChannelMatrixCard() {
     }
   }, [cancelAppearanceSync, push]);
 
-  return (
-    <div className="channel-matrix">
+  const appearance = currentDisplay.appearance;
+  const media = resolveDashboardPreviewMedia(appearance);
+  const activeAgent = visibleAgents.find(agent => agent.id === activeAgentId);
+  let pickerHint = "";
+  if (syncing) pickerHint = "当前同步完成后可更换形象。";
+  else if (!activeAgentId) pickerHint = "先在下方选择要跟随的 Agent。";
+  else if (!activeAgent?.detected) pickerHint = "未检测到当前 Agent，请打开客户端后重新扫描。";
+  else if (!canFollow) pickerHint = "设备连接 USB 或 Wi-Fi 后可更换形象。";
+  const [playing, setPlaying] = useState(() => !window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  return (<>
+    {children}
+    {appearance && <section className="companion-hero" aria-label="当前跟随的桌宠">
+      <div>
+        <span className="kicker">{currentDisplay.appearanceUnverified ? "已配置形象 · 待设备确认" : "当前形象"}</span>
+        <h2>{appearance.name}</h2>
+        {activeAgentId && <div className="meta">正在跟随<strong>{currentDisplay.channelLabel}</strong></div>}
+        <button type="button" className="action" onClick={() => openPicker(activeAgentId)}
+          disabled={Boolean(pickerHint)} aria-describedby={pickerHint ? "appearance-picker-hint" : undefined}>
+          <Repeat2 size={15} /> 更换形象
+        </button>
+        {pickerHint && <p id="appearance-picker-hint" className="muted small">{pickerHint}</p>}
+      </div>
+      <figure className="screen">
+        <div className="film">
+          <AppearancePreview key={appearance.id} media={media} playing={playing} className="companion-media" />
+          {media.kind === "video" && <button type="button" aria-label={playing ? "暂停预览" : "播放预览"}
+            onClick={() => setPlaying(value => !value)}>
+            {playing ? <Pause size={14} /> : <Play size={14} />}
+          </button>}
+        </div>
+        <figcaption><span>{media.kind === "video" ? "动作预览" : "形象预览"}</span>
+          {media.kind === "video" && <span>{appearanceStateLabel(media.label)}</span>}</figcaption>
+      </figure>
+    </section>}
+    <Card subtitle={subtitle} actions={actions}>
+    <div className="channel-matrix" role="region" aria-label="选择跟随的 Agent">
       {syncProgress && (
         <div className="channel-matrix-sync" aria-live="polite">
           <div className="channel-matrix-sync__copy">
@@ -316,7 +293,6 @@ export default function ChannelMatrixCard() {
         <div className="channel-matrix__rows">
           {visibleAgents.map((agent) => {
             const Icon = AGENT_ICONS[agent.id] || Code;
-            const appearance = appearanceForAgent(agent.id);
             const isFollowed = activeAgentId === agent.id;
             const isDetected = agent.detected === true;
             return (
@@ -335,70 +311,11 @@ export default function ChannelMatrixCard() {
                   </div>
                 </div>
 
-                <div className="channel-row__formosa">
-                  <div className="channel-row__thumb-wrap">
-                    <AppearancePreview
-                      media={resolveDashboardPreviewMedia(appearance)}
-                      className="channel-row__thumb"
-                      emptyClassName="channel-row__thumb channel-row__thumb--empty"
-                      playing={false}
-                    />
+                {agent.id === "devin" && (
+                  <div className="channel-row__settings">
+                    <DevinConfigurationButton disabled={!isDetected} />
                   </div>
-                  <div className="channel-row__formosa-meta">
-                    <div className="channel-row__formosa-title">
-                      <strong>{appearance?.name || "西高地小狗"}</strong>
-                      <button
-                        type="button"
-                        className="btn-secondary btn-sm channel-row__change-inline"
-                        onClick={() => openPicker(agent.id)}
-                        disabled={syncing || !isDetected}
-                        title={!isDetected ? "安装对应客户端或 CLI 后重新扫描" : ""}
-                      >
-                        <ChevronDown size={14} /> 更换形象
-                      </button>
-                      {agent.id === "devin" && <DevinConfigurationButton disabled={!isDetected} />}
-                      {agent.id === "deepseek-harness" && (
-                        <label className="channel-row__approval-timeout">
-                          <span>超时时间</span>
-                          <span className="channel-row__approval-timeout-control">
-                            <button
-                              type="button"
-                              className="btn-secondary btn-sm channel-row__approval-timeout-trigger"
-                              onClick={() => setDshApprovalTimeoutOpen((open) => !open)}
-                              disabled={dshApprovalTimeoutSaving || syncing}
-                              aria-haspopup="listbox"
-                              aria-expanded={dshApprovalTimeoutOpen}
-                              aria-label="DeepSeek Harness 审批超时时间"
-                            >
-                              <ChevronDown size={14} aria-hidden="true" />
-                              {dshApprovalTimeoutMs === DSH_APPROVAL_NEVER_TIMEOUT_MS
-                                ? "永不超时"
-                                : DSH_APPROVAL_TIMEOUT_OPTIONS.find((option) => option.value === dshApprovalTimeoutMs)?.label
-                                  || "30 秒"}
-                            </button>
-                            {dshApprovalTimeoutOpen && (
-                              <div className="channel-row__approval-timeout-menu" role="listbox" aria-label="选择审批超时时间">
-                                {DSH_APPROVAL_TIMEOUT_OPTIONS.map((option) => (
-                                  <button
-                                    type="button"
-                                    key={option.value}
-                                    role="option"
-                                    aria-selected={option.value === dshApprovalTimeoutMs}
-                                    className={`channel-row__approval-timeout-option${option.value === dshApprovalTimeoutMs ? " is-selected" : ""}`}
-                                    onClick={() => updateDshApprovalTimeout(option.value)}
-                                  >
-                                    {option.label}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                          </span>
-                        </label>
-                      )}
-                    </div>
-                    <span>{isFollowed && currentDisplay.appearanceUnverified ? "设备形象待确认" : appearanceKindLabel(appearance)}</span>
-                  </div>
-                </div>
+                )}
 
                 <div className="channel-row__follow">
                   {isFollowed ? (
@@ -454,7 +371,8 @@ export default function ChannelMatrixCard() {
         />
       )}
     </div>
-  );
+    </Card>
+  </>);
 }
 
 function AgentAppearancePickerModal({
@@ -470,9 +388,11 @@ function AgentAppearancePickerModal({
   const selected = appearanceById(appearances, selectedId);
   const canConfirm = Boolean(selected) && !syncing;
 
+  const dialogRef = useDialogFocus(onClose, syncing);
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card modal-card--formosa-picker" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-backdrop" onClick={syncing ? undefined : onClose}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="更换形象" tabIndex={-1}
+        className="modal-card modal-card--formosa-picker" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3 className="modal-title">更换形象</h3>
@@ -543,9 +463,11 @@ function FollowAgentConfirmModal({
   onCancel,
   onConfirm,
 }) {
+  const dialogRef = useDialogFocus(onCancel, syncing);
   return (
-    <div className="modal-backdrop" onClick={onCancel}>
-      <div className="modal-card channel-switch-confirm-modal" onClick={(event) => event.stopPropagation()}>
+    <div className="modal-backdrop" onClick={syncing ? undefined : onCancel}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="切换跟随 Agent" tabIndex={-1}
+        className="modal-card channel-switch-confirm-modal" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
           <div>
             <h3 className="modal-title">切换跟随 Agent</h3>

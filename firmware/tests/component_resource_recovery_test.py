@@ -230,8 +230,13 @@ def test_boot_yield_boundary_is_normal_task_code_after_both_snapshot_loads():
     assert prefix.count('load_catalog_snapshot(1, snapshot1)') == 1
     assert init.index('validate_catalog_snapshot(selected, NULL') < init.index(
         'validate_catalog_snapshot(backup, selected') < init.index('recover_catalog_items(selected, backup)')
-    retire = 'miniapp_runtime_lock();component_program_retire_locked();miniapp_runtime_unlock();'
-    assert retire in prefix
-    prefix = prefix.replace(retire, '')
-    for forbidden in ('miniapp_runtime_lock();', 'xSemaphoreTake(', 'portENTER_CRITICAL(', 'storage_lane_enter('):
-        assert forbidden not in prefix and forbidden not in validate
+    startup = init[:init.index('recover_catalog_items(selected, backup)')]
+    take, give = 'miniapp_runtime_lock();', 'miniapp_runtime_unlock();'
+    assert startup.count(take) == startup.count(give) == 1
+    assert (startup.index(take) < startup.index('component_program_retire_locked();')
+            < startup.index('memset(&g_runtime, 0, sizeof(g_runtime));') < startup.index(give)
+            < startup.index('load_catalog_snapshot(0, snapshot0)')
+            < startup.index('load_catalog_snapshot(1, snapshot1)'))
+    assert take not in validate and give not in validate
+    for forbidden in ('xSemaphoreTake(', 'portENTER_CRITICAL(', 'storage_lane_enter('):
+        assert forbidden not in startup and forbidden not in validate

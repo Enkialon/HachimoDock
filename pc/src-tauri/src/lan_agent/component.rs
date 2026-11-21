@@ -23,6 +23,7 @@ const FILES: [(&str, usize); 2] = [("buttons.json", 2047), ("runtime/widget.json
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ComponentPreview {
     id: String,
+    version: String,
     digest: String,
 }
 
@@ -31,6 +32,7 @@ struct Package {
     stage: tempfile::TempDir,
     version_hash: String,
     name: String,
+    source: std::path::PathBuf,
 }
 
 impl Package {
@@ -76,10 +78,11 @@ impl Package {
         let version_hash = crate::component_library::package_content_hash(&package)?;
         let digest = archive_digest.unwrap_or_else(|| version_hash.clone());
         Ok(Self {
-            preview: ComponentPreview { id, digest },
+            preview: ComponentPreview { id, digest, version: manifest.version },
             stage,
             version_hash,
             name: manifest.name,
+            source: path.to_owned(),
         })
     }
 
@@ -87,6 +90,7 @@ impl Package {
         &self,
         binding_overrides: &HashMap<String, String>,
         center_title: Option<&ComponentCenterTitle>,
+        include_thumb: bool,
     ) -> Result<Vec<(String, Vec<u8>)>, String> {
         // USB and Wi-Fi use the same native package compiler.
         let package = self.stage.path().join("package");
@@ -95,8 +99,9 @@ impl Package {
             &package,
             binding_overrides,
             center_title,
-            center_title.map(|_| serde_json::json!({"widgetCenterTitle": "rle4-v1"})).as_ref(),
+            None, // LAN negotiates its own capabilities before sending.
         )?;
+        if include_thumb { crate::usb_serial::center_thumb::append_source(&package,&self.source,&self.preview.id,&mut files)?; }
         files.retain(|(_, bytes)| !bytes.is_empty());
         files.sort_unstable_by(|a, b| a.0.cmp(&b.0));
         if files.iter().any(|(path, _)| !valid_wire_path(path)) {
@@ -124,6 +129,7 @@ fn valid_wire_path(path: &str) -> bool {
                 | "runtime/widget.json"
                 | "runtime/app.wasm"
                 | "runtime/center-title.rle"
+                | crate::usb_serial::center_thumb::PATH
                 | crate::wasm_audio::DEVICE_PATH
         )
         || [
@@ -178,7 +184,11 @@ fn legacy_body(id: &str, boot: &str, files: &[(String, Vec<u8>)]) -> Result<Vec<
 
 fn offer(id: &str, files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, String> {
     let (digest, size) = crate::usb_serial::widget_package_digest(files)?;
-    let mut bytes = vec![1, id.len() as u8, files.len() as u8];
+    let repair = files.first().is_some_and(|(p,_)|p==crate::usb_serial::center_thumb::MATCH);
+    if repair && (files.len()!=2 || files[0].1.len()!=32 || files[1].0!=crate::usb_serial::center_thumb::PATH || files[1].1.len()!=1568) {
+        return Err("无线补封面清单无效".into());
+    }
+    let mut bytes = vec![if repair {6} else {1}, id.len() as u8, files.len() as u8];
     bytes.extend_from_slice(&(size as u32).to_be_bytes());
     for pair in digest.as_bytes().chunks_exact(2) {
         let hex = std::str::from_utf8(pair).map_err(|e| e.to_string())?;
@@ -265,6 +275,64 @@ impl Link {
     }
 }
 
+// Bound each burst so status, input and other users of the board's single
+// LAN listener have opportunities between bursts. Each record has its own ACK.
+pub(super) fn send_font(peer: &Peer, boot: &str, transfer: &str, bytes: &[u8],
+                        require_pairing: impl Fn() -> Result<(), String>,
+                        require_lan: impl Fn() -> Result<(), String>) -> Result<(), String> {
+    let mut offset = 0usize;
+    for burst in bytes.chunks(32 * CHUNK) {
+        require_pairing()?;
+        let (stream, key, ack) = exchange_connection(peer, MODE, boot.as_bytes(), Some(1), IO_TIMEOUT)
+            .map_err(|_| "无线字库传输连接中断")?;
+        if ack != [1] { return Err("无线字库传输未获设备确认".into()); }
+        let mut link = Link { stream, key, sequence: 0 };
+        for chunk in burst.chunks(CHUNK) {
+            require_lan()?;
+            let mut record = Vec::with_capacity(37 + chunk.len());
+            record.push(5);
+            record.extend_from_slice(transfer.as_bytes());
+            record.extend_from_slice(&(offset as u32).to_be_bytes());
+            record.extend_from_slice(chunk);
+            link.request(record, false)?;
+            offset += chunk.len();
+        }
+    }
+    Ok(())
+}
+
+// Pin the authenticated peer once. Every wire record rechecks the local route
+// and the generation advanced by save, DHCP recovery and forget.
+struct ComponentPairing(u64);
+
+impl ComponentPairing {
+    fn bind(peer: &Peer, saved: Option<&Peer>, revision: u64) -> Result<Self, String> {
+        if saved.is_some_and(|saved| super::widget_data::same_peer(peer, saved)) {
+            Ok(Self(revision))
+        } else {
+            Err("无线组件传输的配对已变化。".into())
+        }
+    }
+
+    fn current(&self, revision: u64) -> Result<(), String> {
+        if self.0 != revision { return Err("无线组件传输的配对已变化。".into()); }
+        Ok(())
+    }
+
+    fn for_peer(peer: &Peer) -> Result<Self, String> {
+        let revision = super::component_events::pairing_revision();
+        Self::bind(peer, super::read_peer()?.as_ref(), revision)
+    }
+}
+
+fn require_thumbnail_target(status: &super::LanDeviceStatus, board: &str, boot: &str) -> Result<(), String> {
+    if status.board_device_id != board || status.boot_id != boot || !status.control_trusted
+        || !status.wifi_connected || !status.component_bundle || !status.center_thumb {
+        return Err("无线目标已变化或固件不支持仅补封面".into());
+    }
+    Ok(())
+}
+
 fn install_bundle(
     peer: &Peer,
     boot: &str,
@@ -318,6 +386,35 @@ fn install_bundle(
 }
 
 #[tauri::command]
+pub(crate) async fn repair_component_thumbnail(
+    path: String,id: String,expected_version_hash: Option<String>,expected_board_device_id: String,
+    expected_boot_id: Option<String>,usb_manager: tauri::State<'_,UsbSerialManager>,
+) -> Result<(),String> {
+    let usb=usb_manager.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let package=Package::read(Path::new(&path))?;
+        if package.preview.id!=id || expected_version_hash.as_ref().is_some_and(|v|v!=&package.version_hash) {
+            return Err("本地组件已变化，请重新打开详情".into());
+        }
+        let files=crate::usb_serial::center_thumb::repair_files(&package.stage.path().join("package"),&package.source,&id)?;
+        match expected_boot_id {
+            None => usb.repair_center_thumb(&expected_board_device_id,&id,&files),
+            Some(boot) => {
+                let require_lan=||super::require_no_usb(&usb);
+                require_lan()?;
+                let (peer,status)=read_with_recovery(query_status,"设备不可达，封面未发送")?;
+                require_thumbnail_target(&status, &expected_board_device_id, &boot)?;
+                let pairing = ComponentPairing::for_peer(&peer)?;
+                install_bundle(&peer, &boot, &id, &files, None, || {
+                    require_lan()?;
+                    pairing.current(super::component_events::pairing_revision())
+                })
+            }
+        }
+    }).await.map_err(|_|"封面传输结果待核对".to_string())?
+}
+
+#[tauri::command]
 pub(crate) async fn lan_component_preview(path: String) -> Result<ComponentPreview, String> {
     tauri::async_runtime::spawn_blocking(move || Package::read(Path::new(&path)).map(|p| p.preview))
         .await
@@ -348,11 +445,16 @@ pub(crate) async fn lan_component_install(
             return Err("组件内容在预览后变化，请重新选择文件。".into());
         }
         let (peer, status) = read_with_recovery(query_status, "设备当前不可达，安装请求未发送。")?;
+        let pairing = ComponentPairing::for_peer(&peer)?;
+        let require_lan = || {
+            super::require_no_usb(&usb)?;
+            pairing.current(super::component_events::pairing_revision())
+        };
         if status.board_device_id != expected_board_device_id || status.boot_id != expected_boot_id {
             return Err("设备身份已变化，请重新确认组件同步目标。".into());
         }
         let center_title = center_title.as_ref().filter(|_| status.panel_control && status.component_bundle);
-        let files = package.prepare(&binding_overrides.unwrap_or_default(), center_title)?;
+        let files = package.prepare(&binding_overrides.unwrap_or_default(), center_title,status.component_bundle && status.center_thumb)?;
         if !status.input_double_press {
             if let Some((_, bytes)) = files.iter().find(|(path, _)| path == "buttons.json") {
                 let buttons: Vec<serde_json::Value> = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
@@ -399,6 +501,10 @@ pub(crate) async fn lan_component_install(
 }
 
 #[cfg(test)]
+#[path = "component_thumbnail_wire_tests.rs"]
+mod thumbnail_wire_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -417,7 +523,7 @@ mod tests {
             .expect("set HACHIMO_LAN_HIL_PACKAGE to the exact .hachiapp file to install");
         let package = Package::read(Path::new(&path)).expect("validate the selected archive");
         let files = package
-            .prepare(&HashMap::new(), None)
+            .prepare(&HashMap::new(), None, false)
             .expect("prepare device payload via USB's package compiler");
         let (peer, status) =
             read_with_recovery(query_status, "authenticate live status over Wi-Fi")
@@ -472,6 +578,25 @@ mod tests {
         assert!(!valid_wire_path("runtime/component.json"));
         assert!(!valid_wire_path("project.json"));
         assert!(!valid_id("demo/other", 47));
+    }
+
+    #[test]
+    fn center_thumb_wire_for_real_package_and_old_install_is_bounded() {
+        use crate::usb_serial::center_thumb;
+        let root=Path::new(env!("CARGO_MANIFEST_DIR")).join("../builtin-clawpkgs/block-combo");
+        let pkg=Package::read(&root).unwrap();
+        let normal=pkg.prepare(&HashMap::new(),None,true).unwrap();
+        let old=pkg.prepare(&HashMap::new(),None,false).unwrap();
+        assert!(!old.iter().any(|(p,_)|p==center_thumb::PATH));
+        assert!(valid_wire_path(center_thumb::PATH));
+        let backfill=center_thumb::repair_files(&pkg.stage.path().join("package"),&pkg.source,&pkg.preview.id).unwrap();
+        assert_eq!(normal.iter().find(|(p,_)|p==center_thumb::PATH).unwrap(),&backfill[1]);
+        assert_eq!(offer(&pkg.preview.id,&normal).unwrap()[0],1);
+        let begin=offer(&pkg.preview.id,&backfill).unwrap();
+        assert_eq!(begin[0],6);
+        assert_eq!(begin[2],2);
+        assert_eq!(&begin[3..7],&1600u32.to_be_bytes());
+        assert!(offer(&pkg.preview.id,&backfill[..1]).is_err());
     }
 
     #[test]

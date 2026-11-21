@@ -183,7 +183,11 @@ fn valid_hash(value: &str) -> bool {
 const WASM_MODULE: &str = "runtime/app.wasm";
 
 fn file_limit(name: &str) -> u64 {
-    if name == crate::wasm_audio::ASSET {
+    if name == crate::clawpkg::HACHI_COVER_PATH {
+        crate::clawpkg::HACHI_COVER_MAX
+    } else if name == crate::component_python::PATH {
+        crate::component_python::MAX_SOURCE as u64
+    } else if name == crate::wasm_audio::ASSET {
         crate::wasm_audio::MAX_BYTES as u64
     } else if name == WASM_MODULE {
         crate::clawpkg::HACHI_MAX_MODULE_BYTES as u64
@@ -203,9 +207,11 @@ fn allowed_file(name: &str) -> bool {
         WASM_MODULE,
         crate::wasm_audio::ASSET,
         "hachiapp.json",
+        crate::clawpkg::HACHI_COVER_PATH,
         "share.json",
         "pc/extension.json",
         "pc/application.json",
+        crate::component_python::PATH,
         "assets/.keep",
         "LICENSE.txt",
         "THIRD_PARTY_NOTICES.txt",
@@ -236,7 +242,12 @@ fn validate_public_application(files: &BTreeMap<String, Vec<u8>>) -> Result<(), 
     let runtime = files.get("runtime/widget.json")
         .and_then(|bytes| serde_json::from_slice(bytes).ok())
         .ok_or("PC 应用缺少有效的运行时声明")?;
-    crate::app_services::parse(application, &runtime).map(|_| ())
+    let declaration = crate::app_services::parse(application, &runtime)?;
+    match (crate::component_composition::python_spec(&declaration), files.get(crate::component_python::PATH)) {
+        (Some(_), Some(data)) => crate::component_python::validate_source(data).map(|_| ()),
+        (None, None) => Ok(()),
+        _ => Err("Python 声明与入口不匹配".into()),
+    }
 }
 fn sensitive_text(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
@@ -332,10 +343,6 @@ fn collect(
             }
             collect(root, &path, has_wasm, include_catalog, files, total)?;
         } else if ty.is_file() {
-            // Keep the legacy declarative archive and send the cover separately.
-            if name == crate::clawpkg::HACHI_COVER_PATH || name == "hachiapp.json" && !has_wasm {
-                continue;
-            }
             if name == WASM_MODULE && !has_wasm {
                 return Err("组件在准备发布期间发生变化，请重试".into());
             }
@@ -357,7 +364,7 @@ fn collect(
                 if sensitive_json(&v) {
                     return Err(format!("{name} 可能含密钥、内部地址或个人路径，请检查"));
                 }
-            } else if name.ends_with(".txt") || name.ends_with(".md") {
+            } else if name.ends_with(".txt") || name.ends_with(".md") || name == crate::component_python::PATH {
                 if sensitive_text(std::str::from_utf8(&bytes).map_err(|_| "声明文件需为 UTF-8")?)
                 {
                     return Err(format!("{name} 可能含敏感信息，请检查"));
@@ -370,9 +377,15 @@ fn collect(
     }
     Ok(())
 }
-fn public_content_hash(path:&Path)->Result<String,String>{
+fn public_content_hash(path:&Path, embedded_cover:bool)->Result<String,String>{
     let mut files=BTreeMap::new();let mut total=0;
     collect(path,path,path.join(WASM_MODULE).is_file(),true,&mut files,&mut total)?;
+    // Earlier public archives omitted these files. Compare the exact file
+    // set advertised by that release when checking a same-version download.
+    if !embedded_cover {
+        files.remove(crate::clawpkg::HACHI_COVER_PATH);
+        if !files.contains_key(WASM_MODULE) { files.remove("hachiapp.json"); }
+    }
     let mut hash=Sha256::new();for (name,bytes) in files{hash.update(name.as_bytes());hash.update([0]);hash.update(bytes);hash.update([0]);}
     Ok(format!("{:x}",hash.finalize()))
 }
@@ -447,7 +460,7 @@ fn verify_download(bytes: &[u8], work: &Value) -> Result<bool, String> {
         return Err("组件身份或版本不匹配，未导入".into());
     }
     let has_wasm = files.contains_key(WASM_MODULE);
-    if has_wasm != files.contains_key("hachiapp.json") {
+    if (has_wasm || files.contains_key(crate::clawpkg::HACHI_COVER_PATH)) && !files.contains_key("hachiapp.json") {
         return Err("WASM 文件或包清单不完整，未导入".into());
     }
     let catalog = crate::component_extension::CATALOG_PATH;
@@ -538,7 +551,7 @@ fn prepare(home: &Path, path: &str) -> Result<Prepared, String> {
     {
         return Err("只能发布正式本地组件库中的完整组件".into());
     }
-    let entry = crate::component_library::inspect(&canonical)?;
+    let mut entry = crate::component_library::inspect(&canonical)?;
     if !entry.valid {
         return Err(format!(
             "组件校验失败：{}",
@@ -566,7 +579,21 @@ fn prepare(home: &Path, path: &str) -> Result<Prepared, String> {
     let mut expanded = 0;
     let has_wasm = entry.wasm_preview.is_some();
     collect(&canonical, &canonical, has_wasm, false, &mut files, &mut expanded)?;
+    let cover = files.get(crate::clawpkg::HACHI_COVER_PATH).ok_or("请在组件包中添加封面 pc/cover.png 后重新打包")?;
+    crate::clawpkg::require_publication_cover(Some(cover))?;
+    entry.cover_data_url = Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(cover)));
     validate_public_application(&files)?;
+    let runtime: Value = serde_json::from_slice(files.get("runtime/widget.json").ok_or("缺少组件运行时")?)
+        .map_err(|_| "组件运行时无效")?;
+    let preview_path = "negative-screen.json";
+    let prior_preview = files.get(preview_path).map(Vec::as_slice);
+    if let Some(preview) = crate::clawpkg::initial_host_preview(&runtime, prior_preview)? {
+        expanded = expanded - prior_preview.map_or(0, <[u8]>::len) + preview.len();
+        if expanded > 16 * 1024 * 1024 {
+            return Err("组件展开大小超过 16 MiB".into());
+        }
+        files.insert(preview_path.into(), preview);
+    }
     if has_wasm && (!files.contains_key(WASM_MODULE) || !files.contains_key("hachiapp.json")) {
         return Err("组件在准备发布期间发生变化，请重试".into());
     }
@@ -749,12 +776,11 @@ pub fn execute(home: &Path, input: CommunityInput) -> Result<Value, String> {
             if input.expected_content_hash.as_deref() != Some(prepared.hash.as_str()) {
                 return Err("组件文件在预览后发生变化，请重新检查再发布".into());
             }
-            let covers = input.covers.ok_or("请选择真实截图")?;
-            if covers.is_empty()
-                || covers.len() > 3
+            let covers = input.covers.unwrap_or_default();
+            if covers.len() > 2
                 || covers.iter().any(|s| s.len() > 3 * 1024 * 1024)
             {
-                return Err("请选择 1–3 张不超过 2 MiB 的截图".into());
+                return Err("最多可附两张不超过 2 MiB 的截图".into());
             }
             let metadata = input.metadata.ok_or("缺少作品介绍")?;
             if sensitive_json(&metadata) {
@@ -825,7 +851,8 @@ pub fn execute(home: &Path, input: CommunityInput) -> Result<Value, String> {
                     return Err("本机版本更高，已阻止降级".into());
                 }
                 if local_version == remote_version && !official_bundled
-                    && public_content_hash(Path::new(&existing.path))?.as_str() != work["contentHash"].as_str().unwrap_or("")
+                    && public_content_hash(Path::new(&existing.path), work["files"].as_array()
+                        .is_some_and(|names| names.iter().any(|name| name == crate::clawpkg::HACHI_COVER_PATH)))?.as_str() != work["contentHash"].as_str().unwrap_or("")
                 {
                     return Err("本机同版本内容不同，已停止覆盖".into());
                 }
@@ -839,9 +866,9 @@ pub fn execute(home: &Path, input: CommunityInput) -> Result<Value, String> {
                 save(home, &local)
             })?;
             // The separately fetched cover is optional and does not affect installation.
-            if let Err(error) = cache_cover(home, id, work) {
+            if entry.cover_data_url.is_none() { if let Err(error) = cache_cover(home, id, work) {
                 eprintln!("[community] cover: {error}");
-            }
+            } }
             let confirmed = request(
                 home,
                 &format!("/api/v1/works/{id}/confirm-download"),
@@ -880,12 +907,13 @@ mod tests {
         let root=tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("pc")).unwrap();
         fs::write(root.path().join("component.json"),br#"{"id":"sample"}"#).unwrap();
-        let hash=public_content_hash(root.path()).unwrap();
+        let hash=public_content_hash(root.path(),false).unwrap();
         fs::write(root.path().join("pc/cover.png"),b"cover").unwrap();
         fs::write(root.path().join("hachiapp.json"),br#"{"format":"hachiapp/1"}"#).unwrap();
-        assert_eq!(hash,public_content_hash(root.path()).unwrap());
+        assert_eq!(hash,public_content_hash(root.path(),false).unwrap());
+        assert_ne!(hash,public_content_hash(root.path(),true).unwrap());
         fs::write(root.path().join("component.json"),br#"{"id":"changed"}"#).unwrap();
-        assert_ne!(hash,public_content_hash(root.path()).unwrap());
+        assert_ne!(hash,public_content_hash(root.path(),false).unwrap());
         assert!(allowed_file("assets/intro.mp4"));
         assert!(!allowed_file("assets/intro.exe"));
     }
@@ -906,18 +934,41 @@ mod tests {
     fn local_music_declaration_can_be_shared_without_local_player_data() {
         let home = tempfile::tempdir().unwrap();
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../candidate-clawpkgs/local-music-player");
-        let entry = crate::component_library::publish_source(home.path(), &source).unwrap();
+        let draft = home.path().join("draft");
+        let mut files = BTreeMap::new();
+        collect(&source, &source, false, false, &mut files, &mut 0).unwrap();
+        for (name, bytes) in files {
+            let path = draft.join(name); fs::create_dir_all(path.parent().unwrap()).unwrap(); fs::write(path, bytes).unwrap();
+        }
+        fs::create_dir_all(draft.join("assets")).unwrap();
+        let legacy = crate::component_library::publish_source(home.path(), &draft).unwrap();
+        assert!(prepare(home.path(), &legacy.path).err().unwrap().contains("封面"));
+        fs::write(draft.join("hachiapp.json"),json!({"format":"hachiapp/1","id":legacy.id}).to_string()).unwrap();
+        fs::write(draft.join("pc/cover.png"),include_bytes!("../../builtin-clawpkgs/hachimi-notes/pc/cover.png")).unwrap();
+        let entry = crate::component_library::publish_source(home.path(), &draft).unwrap();
         let package = prepare(home.path(), &entry.path).unwrap();
         assert!(package.files.contains_key("pc/application.json"));
-        let work = json!({"id": entry.id, "version": entry.version, "contentHash": package.hash});
+        assert!(package.files.contains_key("pc/cover.png"));
+        let work = json!({"id": entry.id, "version": entry.version, "contentHash": package.hash,
+            "packageBytes":package.archive.len()});
         assert_eq!(verify_download(&package.archive, &work), Ok(false));
+        let other_home = tempfile::tempdir().unwrap();
+        let installed = install_download(other_home.path(), &entry.id, &entry.version,
+            &digest(&package.archive), &work, &package.archive, || Ok(())).unwrap();
+        assert_eq!(installed.cover_data_url, entry.cover_data_url);
+        let mut src_tile = Vec::new();
+        let mut dst_tile = Vec::new();
+        crate::usb_serial::center_thumb::append(&draft, &mut src_tile).unwrap();
+        crate::usb_serial::center_thumb::append(Path::new(&installed.path), &mut dst_tile).unwrap();
+        assert_eq!(dst_tile, src_tile);
+        assert_eq!(dst_tile[0].1.len(), 1568);
 
         let mut files = package.files;
         files.insert("pc/application.json".into(), br#"{"service":"unsupported"}"#.to_vec());
         assert!(validate_public_application(&files).is_err());
     }
     #[test]
-    fn community_archive_keeps_wasm_manifest_and_omits_desktop_cover() {
+    fn community_archive_keeps_cover_and_manifest_for_both_runtime_types() {
         let root = tempfile::tempdir().unwrap();
         for dir in ["pc", "runtime"] {
             fs::create_dir(root.path().join(dir)).unwrap();
@@ -934,13 +985,13 @@ mod tests {
         let mut total = 0;
         collect(root.path(), root.path(), false, false, &mut files, &mut total).unwrap();
         assert_eq!(files.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["component.json", "runtime/widget.json"]);
-        assert_eq!(total, 4);
+            ["component.json", "hachiapp.json", "pc/cover.png", "runtime/widget.json"]);
+        assert_eq!(total, 11);
         fs::write(root.path().join(WASM_MODULE), b"wasm").unwrap();
         files.clear();
         collect(root.path(), root.path(), true, false, &mut files, &mut 0).unwrap();
         assert_eq!(files.keys().map(String::as_str).collect::<Vec<_>>(),
-            ["component.json", "hachiapp.json", WASM_MODULE, "runtime/widget.json"]);
+            ["component.json", "hachiapp.json", "pc/cover.png", WASM_MODULE, "runtime/widget.json"]);
         assert!(!allowed_file("runtime/extra.wasm"));
         fs::write(root.path().join(WASM_MODULE), vec![0; file_limit(WASM_MODULE) as usize + 1]).unwrap();
         assert!(collect(root.path(), root.path(), true, false, &mut BTreeMap::new(), &mut 0).is_err());

@@ -650,6 +650,13 @@ def smoke_test_game(widget_dir: Path) -> dict[str, Any]:
     runtime = load_json(widget_dir / "runtime" / "widget.json")
     manifest = load_json(widget_dir / "component.json")
     buttons = load_json(widget_dir / "buttons.json")
+    if "accessory" in runtime:
+        return {"ok": True, "mode": "foreground-ble-read", "measurement": runtime["accessory"],
+                "consent": "physical-short-press", "deviceVerified": False}
+    if "hardware" in runtime:
+        return {"ok": True, "mode": "foreground-hardware-contract",
+                "service": runtime["hardware"]["service"], "consent": "physical-short-press",
+                "quietBelow": runtime["hardware"].get("quiet_below"), "deviceVerified": False}
     if runtime.get('scene',{}).get('engine')=='p4-side-scene-v1':
         import subprocess,shutil
         node=shutil.which('node')
