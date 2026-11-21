@@ -26,7 +26,7 @@ Prebuilt installers support Apple silicon Macs and Windows x64. The Mac package 
 
 ### Complete flashing kits
 
-**For your first flash, we recommend using an AI tool such as ChatGPT or WorkBuddy to guide you.** Download and unzip the kit for your board, share its `FLASH.md` with the tool, and tell it your operating system and board model. For example, ask “Can you help me check that this kit matches my connected board, walk me through the first flash, and verify the result?”
+**For your first flash, we recommend using an AI tool such as ChatGPT or WorkBuddy to guide you.** Download and unzip the kit for your board, share its `README-FLASHING-CN.md` with the tool, and tell it your operating system and board model. For example, ask “Can you help me check that this kit matches my connected board, walk me through the first flash, and verify the result?”
 
 | Board | Chip revision | R304 factory kit |
 | --- | --- | --- |

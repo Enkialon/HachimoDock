@@ -152,7 +152,7 @@ jobs:
       - run: npm run build:web
         working-directory: pc
       - name: Run full native Windows regression with installed resources
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && !cancelled()
         shell: pwsh
         env:
           VERIFY_INSTALLERS: ${{ inputs.verify_installers }}

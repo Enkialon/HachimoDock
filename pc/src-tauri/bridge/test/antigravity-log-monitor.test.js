@@ -196,10 +196,14 @@ test("publication replaces the previous snapshot and bubble without leaving sess
 test("the existing worker wrapper starts and stops the read-only monitor", { timeout: 6_000 }, async (t) => {
   const { brainDir, transcript } = fixture(t);
   const filename = transcript("worker-session");
+  // Track this transcript during the initial scan so the append is identified
+  // by its contents even if the filesystem timestamp predates worker startup.
+  fs.writeFileSync(filename, jsonl(prompt("history")));
   const worker = new Worker(path.join(__dirname, "../agents/log-monitor-worker.js"), {
     workerData: { kind: "antigravity", config: { brainDir } },
   });
   t.after(() => worker.terminate());
+  let inputs = 0;
   await new Promise((resolve, reject) => {
     worker.on("error", reject);
     worker.on("message", (message) => {
@@ -207,7 +211,9 @@ test("the existing worker wrapper starts and stops the read-only monitor", { tim
       if (message.event !== "antigravity:user_input") return;
       try {
         assert.equal(message.sessionId, "worker-session");
+        assert.equal(message.extra.display.title, "worker");
         assert.equal(message.extra.display.content, "正在思考");
+        inputs++;
         worker.postMessage({ type: "stop" });
       } catch (error) {
         reject(error);
@@ -215,6 +221,7 @@ test("the existing worker wrapper starts and stops the read-only monitor", { tim
     });
     worker.once("exit", (code) => code === 0 ? resolve() : reject(new Error("worker exit " + code)));
   });
+  assert.equal(inputs, 1);
 });
 
 test("identical replies do not hide a new turn when both records arrive in one poll", (t) => {
