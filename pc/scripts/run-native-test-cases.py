@@ -32,6 +32,8 @@ def run_case(name):
 
 
 if __name__ == "__main__":
+    # GitHub redirects stdout on Windows. Diagnostics include localized messages.
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
     cases = list_tests()
     ignored = set(list_tests("--ignored"))
     enabled = [name for name in cases if name not in ignored]
