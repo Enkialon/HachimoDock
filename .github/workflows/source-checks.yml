@@ -14,7 +14,41 @@ permissions:
 env:
   PYTHONDONTWRITEBYTECODE: "1"
 jobs:
+  staged-assets:
+    if: github.event_name == 'workflow_dispatch' && inputs.verify_installers
+    runs-on: ubuntu-latest
+    # GitHub only lists drafts for identities with push access. This job runs
+    # no checkout, candidate binaries, repository scripts or contributor actions.
+    permissions:
+      contents: write
+    steps:
+      - name: Retrieve the five audited Windows and firmware inputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/latest-release.json?ref=$GITHUB_SHA" > release.json
+          tag=$(jq -er '.releaseTag | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))' release.json)
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$tag\") | .assets[]" | jq -s . > assets.json
+          mkdir candidates
+          jq -r '.artifacts[] | select(.role == "windows" or (.role | startswith("factory-"))) | [.file,.sha256] | @tsv' release.json > expected.tsv
+          test "$(wc -l < expected.tsv)" -eq 5
+          while IFS=$'\t' read -r name sha; do
+            [[ "$name" =~ ^[a-zA-Z0-9._-]+$ && "$sha" =~ ^[0-9a-f]{64}$ ]]
+            id=$(jq -er --arg name "$name" --arg digest "sha256:$sha" '.[] | select(.name==$name and .state=="uploaded" and .digest==$digest) | .id' assets.json)
+            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "candidates/$name"
+            echo "$sha  candidates/$name" | sha256sum --check
+          done < expected.tsv
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: audited-regression-inputs
+          path: candidates/
+          retention-days: 1
+          compression-level: 0
   desktop:
+    needs: staged-assets
+    if: always() && !cancelled() && (needs.staged-assets.result == 'success' || needs.staged-assets.result == 'skipped')
     strategy:
       fail-fast: false
       matrix:
@@ -38,24 +72,10 @@ jobs:
           python-version: '3.12'
       - name: Download staged release assets for installer regression
         if: inputs.verify_installers
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag=$(node -p "require('./latest-release.json').releaseTag")
-          assets="$RUNNER_TEMP/release-assets"
-          mkdir -p "$assets"
-          gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq ".[] | select(.tag_name == \"$tag\") | .assets[] | [.name,.id] | @tsv" > "$assets/list.tsv"
-          while IFS=$'\t' read -r name id; do
-            case "$name" in
-              HachimiDock_*_FULL-FACTORY.zip) ;;
-              HachimiDock_*_Windows-x64-setup.exe) [[ "$RUNNER_OS" == Windows ]] || continue ;;
-              *) continue ;;
-            esac
-            [[ "$name" =~ ^[a-zA-Z0-9._-]+$ && "$id" =~ ^[0-9]+$ ]]
-            gh api -H 'Accept: application/octet-stream' "repos/$GITHUB_REPOSITORY/releases/assets/$id" > "$assets/$name"
-          done < "$assets/list.tsv"
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: audited-regression-inputs
+          path: ${{ runner.temp }}/release-assets
       - name: Stage verified firmware for all four board profiles
         shell: bash
         env:
