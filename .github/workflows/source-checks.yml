@@ -148,15 +148,20 @@ jobs:
       - run: npm run build:web
         working-directory: pc
       - name: Run full native Windows regression with installed resources
-        if: runner.os == 'Windows' && inputs.verify_installers
+        if: runner.os == 'Windows'
         shell: pwsh
         env:
+          VERIFY_INSTALLERS: ${{ inputs.verify_installers }}
           TAURI_CONFIG: '{"bundle":{"resources":[]}}'
         run: |
-          $env:PETUI_TEST_RESOURCES = Join-Path $env:RUNNER_TEMP 'petui-release-resources'
-          cargo test --locked --manifest-path pc/src-tauri/Cargo.toml --lib
+          if ($env:VERIFY_INSTALLERS -eq 'true') {
+            $env:PETUI_TEST_RESOURCES = Join-Path $env:RUNNER_TEMP 'petui-release-resources'
+            ./pc/scripts/test-native-windows.ps1
+          } else {
+            ./pc/scripts/test-native-windows.ps1 -Suites 'shared_font::','openai_tts::','component_python::'
+          }
       - name: Exercise native font delivery, speech streaming and Python components
-        if: runner.os != 'Windows' || !inputs.verify_installers
+        if: runner.os != 'Windows'
         shell: bash
         env:
           TAURI_CONFIG: '{"bundle":{"resources":[]}}'
