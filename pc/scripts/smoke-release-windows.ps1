@@ -27,7 +27,6 @@ $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\com.petma
 $exe = Join-Path $install 'Hachimodock.exe'
 $uninstaller = Join-Path $install 'Uninstall.exe'
 $report = [ordered]@{ version=$version; passed=$false; stage='runner'; failures=@(); checks=[ordered]@{} }
-$gui = $null
 $installedHere = $false
 
 # Observe native startup without forwarding GUI output.
@@ -37,12 +36,43 @@ using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
 public sealed class SmokeReady {
     public volatile bool Accepted, StaleReady, ReadyTimeout, LoadStarted, LoadFinished;
+    public volatile string PanicFile, ErrorType, WebViewHResult;
+    public volatile int PanicLine;
+    public readonly ManualResetEventSlim StderrClosed = new ManualResetEventSlim();
+    static readonly Regex Location = new Regex(@"(?:^|[/\\ ])([A-Za-z0-9_-]{1,64}\.rs):([0-9]{1,7}):[0-9]{1,5}:?$");
+    static readonly Regex HResult = new Regex(@"\bHRESULT\(0x([0-9A-Fa-f]{8})\)");
+    void ObserveFailure(string line) {
+        if (line.Length > 8192) return;
+        if (line.StartsWith("thread '",StringComparison.Ordinal) && line.Contains(" panicked at ")) {
+            ErrorType="RustPanic";
+            var location=Location.Match(line);
+            if (location.Success) {
+                PanicFile=location.Groups[1].Value;
+                PanicLine=int.Parse(location.Groups[2].Value);
+            }
+        }
+        if (ErrorType==null) return;
+        if (line.Contains("WebView2Error(") || line.Contains("WebView2 error:") || line.Contains("CreateWebview(")) {
+            ErrorType=line.Contains("WebView2") ? "WebView2Error" : "CreateWebview";
+            var hr=HResult.Match(line);
+            if (hr.Success) WebViewHResult="0x"+hr.Groups[1].Value.ToUpperInvariant();
+        } else if (line.Contains("CreateWindow")) ErrorType="CreateWindow";
+        else if (line.Contains("SetupError(") || line.Contains("Setup(")) ErrorType="Setup";
+        else if (line.Contains("already managed")) ErrorType="DuplicateManagedState";
+        else if (line.Contains("PluginInitialization(")) ErrorType="PluginInitialization";
+        else if (line.Contains("InvalidIcon(")) ErrorType="InvalidIcon";
+        else if (line.Contains("AssetNotFound(")) ErrorType="AssetNotFound";
+        else if (line.Contains("Io(Os {")) ErrorType="Io";
+    }
     public void Attach(Process p) {
         p.ErrorDataReceived += (s,e) => {
             string line=e.Data;
-            if (line==null) return;
+            if (line==null) { StderrClosed.Set(); return; }
+            ObserveFailure(line);
             if (line=="[startup-native] category=ready") Accepted=true;
             if (line=="[startup-native] category=stale_ready") StaleReady=true;
             if (line=="[startup-native] category=ready_timeout") ReadyTimeout=true;
@@ -116,7 +146,7 @@ public static class SmokeWindow {
 '@
 }
 
-function Write-SmokeFailure([System.Management.Automation.ErrorRecord]$Record) {
+function Write-SmokeFailure([System.Management.Automation.ErrorRecord]$Record, [switch]$Comparison) {
     # Do not serialize the message, invocation text, stack, native output or paths.
     $detail = [ordered]@{
         stage = $report.stage
@@ -128,9 +158,13 @@ function Write-SmokeFailure([System.Management.Automation.ErrorRecord]$Record) {
     $cause = $Record.Exception.GetBaseException()
     if ($cause -is [ComponentModel.Win32Exception]) { $detail.win32Code = $cause.NativeErrorCode }
     if ($Record.Exception.Data.Contains('smokeExitCode')) { $detail.exitCode = [int]$Record.Exception.Data['smokeExitCode'] }
-    if (!$report.Contains('failureStage')) { $report.failureStage = $detail.stage }
-    $report.failures += $detail
-    if ($detail.stage -eq 'gui-ready' -and $report.Contains('guiProbe')) { $detail.probe = $report.guiProbe }
+    if ($Comparison) {
+        $report.syntheticFailure = $detail
+    } else {
+        if (!$report.Contains('failureStage')) { $report.failureStage = $detail.stage }
+        $report.failures += $detail
+    }
+    if ($detail.stage -in 'gui','gui-ready','exit','gui-cleanup' -and $report.Contains('guiProbe')) { $detail.probe = $report.guiProbe }
     Write-Host ('Windows smoke failure ' + ($detail | ConvertTo-Json -Compress))
 }
 
@@ -142,7 +176,7 @@ function Assert-SmokeExit([Diagnostics.Process]$Process) {
     }
 }
 
-function New-SmokeProcess([string]$File, [string[]]$Arguments) {
+function New-SmokeProcess([string]$File, [string[]]$Arguments, [switch]$RunnerProfile) {
     $p = [Diagnostics.Process]::new()
     $start = $p.StartInfo
     $start.UseShellExecute = $false
@@ -157,13 +191,22 @@ function New-SmokeProcess([string]$File, [string[]]$Arguments) {
         if ($value) { $start.Environment[$name] = $value }
     }
     $start.Environment['PATH'] = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
-    $start.Environment['TEMP'] = $tempDir
-    $start.Environment['TMP'] = $tempDir
-    $start.Environment['HOME'] = $userDir
-    $start.Environment['USERPROFILE'] = $userDir
-    $start.Environment['APPDATA'] = Join-Path $userDir 'Roaming'
-    $start.Environment['LOCALAPPDATA'] = Join-Path $userDir 'Local'
-    $start.Environment['WEBVIEW2_USER_DATA_FOLDER'] = Join-Path $userDir 'WebView'
+    if ($RunnerProfile) {
+        foreach ($name in 'USERPROFILE','APPDATA','LOCALAPPDATA','USERNAME','USERDOMAIN','COMPUTERNAME',
+                          'HOMEDRIVE','HOMEPATH','TEMP','TMP') {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($value) { $start.Environment[$name] = $value }
+        }
+        $start.Environment['HOME'] = $env:USERPROFILE
+    } else {
+        $start.Environment['TEMP'] = $tempDir
+        $start.Environment['TMP'] = $tempDir
+        $start.Environment['HOME'] = $userDir
+        $start.Environment['USERPROFILE'] = $userDir
+        $start.Environment['APPDATA'] = Join-Path $userDir 'Roaming'
+        $start.Environment['LOCALAPPDATA'] = Join-Path $userDir 'Local'
+        $start.Environment['WEBVIEW2_USER_DATA_FOLDER'] = Join-Path $userDir 'WebView'
+    }
     foreach ($arg in $Arguments) { $start.ArgumentList.Add($arg) }
     return $p
 }
@@ -198,6 +241,110 @@ function Wait-For([scriptblock]$Condition, [int]$Seconds) {
     throw "Timed out at $($report.stage)"
 }
 
+function Get-WebView2Registration {
+    $key = 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+    $versions = [ordered]@{}
+    foreach ($scope in 'LocalMachine','CurrentUser') {
+        foreach ($view in 'Registry32','Registry64') {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey($scope,$view)
+            try {
+                $entry = $base.OpenSubKey($key)
+                try {
+                    $pv = if ($entry) { $entry.GetValue('pv') }
+                    $versions["$scope-$view"] = if ("$pv" -match '^\d{1,5}(\.\d{1,5}){3}$') { "$pv" } else { $null }
+                } finally { if ($entry) { $entry.Dispose() } }
+            } finally { $base.Dispose() }
+        }
+    }
+    return $versions
+}
+
+function Invoke-SmokeGui([ValidateSet('synthetic','runner')][string]$ProfileName) {
+    $probe = [ordered]@{
+        profile=$ProfileName; sessionZero=([Diagnostics.Process]::GetCurrentProcess().SessionId -eq 0)
+        frontendReady=$false; staleReady=$false; nativeTimeout=$false
+        loadStarted=$false; loadFinished=$false; guiReady=$false; cleanExit=$false
+        hasWindow=$false; visible=$false; responding=$false
+    }
+    $report.guiProbe = $probe
+    $report.guiProfiles[$ProfileName] = $probe
+    $report.stage = 'gui'
+    $gui = New-SmokeProcess $exe @() -RunnerProfile:($ProfileName -eq 'runner')
+    $ready = [SmokeReady]::new()
+    $ready.Attach($gui)
+    $started = $false
+    try {
+        if (!$gui.Start()) { throw 'GUI did not start' }
+        $started = $true
+        $gui.BeginErrorReadLine()
+        $gui.BeginOutputReadLine()
+        $report.stage = 'gui-ready'
+        Wait-For {
+            $gui.Refresh()
+            if ($gui.HasExited) { Assert-SmokeExit $gui; throw 'GUI exited during startup' }
+            $probe.frontendReady = $ready.Accepted
+            $handle = [SmokeWindow]::Owned($gui.Id,'','Hachimodock')
+            $probe.hasWindow = $handle -ne [IntPtr]::Zero
+            $probe.visible = $probe.hasWindow -and [SmokeWindow]::IsWindowVisible($handle)
+            $probe.responding = $probe.visible -and [SmokeWindow]::Responsive($handle)
+            $probe.frontendReady -and $probe.responding
+        } 60
+        $probe.guiReady = $true
+
+        $report.stage = 'exit'
+        $mainWindow = [SmokeWindow]::Owned($gui.Id,'','Hachimodock')
+        $tray = [SmokeWindow]::Owned($gui.Id,'tray_icon_app','')
+        $quitMode = 'tray-menu'
+        $menuInvoked = $false
+        if ($tray -ne [IntPtr]::Zero -and [SmokeWindow]::OpenTray($tray)) {
+            $timer = [Diagnostics.Stopwatch]::StartNew()
+            do {
+                $popup = [SmokeWindow]::Owned($gui.Id,'#32768','')
+                if ($popup -ne [IntPtr]::Zero) {
+                    if (![SmokeWindow]::QuitMenu($tray,$popup)) { throw 'Candidate tray Quit command unavailable' }
+                    $menuInvoked = $true
+                    break
+                }
+                Start-Sleep -Milliseconds 200
+            } while ($timer.Elapsed.TotalSeconds -lt 8)
+        }
+        if (!$menuInvoked) {
+            # Hosted sessions can lack an Explorer notification area. Exercise the
+            # candidate GUI thread's normal message-loop termination in that case.
+            $quitMode = 'win32-message-loop'
+            if (![SmokeWindow]::QuitLoop($mainWindow,$gui.Id)) { throw 'Could not request GUI thread exit' }
+        }
+        $probe.exitRoute = $quitMode
+        if (!$gui.WaitForExit(30000)) { throw 'Candidate did not quit cleanly' }
+        Assert-SmokeExit $gui
+        $probe.cleanExit = $true
+    } finally {
+        try {
+            if ($started) {
+                if (!$gui.HasExited) {
+                    $gui.Kill($true)
+                    if (!$gui.WaitForExit(10000)) { throw 'GUI cleanup timed out' }
+                }
+                # The process can exit before the asynchronous panic and EOF callbacks arrive.
+                $probe.stderrDrained = $ready.StderrClosed.Wait(3000)
+                $probe.frontendReady = $ready.Accepted
+                $probe.staleReady = $ready.StaleReady
+                $probe.nativeTimeout = $ready.ReadyTimeout
+                $probe.loadStarted = $ready.LoadStarted
+                $probe.loadFinished = $ready.LoadFinished
+                $probe.panicFile = $ready.PanicFile
+                $probe.panicLine = if ($ready.PanicFile) { $ready.PanicLine } else { $null }
+                $probe.errorType = $ready.ErrorType
+                $probe.webViewHResult = $ready.WebViewHResult
+                $probe.processExitCode = $gui.ExitCode
+            }
+        } catch {
+            $report.stage = 'gui-cleanup'
+            throw
+        } finally { $gui.Dispose() }
+    }
+}
+
 try {
     if (-not $IsWindows -or $env:RUNNER_OS -ne 'Windows' -or $env:RUNNER_ARCH -ne 'X64' -or
         $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or -not [Environment]::Is64BitProcess) {
@@ -214,6 +361,8 @@ try {
     foreach ($path in $root,$userDir,$tempDir,(Join-Path $userDir 'Roaming'),(Join-Path $userDir 'Local')) {
         $null = New-Item -ItemType Directory -Path $path
     }
+    $report.stage = 'webview-registration-before-install'
+    $report.webView2BeforeInstall = Get-WebView2Registration
     $report.stage = 'install'
     # NSIS requires the unquoted /D= override last, including paths with spaces.
     $installerProcess = New-SmokeProcess $setup @()
@@ -231,6 +380,8 @@ try {
         throw 'Installed product registration mismatch'
     }
     $installedHere = $true
+    $report.stage = 'webview-registration-after-install'
+    $report.webView2AfterInstall = Get-WebView2Registration
     $report.stage = 'install-version'
     if ($registration.DisplayVersion -ne $Version) { throw 'Installed registration version mismatch' }
     $v = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
@@ -269,72 +420,19 @@ try {
         Copy-Item -LiteralPath (Join-Path $install $resource) -Destination $testResources -Recurse
     }
 
-    $report.stage = 'gui'
-    $gui = New-SmokeProcess $exe @()
-    $ready = [SmokeReady]::new()
-    $ready.Attach($gui)
-    if (!$gui.Start()) { throw 'GUI did not start' }
-    $gui.BeginErrorReadLine()
-    $gui.BeginOutputReadLine()
-    $report.stage = 'gui-ready'
-    $probe = [ordered]@{
-        sessionZero = ($gui.SessionId -eq 0)
-        frontendReady=$false; staleReady=$false; nativeTimeout=$false
-        loadStarted=$false; loadFinished=$false
-        hasWindow=$false; visible=$false; responding=$false
+    $report.guiProfiles = [ordered]@{}
+    try { Invoke-SmokeGui 'synthetic' } catch {
+        Write-SmokeFailure $_ -Comparison
+        if ($report.stage -eq 'gui-cleanup') { throw }
     }
-    $report.guiProbe = $probe
-    Wait-For {
-        $gui.Refresh()
-        if ($gui.HasExited) { Assert-SmokeExit $gui; throw 'GUI exited during startup' }
-        $probe.frontendReady = $ready.Accepted
-        $probe.staleReady = $ready.StaleReady
-        $probe.nativeTimeout = $ready.ReadyTimeout
-        $probe.loadStarted = $ready.LoadStarted
-        $probe.loadFinished = $ready.LoadFinished
-        $handle = [SmokeWindow]::Owned($gui.Id,'','Hachimodock')
-        $probe.hasWindow = $handle -ne [IntPtr]::Zero
-        $probe.visible = $probe.hasWindow -and [SmokeWindow]::IsWindowVisible($handle)
-        $probe.responding = $probe.visible -and [SmokeWindow]::Responsive($handle)
-        $probe.frontendReady -and $probe.responding
-    } 60
+    Invoke-SmokeGui 'runner'
     $report.checks.gui = 'visible-responsive-window-and-native-frontend-ready'
-
-    $report.stage = 'exit'
-    $mainWindow = [SmokeWindow]::Owned($gui.Id,'','Hachimodock')
-    $tray = [SmokeWindow]::Owned($gui.Id,'tray_icon_app','')
-    $quitMode = 'tray-menu'
-    $menuInvoked = $false
-    if ($tray -ne [IntPtr]::Zero -and [SmokeWindow]::OpenTray($tray)) {
-        $timer = [Diagnostics.Stopwatch]::StartNew()
-        do {
-            $popup = [SmokeWindow]::Owned($gui.Id,'#32768','')
-            if ($popup -ne [IntPtr]::Zero) {
-                if (![SmokeWindow]::QuitMenu($tray,$popup)) { throw 'Candidate tray Quit command unavailable' }
-                $menuInvoked = $true
-                break
-            }
-            Start-Sleep -Milliseconds 200
-        } while ($timer.Elapsed.TotalSeconds -lt 8)
-    }
-    if (!$menuInvoked) {
-        # Hosted sessions can lack an Explorer notification area. Exercise the
-        # candidate GUI thread's normal message-loop termination in that case.
-        $quitMode = 'win32-message-loop'
-        if (![SmokeWindow]::QuitLoop($mainWindow,$gui.Id)) { throw 'Could not request GUI thread exit' }
-    }
-    $report.exitRoute = $quitMode
-    if (!$gui.WaitForExit(30000)) { throw 'Candidate did not quit cleanly' }
-    Assert-SmokeExit $gui
-    $report.checks.exit = $quitMode
+    $report.exitRoute = $report.guiProbe.exitRoute
+    $report.checks.exit = $report.guiProbe.exitRoute
 
 } catch {
     Write-SmokeFailure $_
 } finally {
-    if ($gui) {
-        try { if (!$gui.HasExited) { $gui.Kill($true); $null = $gui.WaitForExit(10000) } } catch {}
-        $gui.Dispose()
-    }
     if ($installedHere) {
         try {
             $report.stage = 'uninstall'

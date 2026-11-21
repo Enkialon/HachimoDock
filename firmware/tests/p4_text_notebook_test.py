@@ -135,5 +135,11 @@ int main(void){
  return 0;
 }
 '''
-    _run_private_save_generations(tmp_path,False,record_driver=driver,record_cflags=["-DPET_FORM_V2_ENABLED=1", "-DPET_FORM_V3_ENABLED=1"],extra_sources=[
-        MAIN/"pet_p4_form_v2.c", MAIN/"pet_p4_form_v3.c", ROOT/"firmware/tests/vendor/cjson/cJSON.c"])
+    # GCC diagnoses the compact layout of the extracted shipping form code.
+    _run_private_save_generations(
+        tmp_path, False, record_driver=driver,
+        record_cflags=["-DPET_FORM_V2_ENABLED=1", "-DPET_FORM_V3_ENABLED=1",
+                       "-Wno-error=misleading-indentation"],
+        extra_sources=[MAIN/"pet_p4_form_v2.c", MAIN/"pet_p4_form_v3.c",
+                       ROOT/"firmware/tests/vendor/cjson/cJSON.c"],
+    )

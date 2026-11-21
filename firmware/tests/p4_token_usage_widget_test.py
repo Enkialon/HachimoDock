@@ -12,9 +12,23 @@ def test_token_snapshot_tracks_validity_source_and_empty_reset(tmp_path):
     source.write_text(r'''
 #include <assert.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
 #include "pet_p4_stats.h"
+/* Check every production formatting call for actual truncation. */
+static int checked_snprintf(char *out,size_t size,const char *format,...)
+  __attribute__((format(printf,3,4)));
+static int checked_snprintf(char *out,size_t size,const char *format,...) {
+  va_list args;
+  va_start(args,format);
+  int written=vsnprintf(out,size,format,args);
+  va_end(args);
+  assert(written>=0 && (size_t)written<size);
+  return written;
+}
+#undef snprintf
+#define snprintf checked_snprintf
 typedef struct {bool active; const char *widget_id;} runtime_t;
 static runtime_t g_runtime={true,"other"};
 static bool locked;
@@ -50,6 +64,10 @@ int main(void){
   stats=(pet_p4_stats_model_t){0};
   assert(pet_p4_miniapp_sync_stats(&stats) && refreshes==3 && !strcmp(values[0],"当前 Agent"));
   assert(!pet_p4_miniapp_sync_stats(&stats) && refreshes==3 && !locked);
+  stats.valid=PET_P4_STATS_HAS_INPUT_TOKENS|PET_P4_STATS_HAS_OUTPUT_TOKENS|PET_P4_STATS_HAS_CACHED_TOKENS;
+  stats.input_tokens=stats.output_tokens=stats.cached_tokens=UINT64_MAX;
+  assert(pet_p4_miniapp_sync_stats(&stats));
+  assert(!strcmp(values[6],"IN 18446744073.7B  OUT 18446744073.7B  CACHE 18446744073.7B"));
 }
 ''')
     binary = tmp_path / "token"

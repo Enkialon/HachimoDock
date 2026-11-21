@@ -266,7 +266,7 @@ int main(int argc,char **argv){
   assert(!strcmp(latest->selected_widget_id,old.selected_widget_id));
   for(size_t i=0;i<latest->count;i++){
    miniapp_catalog_item_t *item=&latest->items[i];
-   char id[16];snprintf(id,sizeof(id),"legacy-%u",(unsigned)i);
+   char id[sizeof(item->widget_id)];snprintf(id,sizeof(id),"legacy-%u",(unsigned)i);
    assert(!strcmp(item->widget_id,id) && item->slot==12+i && item->package_generation==1);
    assert(item->widget_checksum==0x100+i && item->buttons_checksum==0x200+i);
    if(i==3){assert(!item->center_thumb_checksum);continue;}

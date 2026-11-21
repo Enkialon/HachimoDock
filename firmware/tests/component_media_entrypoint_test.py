@@ -109,6 +109,11 @@ def test_real_install_delete_abort_before_catalog_and_stop_on_publish_failure(tm
             at=source.index(marker)
             adapters=r'''
 typedef struct{miniapp_runtime_t *next;bool prepared;}pet_cext_publish_ticket_t;
+static bool local_alarm_retire(unsigned slot,const char *id,const miniapp_catalog_item_t *replacement){
+ assert(!held && !critical && g_storage_lane.occupied && id && id[0]);
+ if(replacement) assert(replacement->slot==slot && !strcmp(replacement->widget_id,id));
+ return true; /* This media fixture has no scheduled alarms. */
+}
 static void pet_cmedia_stage_reset(void) {}
 static bool media_fail_prepare,media_fail_commit;static unsigned media_prepares,media_commits,media_aborts,media_removed;static pet_cext_publish_ticket_t *pending;
 static bool pet_cmedia_stage_matches(const int*r,char*error,size_t n){(void)r;(void)error;(void)n;return true;}
