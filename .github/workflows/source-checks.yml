@@ -164,14 +164,14 @@ jobs:
           } else {
             ./pc/scripts/test-native-windows.ps1 -Suites 'shared_font::','openai_tts::','component_python::'
           }
-      - name: Exercise native font delivery, speech streaming and Python components
+      - name: Exercise native fonts, speech, Python components and macOS account storage
         if: runner.os != 'Windows'
         shell: bash
         env:
           TAURI_CONFIG: '{"bundle":{"resources":[]}}'
         run: |
           set -euo pipefail
-          for suite in shared_font:: openai_tts:: component_python::; do
+          for suite in shared_font:: openai_tts:: component_python:: local_telemetry::accounts::; do
             cargo test --locked --manifest-path pc/src-tauri/Cargo.toml --lib "$suite"
           done
       - name: Require successful Windows installer regression

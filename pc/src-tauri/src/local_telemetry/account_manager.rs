@@ -570,6 +570,9 @@ fn commit_login(
     Ok(())
 }
 
+#[cfg(all(test, windows))]
+pub(crate) use tests::assert_no_account_writes;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -614,6 +617,26 @@ mod tests {
             }
         }
     }
+    #[cfg(windows)]
+    pub(crate) fn assert_no_account_writes(check: impl FnOnce()) {
+        let env = Env::new();
+        check();
+        assert!(std::fs::read_dir(env.root()).unwrap().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_rejects_quota_snapshots_and_actions_without_writing_accounts() {
+        assert_no_account_writes(|| {
+            let mut selection = 2;
+            for action in [None, Some("refresh"), Some("next"), Some("previous")] {
+                let result = crate::local_telemetry::snapshot("codex.accounts", &mut selection, 0, action);
+                assert_eq!(result.unwrap_err(), "Codex 额度账号管理需要 macOS");
+                assert_eq!(selection, 2);
+            }
+        });
+    }
+
     fn pending(id: &str) -> Arc<AtomicBool> {
         let cancel = Arc::new(AtomicBool::new(false));
         *login().lock().unwrap() = Some(Login {
@@ -628,6 +651,7 @@ mod tests {
         });
         cancel
     }
+    #[cfg(unix)]
     #[test]
     fn status_is_metadata_only_and_does_not_query_or_modify_auth() {
         let t = Env::new();
@@ -641,6 +665,7 @@ mod tests {
         assert_eq!(fs::read(t.root().join("1/auth.json")).unwrap(), raw);
         assert!(!t.root().join("display-settings.json").exists());
     }
+    #[cfg(unix)]
     #[test]
     fn configured_visibility_and_order_drive_selection_and_clear_all_quota() {
         let t = Env::new();
@@ -660,6 +685,7 @@ mod tests {
         );
         assert_eq!(settings::load(t.root()).unwrap().visible, Vec::<u8>::new());
     }
+    #[cfg(unix)]
     #[test]
     fn remove_requires_confirmation_and_keeps_an_owner_only_recovery_copy() {
         let t = Env::new();
@@ -692,6 +718,7 @@ mod tests {
             );
         }
     }
+    #[cfg(unix)]
     #[test]
     fn wrong_account_duplicate_and_cancelled_logins_preserve_original_auth() {
         let t = Env::new();
@@ -741,6 +768,7 @@ mod tests {
         .is_err());
         assert_eq!(fs::read(home.join("auth.json")).unwrap(), raw);
     }
+    #[cfg(unix)]
     #[test]
     fn same_account_reauth_commits_privately_and_rejects_a_racing_auth_change() {
         let t = Env::new();
@@ -788,6 +816,7 @@ mod tests {
             );
         }
     }
+    #[cfg(unix)]
     #[test]
     fn new_accounts_are_added_without_silently_enabling_unknown_device_characters() {
         let t = Env::new();
@@ -800,6 +829,7 @@ mod tests {
         assert_eq!(s.visible, vec![1, 2]);
         assert_eq!(s.revision, 1);
     }
+    #[cfg(unix)]
     #[test]
     fn empty_slot_left_by_an_interrupted_save_can_be_reused_without_overwriting_a_login() {
         let t = Env::new();
@@ -817,6 +847,7 @@ mod tests {
         );
         assert!(target_slot(t.root(), &settings::Settings::default(), Some(9)).is_err());
     }
+    #[cfg(unix)]
     #[test]
     fn no_selected_accounts_never_leak_the_previously_cached_email_or_membership() {
         let t = Env::new();
@@ -838,6 +869,7 @@ mod tests {
         assert!(!after.to_string().contains("a@example.com"));
         cache().lock().unwrap().remove(&key);
     }
+    #[cfg(unix)]
     #[test]
     fn login_claims_must_match_the_saved_account_identifier() {
         let t = Env::new();
@@ -978,6 +1010,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
+    #[cfg(unix)]
     #[test]
     fn refreshing_keeps_last_quota_during_token_rotation_without_duplicate_requests() {
         let t = Env::new();
@@ -1015,6 +1048,7 @@ mod tests {
         assert_eq!(updated["primary"]["remaining"], 50);
         retire_account(&home);
     }
+    #[cfg(unix)]
     #[test]
     fn failed_refresh_preserves_zero_remaining_and_the_original_update_time() {
         let t = Env::new();
@@ -1038,6 +1072,7 @@ mod tests {
         assert!(failed["status"].as_str().unwrap().contains("查询失败"));
         retire_account(&home);
     }
+    #[cfg(unix)]
     #[test]
     fn retired_inflight_result_cannot_overwrite_a_recreated_cache_entry() {
         let t = Env::new();
@@ -1061,6 +1096,7 @@ mod tests {
         assert_eq!(cache().lock().unwrap()[&key].request_id, 0);
         retire_account(&home);
     }
+    #[cfg(unix)]
     #[test]
     fn a_different_account_reusing_the_slot_never_inherits_old_quota() {
         let t = Env::new();

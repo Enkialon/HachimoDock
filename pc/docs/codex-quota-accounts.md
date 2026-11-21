@@ -73,7 +73,8 @@ IPC 只接收受限操作和账号槽位，不接收任意路径、命令、令�
 - `npm test`：数据源识别、显示/排序修订、字体覆盖及状态文案。
 - `cargo test --locked --manifest-path pc/tests/codex-accounts-host/Cargo.toml --lib -- --test-threads=1`：
   直接编译生产账号服务，使用临时目录和模拟 app-server，不读取真实凭据或启动浏览器。
-  覆盖登录、取消、重复/错误账号、移除备份、权限、缓存身份隔离、令牌轮换及旧请求回写。
+  使用 Unix 私有目录的用例覆盖登录、取消、重复/错误账号、移除备份、权限、缓存身份隔离、令牌轮换及旧请求回写。
+- Windows 的主程序库测试验证账号管理命令和 `codex.accounts` 快照及动作均返回平台不支持，账号目录中不会写入凭据或显示设置。
 - 主程序库的 `hachiapp_desktop_metadata_never_reaches_the_device_installer`：
   通过实际传输路径和模拟设备 ACK 验证电脑端清单/封面不会误发给设备。
 
