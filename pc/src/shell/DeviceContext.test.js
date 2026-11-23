@@ -217,7 +217,7 @@ test("P4 reachability prefers USB and uses authenticated Wi-Fi when USB disconne
   assert.deepEqual(wifi, { boardDeviceId: status.boardDeviceId, bootId: status.bootId,
     address: "", firmware: "", bundledFirmwareVersion: "", bundledFirmwareRollbackBlocked: false, wifiConnected: true,
     clockSynchronized: false, widgetCredentialStorageReady: false, rebootSupported: false, wirelessRealtime: false, wirelessVoiceInput: false,
-    globalAudioCues: false, trustedVolume: false, controlTrusted: false, wirelessOta: false, componentDelivery: false, centerThumb: false,
+    globalAudioCues: false, trustedVolume: false, controlTrusted: false, wirelessOta: false, componentDelivery: false, componentBundle: false, componentTarget: null, componentTargetError: null, centerThumb: false,
     appearanceCapacity: 0, inputDoublePress: false, systemSettings: false, panelControl: false });
   assert.deepEqual(pairedWifiTarget({ ...status, ...wifiCapabilities }), { ...wifi, ...wifiCapabilities });
   assert.deepEqual(deriveDeviceReachability({ usb, wifi }), connected);
@@ -381,4 +381,16 @@ test("supported Wi-Fi follows always verify the native pack before following the
   const flow = source.slice(source.indexOf("const applyWifiDesktopPet"), source.indexOf("const applyDesktopPet"));
   assert.ok(flow.indexOf('invoke("lan_sync_appearance"') < flow.indexOf('invoke("lan_follow_agent"'));
   assert.match(flow, /\["alreadyActive", "activated", "uploaded"\]\.includes\(outcome\)/);
+});
+
+test("LAN snapshots retain capabilities only for the authenticated board, association and boot",()=>{
+  const identity={boardDeviceId:"p4-0123456789ab",bootId:"0123456789abcdef",association:2};
+  const status={...identity,wifiConnected:true,controlTrusted:true,componentBundle:true,
+    componentTarget:{...identity,capabilities:{widgetWasm:"hachi-wasm-v1"}}};
+  const first=pairedWifiTarget(status);
+  assert.deepEqual(first.componentTarget,status.componentTarget);
+  assert.equal(pairedWifiTargetsEqual(first,pairedWifiTarget(structuredClone(status))),true);
+  assert.equal(pairedWifiTargetsEqual(first,pairedWifiTarget({...status,componentTarget:{...status.componentTarget,association:3}})),false);
+  assert.equal(pairedWifiTarget({...status,bootId:"0000000000000001"}).componentTarget,null);
+  assert.equal(pairedWifiTarget({...status,controlTrusted:false}).componentTarget,null);
 });

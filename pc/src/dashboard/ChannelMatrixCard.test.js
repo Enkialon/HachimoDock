@@ -53,12 +53,13 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
 test("ChannelMatrixCard destructures multiple fields from useDeviceContext", () => {
   assert.match(source, /useDeviceContext\s*\(\s*\)/);
   assert.match(source, /appearances/);
-  assert.match(source, /agentAppearanceMap/);
   assert.match(source, /agentOptions/);
   assert.match(source, /currentDisplay/);
+  assert.match(source, /enabledAgents/);
   assert.match(source, /\busb\b/);
   assert.match(source, /applyDesktopPet/);
-  assert.match(source, /saveAgentAppearance/);
+  assert.match(source, /enableQueuedAgent/);
+  assert.match(source, /removeQueuedAgent/);
   assert.match(source, /refresh/);
 });
 
@@ -103,19 +104,19 @@ test("Removes redundant Agent guidance and device-session controls", () => {
   assert.doesNotMatch(styles, /\.session-display-setting/);
 });
 
-test("Agent appearance changes save locally unless the agent is currently followed", () => {
+test("Appearance changes apply to the whole device rather than one Agent", () => {
   assert.match(source, /BUILTIN_TERRIER_APPEARANCE_ID/);
-  assert.match(source, /saveAgentAppearance\(agentId, appearance\.id\)/);
-  assert.match(source, /agentId === activeAgentId/);
-  assert.match(source, /applyDesktopPet\(agentId, appearance/);
+  assert.match(source, /applyDesktopPet\(appearance, \{/);
+  assert.match(source, /handleConfirmAppearance/);
+  assert.doesNotMatch(source, /saveAgentAppearance\(/);
 });
 
 test("Opening the appearance picker is immediate while disk records refresh in the background", () => {
-  assert.match(source, /const\s+openPicker\s*=\s*useCallback\(\s*\(agentId\)\s*=>/);
-  assert.match(source, /setPickerState\(\{\s*agentId\s*\}\);[\s\S]*refreshAppearances\(\)\.catch/);
+  assert.match(source, /const\s+openPicker\s*=\s*useCallback\(\s*\(\)\s*=>/);
+  assert.match(source, /setPickerOpen\(true\);[\s\S]*refreshAppearances\(\)\.catch/);
   assert.doesNotMatch(source, /await\s+refresh\(\)/);
-  assert.ok(source.indexOf("setPickerState({ agentId })") < source.indexOf("refreshAppearances().catch"));
-  assert.match(source, /onClick=\{\(\)\s*=>\s+openPicker\(activeAgentId\)\}/);
+  assert.ok(source.indexOf("setPickerOpen(true)") < source.indexOf("refreshAppearances().catch"));
+  assert.match(source, /onClick=\{openPicker\}/);
 });
 
 test("USB appearance sync progress stays inline and survives dashboard tab unmounts", () => {

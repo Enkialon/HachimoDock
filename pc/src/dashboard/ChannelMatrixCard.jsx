@@ -1,5 +1,5 @@
 /**
- * [Input] useDeviceContext for appearances/agentAppearanceMap/agentOptions/currentDisplay/verified USB status/cancellable appearanceSync/refreshAppearances/applyDesktopPet/saveAgentAppearance/enableQueuedAgent/removeQueuedAgent; useToast for notices.
+ * [Input] useDeviceContext for appearances/agentOptions/currentDisplay/enabledAgents/verified USB status/cancellable appearanceSync/refreshAppearances/applyDesktopPet/enableQueuedAgent/removeQueuedAgent/cancelAppearanceSync; useToast for notices.
  * [Output] Agent matrix with enable/remove queue controls, authenticated USB/Wi-Fi appearance sync, cancel controls, and Devin cloud configuration.
  * [Pos] component node in pc/src/dashboard
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md`.

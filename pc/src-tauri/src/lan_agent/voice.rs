@@ -80,7 +80,7 @@ struct Capture {
 fn capture(app: &tauri::AppHandle, route: &Route, token: u32) -> Option<Capture> {
     let peer = load_peer().filter(|peer| route.target.matches_peer(Some(peer)))?;
     let pressed = if route.session_selection {
-        let pressed = super::read_local_selection(&peer, route.target.boot_id(), 3).ok()?;
+        let pressed = super::read_local_selection(&peer, route.target.boot_id(), 5).ok()?;
         if pressed.sequence != token { return None; }
         Some(pressed)
     } else { None };
@@ -149,8 +149,11 @@ fn probe(peer: &Peer, usb: &UsbSerialManager) -> Option<Route> {
     if !status.wireless_voice_input || usb.status().connected {
         return None;
     }
+    // Selector 5 answering proves the device supports pending-card selection.
+    let session_selection = status.control_trusted
+        && super::read_local_selection(peer, &status.boot_id, 5).is_ok();
     Some(Route {
-        session_selection: status.rtc_key & 64 != 0,
+        session_selection,
         target: AudioTarget::from_status(peer.clone(), status, "").ok()?,
         usb: usb.clone(),
         valid: Arc::new(AtomicBool::new(true)),
