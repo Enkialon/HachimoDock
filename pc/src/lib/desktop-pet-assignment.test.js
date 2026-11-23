@@ -116,14 +116,16 @@ test("no pending observation precedes one fresh sync, exact dispatch, then one p
   assert.deepEqual(f.calls.find(x => x.command === "dispatch_remote_cli_binding").args.input, {
     boardDeviceId: BOARD, targetDeviceId: PROFILE.desktopDeviceId,
     expectedConnectionId: USB.connectionId, expectedBootId: USB.bootId,
-    targetSource: "claude-code", previousSource: "codex", mqttNamespace: "fixture",
+    targetSource: "claude-code", previousSource: "codex",
+    mqttNamespace: "fixture",
   });
   const saved = f.calls.find(x => x.command === "save_bridge_profile").args.input;
-  assert.deepEqual(saved.enabledAgents, ["claude-code"]);
+  // Multi-Agent focus keeps previously enabled Agents in the profile.
+  assert.deepEqual(saved.enabledAgents, ["codex", "claude-code"]);
   assert.equal(saved.selectedAgentId, "claude-code");
   assert.deepEqual(result.nextMap, { codex: "old-avatar", "claude-code": "new-avatar" });
   assert.deepEqual(JSON.parse(f.storage.get(AGENT_APPEARANCE_MAP_STORAGE_KEY)), result.nextMap);
-  assert.deepEqual(JSON.parse(f.storage.get(ENABLED_AGENTS_STORAGE_KEY)), ["claude-code"]);
+  assert.deepEqual(JSON.parse(f.storage.get(ENABLED_AGENTS_STORAGE_KEY)), ["codex", "claude-code"]);
   assert.equal(f.storage.get(ACTIVE_APPEARANCE_KEY), "new-avatar");
 });
 
@@ -338,7 +340,7 @@ test("bridge restart failure reports the committed assignment rather than replay
   const f = fixture(t, { bridge: new Error("fixture bridge unavailable") });
   await assert.rejects(() => f.run(), error => {
     assert.equal(error.committedAssignment.agentId, "claude-code");
-    assert.deepEqual(error.committedAssignment.enabledAgents, ["claude-code"]);
+    assert.deepEqual(error.committedAssignment.enabledAgents, ["codex", "claude-code"]);
     return true;
   });
   assert.equal(f.count("usb_reconcile_appearance_unknown"), 1);

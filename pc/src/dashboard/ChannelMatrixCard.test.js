@@ -36,12 +36,11 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
   assert.match(source, /!isDetected \? \(/);
   assert.match(source, /className="channel-row__unavailable"/);
   assert.match(source, /不可用/);
-  assert.match(source, /const canFollow = Boolean\(usb\?\.connected \|\| wifi\)/);
-  assert.match(source, /disabled=\{syncing \|\| !canFollow\}/);
-  assert.match(source, /followAgent\(agentId, appearance/);
-  assert.match(source, /当前固件仅支持通过 Wi-Fi 切换跟随，设备继续使用当前形象/);
-  assert.match(source, /将核对设备上的内置/);
-  assert.match(source, /设备缺少该形象时才传输素材/);
+  assert.match(source, /const canSyncAppearance = Boolean\(usb\?\.connected \|\| wifi\)/);
+  assert.match(source, /disabled=\{syncing\}/);
+  assert.match(source, /enableQueuedAgent\(agentId\)/);
+  assert.match(source, /removeQueuedAgent\(agentId\)/);
+  assert.match(source, /设备连接 USB 或 Wi-Fi 后可更换形象/);
   assert.match(source, /已配置形象 · 待设备确认/);
 
   const unavailableRule = extractCssRule(styles, ".channel-row.is-undetected");
@@ -79,12 +78,20 @@ test("ChannelMatrixCard applies is-active class to the active channel row", () =
   assert.match(source, /isFollowed\s*\?\s*["'].*is-active.*["']/);
 });
 
-test("Non-followed agents show a follow button while the active one is marked followed", () => {
-  assert.match(source, /已跟随/);
-  assert.match(source, /跟随/);
+test("Agents can join the queue independently of the selected Session", () => {
+  assert.match(source, /已加入/);
+  assert.match(source, /加入队列/);
   assert.match(source, /channel-row__follow-current/);
   assert.match(source, /channel-row__follow-button/);
-  assert.match(source, /requestFollow\(agent\.id\)/);
+  assert.match(source, /handleEnable\(agent\.id\)/);
+});
+
+test("Enabled agents can be removed from the queue while the last one is kept", () => {
+  assert.match(source, /removeQueuedAgent/);
+  assert.match(source, /移出队列/);
+  assert.match(source, /queuedAgentCount > 1/);
+  assert.match(source, /handleRemove\(agent\.id\)/);
+  assert.doesNotMatch(source, /requestFollow|pendingFollow|FollowAgentConfirmModal/);
 });
 
 test("Removes redundant Agent guidance and device-session controls", () => {
@@ -109,17 +116,6 @@ test("Opening the appearance picker is immediate while disk records refresh in t
   assert.doesNotMatch(source, /await\s+refresh\(\)/);
   assert.ok(source.indexOf("setPickerState({ agentId })") < source.indexOf("refreshAppearances().catch"));
   assert.match(source, /onClick=\{\(\)\s*=>\s+openPicker\(activeAgentId\)\}/);
-});
-
-test("Follow confirmation describes appearance handling for the active connection", () => {
-  assert.match(source, /setPendingFollow\(\{ agentId, appearance \}\)/);
-  assert.match(source, /function FollowAgentConfirmModal\s*\(/);
-  assert.match(source, /确认跟随/);
-  assert.match(source, /同步「\$\{appearanceName\}」到设备/);
-  assert.match(source, /当前固件仅支持通过 Wi-Fi 切换跟随，设备继续使用当前形象/);
-  assert.match(source, /将核对设备上的内置/);
-  assert.match(source, /设备缺少该形象时才传输素材/);
-  assert.match(source, /已配置形象 · 待设备确认/);
 });
 
 test("USB appearance sync progress stays inline and survives dashboard tab unmounts", () => {
@@ -147,18 +143,6 @@ test("USB appearance sync progress stays inline and survives dashboard tab unmou
   assert.doesNotMatch(stripRule, /position:\s*(fixed|absolute)/);
   assert.match(cancelRule, /justify-self:\s*end/);
   assert.match(barRule, /width:\s*var\(--sync-progress\)/);
-});
-
-test("Follow-only switches are not presented as appearance transfers", () => {
-  // Same appearance on the device: no bytes move, so no percent and no abort.
-  assert.match(source, /const followOnly = !wifi && appearance\.id === currentDisplay\.appearance\?\.id/);
-  assert.match(source, /syncProgress\.followOnly \? "正在切换跟随" : "正在切换形象"/);
-  assert.match(source, /\{!syncProgress\.followOnly && <Button/);
-  assert.match(source, /text: "正在确认…"/);
-  assert.match(source, /initialProgress: followOnly/);
-  // Pre-transfer device steps sweep instead of freezing at 0%.
-  assert.match(source, /syncProgress\.indeterminate \? "准备中"/);
-  assert.match(extractCssRule(styles, ".channel-matrix-sync__bar.is-indeterminate > span"), /animation:/);
 });
 
 test("AgentAppearancePickerModal subcomponent is declared in the same file", () => {

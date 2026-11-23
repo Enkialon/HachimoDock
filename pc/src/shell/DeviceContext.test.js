@@ -114,8 +114,6 @@ test("provider obtains Wi-Fi reachability from the authenticated paired status",
   assert.match(source, /status && pairedWifiTarget\(status\)/);
   assert.match(source, /activeBoardDeviceId = onlineBoardDeviceId \|\| binding\?\.boardDeviceId/);
   assert.match(source, /deriveDeviceReachability\(\{ usb, wifi \}\)/);
-  assert.match(source, /if \(usb.connected\) return applyDesktopPet\(agentId, appearance, options\)/);
-  assert.match(source, /invoke\("lan_follow_agent", \{ \.\.\.wifi, agentId \}\)/);
 });
 
 test("USB status normalization keeps P4 capability metadata", () => {
@@ -255,7 +253,7 @@ test("authenticated Wi-Fi keeps double-press capability and recognizes released 
 
 test("provider hydrates followed channels locally without network availability reconciliation", () => {
   assert.match(source, /const\s+\[bridgeSelectedAgentId,\s*setBridgeSelectedAgentId\]/);
-  assert.match(source, /setBridgeSelectedAgentId\(profile\?\.selectedAgentId/);
+  assert.match(source, /setBridgeSelectedAgentId\(selected \|\| profile\?\.enabledAgents\?\.\[0\]/);
   assert.doesNotMatch(source, /check_device_availability/);
 });
 
@@ -287,6 +285,25 @@ test("provider exposes a deduplicated Agent refresh with low-frequency focus-bas
   assert.doesNotMatch(source, /setInterval\(refreshAgents/);
 });
 
+test("device appearance owner stays independent of the selected Session source", () => {
+  const current = source.slice(source.indexOf("const currentDisplay"), source.indexOf("const deviceConnected"));
+  assert.match(current, /appearanceAgentId/);
+  assert.match(current, /agentAppearanceMap\?\.\[ownerId\]/);
+  const remember = source.slice(source.indexOf("const rememberAgent"), source.indexOf("const enableQueuedAgent"));
+  assert.doesNotMatch(remember, /setAppearanceAgentId/);
+  const usbApply = source.slice(source.indexOf("const applyDesktopPet"), source.indexOf("const rememberAgent"));
+  assert.match(usbApply, /setAppearanceAgentId\(agentId\)/);
+});
+
+test("removing a queued Agent keeps the last one and moves focus when needed", () => {
+  const remove = source.slice(source.indexOf("const removeQueuedAgent"), source.indexOf("const cancelAppearanceSync"));
+  assert.match(remove, /enabledAgents\.has\(id\)/);
+  assert.match(remove, /remaining\.length === 0/);
+  assert.match(remove, /至少保留一个 Agent/);
+  assert.match(remove, /remaining\.includes\(activeAgentId\) \? activeAgentId : remaining\[0\]/);
+  assert.match(remove, /invoke\("save_agent_selection"/);
+});
+
 test("provider exposes the documented context shape fields", () => {
   for (const field of [
     "binding",
@@ -297,6 +314,7 @@ test("provider exposes the documented context shape fields", () => {
     "appearances",
     "agentAppearanceMap",
     "enabledAgents",
+    "activeAgentId",
     "agentOptions",
     "agentScan",
     "currentDisplay",
@@ -304,6 +322,9 @@ test("provider exposes the documented context shape fields", () => {
     "currentComponentTarget",
     "appearanceSync",
     "applyDesktopPet",
+    "rememberAgent",
+    "enableQueuedAgent",
+    "removeQueuedAgent",
     "cancelAppearanceSync",
     "rescanUsbDevices",
     "refreshAgents",
@@ -360,7 +381,4 @@ test("supported Wi-Fi follows always verify the native pack before following the
   const flow = source.slice(source.indexOf("const applyWifiDesktopPet"), source.indexOf("const applyDesktopPet"));
   assert.ok(flow.indexOf('invoke("lan_sync_appearance"') < flow.indexOf('invoke("lan_follow_agent"'));
   assert.match(flow, /\["alreadyActive", "activated", "uploaded"\]\.includes\(outcome\)/);
-  const follow = source.slice(source.indexOf("const followAgent"), source.indexOf("const cancelAppearanceSync"));
-  assert.match(follow, /if \(wifi\.appearanceCapacity\) \{\s*return applyWifiDesktopPet\(agentId, appearance, \{ follow: true \}\)/);
-  assert.doesNotMatch(follow, /appearance\?\.id !== currentDisplay\.appearance/);
 });

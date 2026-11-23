@@ -61,7 +61,8 @@ import VoiceAssistantPanel, { buildVoiceSummary, formatVoiceSessionOption } from
 import {voiceRuntimeTarget,createVoiceRuntimePoller} from "./dashboard/voice-runtime-target.js";
 import RealtimeChatPanel, { realtimeStateLabel } from "./dashboard/RealtimeChatPanel.jsx";
 import { isRecoveringAsr, realtimeErrorMessage } from "./lib/realtime-feedback.js";
-import { useAgentSessionFeed } from "./dashboard/useAgentSessionFeed.js";
+import { useMultiAgentSessionFeed } from "./dashboard/useMultiAgentSessionFeed.js";
+import { toEnabledAgentIds } from "./lib/agent-focus.js";
 import { useDeviceVoiceRouter } from "./dashboard/useDeviceVoiceRouter.js";
 import { subscribeAsrCredentialUpdates } from "./dashboard/voice-credential-events.js";
 import { useP4SessionSync } from "./dashboard/useP4SessionSync.js";
@@ -817,6 +818,8 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     pairedStatus,
     onlineBoardDeviceId,
     currentDisplay,
+    enabledAgents,
+    rememberAgent,
     agentScan,
     refreshAgents,
     realtimeChat,
@@ -824,6 +827,12 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     setUsageHelp,
   } = useDeviceContext();
   const selectedAgentId = currentDisplay.agentId;
+  const enabledAgentIdList = useMemo(
+    () => toEnabledAgentIds(enabledAgents),
+    [enabledAgents],
+  );
+  const [selection, setSelection] = useState({ agentId: "", sessionId: "auto", selectedAt: 0 });
+  const liveAgentId = enabledAgentIdList.includes(selection.agentId) ? selection.agentId : selectedAgentId;
   const { push } = useToast();
   useEffect(() => {
     let active = true;
@@ -878,7 +887,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
   const wifiInputScope = wifiControlReady ? `${wifi.boardDeviceId}:${wifi.bootId}` : "";
   const wifiInputScopeRef = useRef(wifiInputScope);
   wifiInputScopeRef.current = wifiInputScope;
-  const voiceTarget = voiceRuntimeTarget(usb, selectedAgentId, wifi);
+  const voiceTarget = voiceRuntimeTarget(usb, liveAgentId, wifi);
   const voiceOnWifi = voiceTarget.kind === "wifi";
   const p4VoiceRuntime = isP4Runtime || voiceOnWifi;
   const voiceTargetKeyRef = useRef(voiceTarget.key);
@@ -910,7 +919,11 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     : agentScan?.pending
       ? "正在读取本机 CLI"
       : agentScan?.scannedAt
-        ? `已检测到 ${agentScan.detectedCount} 个 Agent，设备端仅显示当前跟随的 Agent 状态，对话结束后设备气泡保留显示 60 秒`
+        ? (usb.connected || wifi?.sessionSelection
+          ? `已检测到 ${agentScan.detectedCount} 个 Agent，设备端合并显示已启用 Agent 的会话，对话结束后设备气泡保留显示 60 秒`
+          : wifi
+            ? `已检测到 ${agentScan.detectedCount} 个 Agent，当前 Wi-Fi 固件仅显示当前会话来源的会话，对话结束后设备气泡保留显示 60 秒`
+            : `已检测到 ${agentScan.detectedCount} 个 Agent；连接设备后可查看会话`)
         : "读取本机已安装的 CLI Agent";
 
   const handleRefreshAgents = useCallback(async () => {
@@ -1044,10 +1057,12 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
   const mergeDismissedP4Sessions = useCallback((dismissed) => {
     setDismissedP4Sessions((current) => ({ ...current, ...dismissed }));
   }, []);
-  const sessionFeed = useAgentSessionFeed({
-    agentId: selectedAgentId,
+  const sessionFeed = useMultiAgentSessionFeed({
+    liveAgentId,
+    enabledAgentIds: enabledAgentIdList,
     displayEnabled: true,
     dismissedSessions: dismissedP4Sessions,
+    selectedSession: selection,
   });
   const p4SessionSync = useP4SessionSync({
     enabled: isP4Runtime,
@@ -1063,6 +1078,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     dismissedSessions: dismissedP4Sessions,
     onDismissSessions: mergeDismissedP4Sessions,
     formatSessionOption: formatVoiceSessionOption,
+    selection, setSelection, rememberAgent, wifi,
     push,
   });
   const selectedAgentBusSessions = sessionFeed.sessions;
@@ -1497,13 +1513,13 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
 
   const sendMockButtonInject = useCallback(() => {
     const text = (voiceState.mockInjectInput || "").trim();
-    if (!text || !selectedAgentId) return;
+    if (!text || !liveAgentId) return;
     voiceDispatch({ type: "set_mock_inject_pending", value: true });
-    const request = selectedAgentId === "workbuddy"
+    const request = p4SessionSync.selectedAgentId === "workbuddy"
       ? invoke("write_workbuddy_voice_test_draft", { text })
       : postMockButtonInject({
-      agentId: selectedAgentId,
-      sessionId: p4SessionSync.sessionId || "auto",
+      agentId: p4SessionSync.selectedAgentId,
+      sessionId: p4SessionSync.selectedRealSessionId || p4SessionSync.sessionId || "auto",
       text,
     });
     request
@@ -1512,12 +1528,13 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
           response?.sessionId
           || response?.done?.sessionId
           || response?.ready?.sessionId
+          || p4SessionSync.selectedRealSessionId
           || p4SessionSync.sessionId
           || "auto";
         voiceDispatch({
           type: "set_mock_inject_result",
           ok: true,
-          message: selectedAgentId === "workbuddy"
+          message: liveAgentId === "workbuddy"
             ? "已追加到 WorkBuddy 草稿，未发送；请核对文字是否一致、有无截图蒙层。"
             : `已发送到当前会话 · ${sessionId}`,
           reply: response?.tokenPreview || "",
@@ -1531,7 +1548,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
           reply: "",
         });
       });
-  }, [p4SessionSync.sessionId, selectedAgentId, voiceState.mockInjectInput]);
+  }, [p4SessionSync.selectedAgentId, p4SessionSync.selectedRealSessionId, p4SessionSync.sessionId, liveAgentId, voiceState.mockInjectInput]);
 
   const [appearanceObservationBusy, setAppearanceObservationBusy] = useState(false);
   const appearanceObservationOwnerRef = useRef(null);
@@ -1652,7 +1669,7 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
     {keyboardActive && <KeyboardConfiguration usb={usb} wifi={wifi} boardDeviceId={onlineBoardDeviceId || binding?.boardDeviceId}>
       <Card>
         <BoardButtonPanel
-          selectedAgentId={selectedAgentId}
+          selectedAgentId={liveAgentId}
           voiceConfig={runtimeVoiceConfig}
           buttonActions={voiceConfig.buttonActions}
           buttonValues={voiceConfig.buttonValues}
@@ -1753,8 +1770,8 @@ export default function DeviceDashboard({ active = true, keyboardActive = false,
             busSessions: selectedAgentBusSessions,
             busRoutingSessions: selectedAgentRoutingSessions,
             busSessionsLoaded: selectedAgentSessionsLoaded,
-            busSessionId: p4SessionSync.sessionId,
-            selectedAgentId,
+            busSessionId: p4SessionSync.selectedRealSessionId || p4SessionSync.sessionId,
+            selectedAgentId: liveAgentId,
             deviceOnline: Boolean(usb.connected || wifi),
             wifiConnected: Boolean(wifi),
             voiceOnWifi,

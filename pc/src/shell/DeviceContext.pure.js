@@ -6,7 +6,6 @@
  */
 
 import {
-  activeDesktopAssignment,
   appearanceById,
   channelLabelForId,
 } from "../lib/agent-appearance-config.js";
@@ -15,12 +14,12 @@ export function deviceDisplayId(boardDeviceId) {
   return String(boardDeviceId || "").slice(-6);
 }
 
-export function deriveCurrentDisplay(agentAppearanceMap, enabledAgents, appearances, agentOptions) {
-  const active = activeDesktopAssignment(agentAppearanceMap, enabledAgents);
+export function deriveCurrentDisplay(appearanceId, enabledAgents, appearances, agentOptions, activeAgentId = "") {
+  const agentId = enabledAgents?.has(activeAgentId) ? activeAgentId : [...(enabledAgents || [])][0] || "";
   return {
-    agentId: active.agentId,
-    appearance: appearanceById(appearances, active.appearanceId),
-    channelLabel: active.agentId ? channelLabelForId(agentOptions, active.agentId) : "",
+    agentId,
+    appearance: appearanceById(appearances, appearanceId),
+    channelLabel: agentId ? channelLabelForId(agentOptions, agentId) : "",
   };
 }
 
@@ -122,6 +121,10 @@ export function pairedWifiTarget(status) {
     bundledFirmwareVersion: status.bundledFirmwareVersion || "",
     bundledFirmwareRollbackBlocked: status.bundledFirmwareRollbackBlocked === true,
     wifiConnected: true,
+    sessionSelection: status.sessionSelection === true,
+    selectionSequence: status.selection?.sequence || 0,
+    selectionAgent: status.selection?.agentId || "",
+    selectionSession: status.selection?.sessionId || "",
     // Older LAN status versions default an absent vault flag to false.
     widgetCredentialStorageReady: status.widgetCredentialStorageReady === true,
     clockSynchronized: status.clockSynchronized === true,

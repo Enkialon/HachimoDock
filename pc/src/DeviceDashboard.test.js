@@ -28,28 +28,6 @@ function readRepoFile(...parts) {
   return readFileSync(join(srcDir, "..", ...parts), "utf8");
 }
 
-function cssRuleBlock(source, selector) {
-  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = source.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
-  assert.ok(match, `expected CSS rule for ${selector}`);
-  return match[1];
-}
-
-// ---- KEPT AS-IS: modal footer spacing ----
-
-test("channel switch confirmation owns its modal footer spacing", () => {
-  const modal = readSource("ChannelSwitchConfirmModal.jsx");
-  const css = readSource("styles.css");
-
-  assert.match(modal, /channel-switch-confirm-modal__actions/);
-  assert.match(modal, /跟随主体会从/);
-  assert.doesNotMatch(modal, /新渠道/);
-  assert.doesNotMatch(modal, /对应形象/);
-  assert.doesNotMatch(modal, /一套形象/);
-  assert.doesNotMatch(modal, /appearance-channel-modal__actions/);
-  assert.match(css, /\.channel-switch-confirm-modal__actions\s*\{[\s\S]*padding:\s*8px 20px 20px;/);
-});
-
 // ---- PORTED: channel switch persistence now lives in ChannelMatrixCard ----
 
 test("agent appearance matrix keeps unavailable channels visible and syncs only the followed agent", () => {
@@ -61,7 +39,8 @@ test("agent appearance matrix keeps unavailable channels visible and syncs only 
   assert.match(source, /BUILTIN_TERRIER_APPEARANCE_ID/);
   assert.match(source, /saveAgentAppearance\(agentId, appearance\.id\)/);
   assert.match(source, /agentId === activeAgentId/);
-  assert.match(source, /setPendingFollow\(\{ agentId, appearance \}\)/);
+  assert.match(source, /enableQueuedAgent\(agentId\)/);
+  assert.match(source, /removeQueuedAgent\(agentId\)/);
   assert.match(source, /applyDesktopPet\(agentId, appearance/);
   assert.doesNotMatch(source, /shouldConfirmChannelSwitch\(/);
   assert.doesNotMatch(source, /pendingActivate/);
@@ -76,7 +55,8 @@ test("Agent and appearance card summarizes detected Agents and device bubble beh
   assert.match(source, /aria-label="重新扫描本机 CLI Agent"/);
   assert.match(source, /loading=\{agentScan\?\.pending === true\}/);
   assert.match(source, /重新扫描/);
-  assert.match(source, /已检测到 \$\{agentScan\.detectedCount\} 个 Agent，设备端仅显示当前跟随的 Agent 状态，对话结束后设备气泡保留显示 60 秒/);
+  assert.match(source, /USB 下设备端合并显示已启用 Agent 的会话/);
+  assert.match(source, /Wi-Fi 下设备仅显示当前会话来源的会话，多 Agent 合并需 USB/);
 });
 
 test("current-Agent P4 session visibility is always on and follows adjacent snapshots", () => {
@@ -120,10 +100,10 @@ test("current-Agent P4 session visibility is always on and follows adjacent snap
     sessionSync,
     /sessions:\s*deviceSessions,/,
   );
-  assert.match(source, /useAgentSessionFeed\(/);
+  assert.match(source, /useMultiAgentSessionFeed\(/);
   assert.match(source, /useP4SessionSync\(/);
   assert.match(sessionFeed, /buildP4ConversationQueue\(/);
-  assert.match(source, /useAgentSessionFeed\(\{[\s\S]*displayEnabled: true,/);
+  assert.match(source, /useMultiAgentSessionFeed\(\{[\s\S]*displayEnabled: true,/);
   assert.match(source, /useP4SessionSync\(\{[\s\S]*displayEnabled: true,/);
   assert.match(source, /<ChannelMatrixCard\b/);
   assert.doesNotMatch(source, /showSessionDisplaySetting/);
@@ -160,11 +140,17 @@ test("P4 sessions consume ordered lifecycle events without accelerating metadata
   assert.match(streamReset[1], /pendingEvents\.length = 0/);
   assert.doesNotMatch(streamReset[1], /dispatch\(\{ type: "reset" \}\)/);
 });
-test("follow changes clear the prior Agent sessions before loading the new snapshot", () => {
+test("follow changes keep the prior Agent sessions and never reset the merged queue", () => {
   const source = readSource("DeviceDashboard.jsx");
   const sessionFeed = readSource("dashboard/useAgentSessionFeed.js");
   const rust = readRepoFile("src-tauri", "src", "lib.rs");
+  const match = rust.match(
+    /async fn dispatch_remote_cli_binding[\s\S]*?\/\/ ── Desktop device ID ──/,
+  );
+  assert.ok(match, "expected dispatch_remote_cli_binding block");
+  const dispatch = match[0];
 
+  // The focused Agent's own feed still resets when its identity changes.
   assert.match(sessionFeed, /agentId:\s*""/);
   assert.match(sessionFeed, /agentId,/);
   assert.match(sessionFeed, /const matchesAgent = state\.agentId === agentId/);
@@ -173,13 +159,11 @@ test("follow changes clear the prior Agent sessions before loading the new snaps
   assert.match(sessionFeed, /type:\s*"replace_snapshot",[\s\S]*agentId,/);
   assert.match(source, /busSessions:\s*selectedAgentBusSessions/);
   assert.match(source, /busRoutingSessions:\s*selectedAgentRoutingSessions/);
-  assert.match(rust, /fn reset_p4_session_binding_for_agent/);
-  assert.match(rust, /p4_session_agent_switch_required/);
-  assert.match(rust, /"sessionId": "auto"/);
-  assert.match(rust, /"sessions": \[\]/);
-  assert.match(rust, /"agentId": &target_source/);
-  assert.match(rust, /"activeSessionIds": \[\]/);
-  assert.match(rust, /sessions_reset/);
+  // The binding reset stays in use, but the merged queue is not cleared for
+  // ordinary source switches; only the cardless Antigravity channel is.
+  assert.match(dispatch, /reset_p4_session_binding_after_send/);
+  assert.match(dispatch, /if target_source == "antigravity"/);
+  assert.match(dispatch, /sessions_reset,/);
 });
 
 // ---- PORTED: voice button configuration now in BoardButtonPanel ----
@@ -520,7 +504,7 @@ test("board voice action injection status is surfaced in the voice panel", () =>
   assert.match(rust, /bridge\.confirm\(revision, &text\)/);
   assert.doesNotMatch(source, /后台回退|后台会话桥接/);
   assert.match(source, /agentId: selectedAgentId/);
-  assert.match(source, /sessionId: p4SessionSync\.sessionId \|\| "auto"/);
+  assert.match(source, /sessionId: p4SessionSync\.selectedRealSessionId \|\| p4SessionSync\.sessionId \|\| "auto"/);
 
   assert.match(panelSource, /诊断与测试/);
   assert.match(panelSource, /模拟文本注入/);
@@ -581,11 +565,8 @@ test("Button-selected conversations are temporary and bound to status and input 
   assert.match(sessionSync, /set_p4_session_binding/);
   assert.match(source, /boardDeviceId: p4TargetBoardDeviceId/);
   assert.match(sessionSync, /const confirmedEmptyQueue = sessionsLoaded/);
-  assert.match(
-    sessionSync,
-    /const autoRoutingSession = explicitDshSessionRequired \? null : selectableSessions\[0\] \|\| routingSessions\?\.\[0\] \|\| sessions\?\.\[0\]/,
-  );
-  assert.match(sessionSync, /const explicitDshSessionRequired = agentId === "deepseek-harness"/);
+  assert.match(sessionSync, /const autoEligible = \(session\) => normalizeText\(session\?\.agentId\) !== "deepseek-harness"/);
+  assert.match(sessionSync, /const autoRoutingSession = selectableSessions\.find\(autoEligible\)/);
   assert.match(sessionSync, /const autoFollow = sessionId === "auto" && Boolean\(selectedRoutingSession\)/);
   assert.match(sessionSync, /!selectedRoutingSession[\s\S]*!confirmedEmptyQueue/);
   assert.match(sessionFeed, /case "reset"/);
@@ -961,7 +942,7 @@ test("voice bus polling self-heals the managed bridge after a local port failure
 test("P4 voice polling waits for identity and delegates to the target-bound poller", () => {
   const source = readSource("DeviceDashboard.jsx");
   const helper = readSource("dashboard/voice-runtime-target.js");
-  assert.match(source, /voiceRuntimeTarget\(usb, selectedAgentId, wifi\)/);
+  assert.match(source, /voiceRuntimeTarget\(usb, liveAgentId, wifi\)/);
   assert.match(source, /voiceTargetKeyRef\.current = voiceTarget\.key/);
   assert.match(source, /createVoiceRuntimePoller/);
   assert.match(source, /isCurrent:.*voiceTargetKeyRef\.current===voiceTarget\.key/);

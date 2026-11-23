@@ -7568,26 +7568,6 @@ select:focus-visible {
   width: min(520px, 100%) !important;
 }
 
-.channel-switch-confirm-modal {
-  width: min(620px, 100%);
-}
-
-.channel-switch-confirm-modal__body {
-  padding: 18px 20px 10px;
-}
-
-.channel-switch-confirm-modal__message {
-  margin-top: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.channel-switch-confirm-modal__message svg {
-  flex: 0 0 auto;
-  margin-top: 3px;
-}
-
 .channel-switch-confirm-modal__actions {
   display: flex;
   justify-content: flex-end;
