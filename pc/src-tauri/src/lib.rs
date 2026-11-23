@@ -628,6 +628,8 @@ struct SetP4SessionBindingInput {
 #[serde(rename_all = "camelCase")]
 struct P4SessionQueueInput {
     id: String,
+    #[serde(default)]
+    agent_id: String,
     title: String,
     #[serde(default)]
     cwd: String,
@@ -4687,9 +4689,8 @@ async fn dispatch_remote_cli_binding(
             )
             .map_err(|error| format!("USB 下发渠道切换失败: {error}"))?;
 
-        // Establish the new lifecycle before clearing its session queue. Old
-        // DSH lifecycle/event labels must not survive an otherwise idle follow.
-        // This is one fresh status update, never an asset mutation replay.
+        // Establish the new lifecycle before any queue bookkeeping. Old DSH
+        // lifecycle/event labels must not survive an otherwise idle follow.
         usb_manager.send_follow_change_for_connection(&board_device_id, connection_generation, &format!("state/{target_source}"), &serde_json::json!({
             "source": &target_source,
             "state": "idle",
@@ -4702,14 +4703,21 @@ async fn dispatch_remote_cli_binding(
         if usb_status.runtime.eq_ignore_ascii_case("esp-p4") {
             sessions_reset = reset_p4_session_binding_after_send(
                 p4_session_binding(), &board_device_id, &target_source, || {
-                    usb_manager.send_session_current_for_connection(
-                        &board_device_id, connection_generation,
-                        &serde_json::json!({
-                            "sessionId": "auto", "title": "", "index": 0, "count": 0,
-                            "sessions": [], "agentId": &target_source, "activeSessionIds": [],
-                            "displayEnabled": true, "notice": "",
-                        }),
-                    ).map_err(|error| format!("USB 清理旧 Agent 会话失败: {error}"))
+                    // Do not clear the merged device queue on a focus change.
+                    // The cardless Antigravity channel still needs its empty
+                    // snapshot so its stale bubble cannot survive the switch.
+                    if target_source == "antigravity" {
+                        usb_manager.send_session_current_for_connection(
+                            &board_device_id, connection_generation,
+                            &serde_json::json!({
+                                "sessionId": "auto", "title": "", "index": 0, "count": 0,
+                                "sessions": [], "agentId": &target_source, "activeSessionIds": [],
+                                "displayEnabled": true, "notice": "",
+                            }),
+                        ).map_err(|error| format!("USB 清理旧 Agent 会话失败: {error}"))
+                    } else {
+                        Ok(())
+                    }
                 },
             )?;
             if sessions_reset {
@@ -5205,6 +5213,55 @@ async fn set_p4_session_binding(
         .map_err(|error| error.to_string())?
 }
 
+fn build_p4_device_sessions(
+    sessions: &[P4SessionQueueInput],
+    default_agent: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let mut device_sessions = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        let id = session.id.trim();
+        let item_agent = if session.agent_id.trim().is_empty() {
+            default_agent.trim()
+        } else {
+            session.agent_id.trim()
+        };
+        let title = session.title.trim();
+        let cwd = session.cwd.trim();
+        let content = session.content.trim();
+        let state = session.state.trim().to_ascii_lowercase();
+        if id.is_empty() || id.len() > 512 {
+            return Err("设备会话 ID 无效".to_string());
+        }
+        if title.len() > 1024 {
+            return Err("设备会话名称过长".to_string());
+        }
+        if cwd.len() > 2048 {
+            return Err("设备会话工作目录过长".to_string());
+        }
+        if content.len() > 2048 {
+            return Err("设备会话进展内容过长".to_string());
+        }
+        if state.len() > 32 {
+            return Err("设备会话状态过长".to_string());
+        }
+        validate_p4_session_transition_metadata(
+            &state,
+            session.transition_revision,
+            session.terminal_remaining_ms,
+        )?;
+        device_sessions.push(serde_json::json!({
+            "id": id,
+            "agentId": item_agent,
+            "title": title,
+            "content": content,
+            "state": if state.is_empty() { "idle" } else { state.as_str() },
+            "transitionRevision": session.transition_revision,
+            "terminalRemainingMs": session.terminal_remaining_ms,
+        }));
+    }
+    Ok(device_sessions)
+}
+
 fn set_p4_session_binding_blocking(
     input: SetP4SessionBindingInput,
     usb_manager: usb_serial::UsbSerialManager,
@@ -5274,45 +5331,11 @@ fn set_p4_session_binding_blocking(
     }
     let session_title_unique = input.session_title_unique
         && p4_session_target_is_unique(session_title, session_cwd, &input.sessions);
-    let mut device_sessions = Vec::with_capacity(input.sessions.len());
-    for session in &input.sessions {
-        let id = session.id.trim();
-        let title = session.title.trim();
-        let cwd = session.cwd.trim();
-        let content = session.content.trim();
-        let state = session.state.trim().to_ascii_lowercase();
-        if id.is_empty() || id.len() > 512 {
-            return Err("设备会话 ID 无效".to_string());
-        }
-        if title.len() > 1024 {
-            return Err("设备会话名称过长".to_string());
-        }
-        if cwd.len() > 2048 {
-            return Err("设备会话工作目录过长".to_string());
-        }
-        if content.len() > 2048 {
-            return Err("设备会话进展内容过长".to_string());
-        }
-        if state.len() > 32 {
-            return Err("设备会话状态过长".to_string());
-        }
-        validate_p4_session_transition_metadata(
-            &state,
-            session.transition_revision,
-            session.terminal_remaining_ms,
-        )?;
-        device_sessions.push(serde_json::json!({
-            "id": id,
-            "title": title,
-            "content": content,
-            "state": if state.is_empty() { "idle" } else { state.as_str() },
-            "transitionRevision": session.transition_revision,
-            "terminalRemainingMs": session.terminal_remaining_ms,
-        }));
-    }
+    let device_sessions = build_p4_device_sessions(&input.sessions, &agent_id)?;
 
     // Validate authoritative native follow ownership BEFORE any UI navigation
-    // or PC voice-target changes. The same generation also owns the wire write.
+    // or PC voice-target changes. The top-level Agent stays the focused Agent,
+    // so state/speech scope still matches the physical follow target.
     let connection_id = usb_manager.check_session_follow_target(
         &board_device_id, &agent_id, &input.expected_connection_id, &input.expected_boot_id)?;
     let mut binding = p4_session_binding()
@@ -6130,8 +6153,7 @@ fn load_agent_selection() -> Result<AgentSelectionResponse, String> {
     })
 }
 
-#[tauri::command]
-fn save_agent_selection(input: AgentSelectionInput) -> Result<AgentSelectionResponse, String> {
+fn write_agent_selection(input: AgentSelectionInput) -> Result<AgentSelectionResponse, String> {
     let _profile_gate = bridge_profile_write_gate().lock().map_err(|_| "profile update unavailable".to_string())?;
     let config_path = get_bridge_profile_path()?;
     let mut profile = read_bridge_profile(&config_path)?.unwrap_or_default();
@@ -6153,6 +6175,18 @@ fn save_agent_selection(input: AgentSelectionInput) -> Result<AgentSelectionResp
         has_saved_selection: true,
         config_path: config_path.display().to_string(),
     })
+}
+
+#[tauri::command]
+fn save_agent_selection(
+    input: AgentSelectionInput,
+    usb_manager: tauri::State<'_, usb_serial::UsbSerialManager>,
+) -> Result<AgentSelectionResponse, String> {
+    let response = write_agent_selection(input)?;
+    if !response.selected_agent_id.trim().is_empty() {
+        usb_manager.inner().set_follow_agent(&response.selected_agent_id);
+    }
+    Ok(response)
 }
 
 fn bridge_runtime_lifecycle_lock() -> &'static Mutex<()> {
@@ -15987,10 +16021,59 @@ mod tests {
     }
 
     #[test]
+    fn p4_device_sessions_serialize_per_item_agent_and_keep_cross_agent_ids() {
+        let sessions = vec![
+            P4SessionQueueInput {
+                id: "same-id".to_string(),
+                agent_id: "codex".to_string(),
+                title: "A".to_string(),
+                cwd: String::new(),
+                content: String::new(),
+                state: "working".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+            P4SessionQueueInput {
+                id: "same-id".to_string(),
+                agent_id: "claude-code".to_string(),
+                title: "B".to_string(),
+                cwd: String::new(),
+                content: String::new(),
+                state: "working".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+            P4SessionQueueInput {
+                id: "fallback-id".to_string(),
+                agent_id: String::new(),
+                title: "C".to_string(),
+                cwd: String::new(),
+                content: String::new(),
+                state: "working".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+        ];
+        let payload = build_p4_device_sessions(&sessions, "claude-code").unwrap();
+        let wire = serde_json::to_value(&payload).unwrap();
+        let rows = wire.as_array().unwrap();
+        assert_eq!(rows.len(), 3, "equal ids from two Agents must not merge");
+        assert_eq!(rows[0]["id"], "same-id");
+        assert_eq!(rows[0]["agentId"], "codex");
+        assert_eq!(rows[1]["id"], "same-id");
+        assert_eq!(rows[1]["agentId"], "claude-code");
+        assert_eq!(rows[2]["agentId"], "claude-code", "missing item Agent falls back to the focus");
+        assert!(rows.iter().all(|row| {
+            row["agentId"].as_str().is_some_and(|agent| !agent.is_empty())
+        }));
+    }
+
+    #[test]
     fn p4_session_title_uses_workspace_to_disambiguate_codex_tasks() {
         let sessions = vec![
             P4SessionQueueInput {
                 id: "one".to_string(),
+                agent_id: "codex".to_string(),
                 title: "修复语音".to_string(),
                 cwd: r"D:\code\one".to_string(),
                 content: String::new(),
@@ -16000,6 +16083,7 @@ mod tests {
             },
             P4SessionQueueInput {
                 id: "two".to_string(),
+                agent_id: "codex".to_string(),
                 title: "修复语音".to_string(),
                 cwd: r"D:\code\two".to_string(),
                 content: String::new(),
@@ -16022,6 +16106,7 @@ mod tests {
         let sessions = vec![
             P4SessionQueueInput {
                 id: "one".to_string(),
+                agent_id: "codex".to_string(),
                 title: "修复语音".to_string(),
                 cwd: r"D:\code\one".to_string(),
                 content: String::new(),
@@ -16031,6 +16116,7 @@ mod tests {
             },
             P4SessionQueueInput {
                 id: "two".to_string(),
+                agent_id: "codex".to_string(),
                 title: "修复语音".to_string(),
                 cwd: r"D:\code\one".to_string(),
                 content: String::new(),

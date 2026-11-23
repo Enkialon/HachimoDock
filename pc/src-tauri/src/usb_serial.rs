@@ -3358,6 +3358,20 @@ impl UsbSerialManager {
             Some(expected_board_device_id), Some(expected_connection_id), None)
     }
 
+    // Focus changes are a PC-side operation; keep the existing submitted
+    // scope open for the new Agent's state/speech without replaying a device
+    // binding command. An unsubmitted scope stays closed.
+    pub(crate) fn set_follow_agent(&self, agent: &str) {
+        let agent = agent.trim();
+        if agent.is_empty() { return; }
+        if let Ok(mut scope) = self.follow_scope.lock() {
+            if let Some(scope) = scope.as_mut() {
+                scope.agent = agent.to_string();
+                scope.session = None;
+            }
+        }
+    }
+
     // Callback-safe metadata only: never wait for a writer/connection mutex.
     pub(crate) fn session_follow_target_is_current(&self, board: &str, generation: &str, agent: &str) -> bool {
         // Every holder only inspects/updates metadata; none performs IO or UI
@@ -9225,6 +9239,10 @@ manager.activate_memory_test_connection();
         assert!(manager.check_session_follow_target("p4-test", "codex", "2", "0123456789abcdef").is_err());
         assert!(manager.check_session_follow_target("p4-test", "codex", "1", "ffffffffffffffff").is_err());
         assert_eq!(manager.check_session_follow_target("p4-test", "codex", "1", "0123456789abcdef"), Ok(1));
+        // The top-level snapshot Agent is the focused Agent; a per-item Agent
+        // never widens the physical follow scope.
+        assert!(manager.session_follow_target_is_current("p4-test", "1", "codex"));
+        assert!(!manager.session_follow_target_is_current("p4-test", "1", "claude-code"));
         manager.follow_scope.lock().unwrap().as_mut().unwrap().submitted = false;
         assert!(manager.check_session_follow_target("p4-test", "codex", "1", "0123456789abcdef").is_err());
         assert!(!manager.session_follow_target_is_current("p4-test", "1", "codex"));

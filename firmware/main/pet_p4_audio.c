@@ -1804,24 +1804,26 @@ static const char *completion_agent(const pet_p4_runtime_state_t *state) {
   return state->current_session_agent[0]?state->current_session_agent:state->active_agent;
 }
 static void completion_cue_observe(const pet_p4_runtime_state_t *state,unsigned long long now_ms) {
-  const char *agent=completion_agent(state);
+  const char *fallback_agent=completion_agent(state);
+  #define COMPLETION_ITEM_AGENT(item) ((item)->agent[0]?(item)->agent:fallback_agent)
   unsigned count=state->session_queue_count<PET_P4_SESSION_QUEUE_MAX?state->session_queue_count:PET_P4_SESSION_QUEUE_MAX;
   portENTER_CRITICAL(&g_status_cue_mux);
   pet_completion_snapshot_begin(&g_completion_cues);
-  for(unsigned i=0;i<count;i++)pet_completion_snapshot_present(&g_completion_cues,agent,state->session_queue[i].id);
-  if(!count)pet_completion_snapshot_present(&g_completion_cues,agent,state->current_session_id);
+  for(unsigned i=0;i<count;i++)pet_completion_snapshot_present(&g_completion_cues,COMPLETION_ITEM_AGENT(&state->session_queue[i]),state->session_queue[i].id);
+  if(!count)pet_completion_snapshot_present(&g_completion_cues,fallback_agent,state->current_session_id);
   for (unsigned i = 0; i < count; i++) {
     const pet_p4_session_queue_item_t *item = &state->session_queue[i];
-    pet_completion_observe(&g_completion_cues, agent, item->id, item->transition_revision,
+    pet_completion_observe(&g_completion_cues, COMPLETION_ITEM_AGENT(item), item->id, item->transition_revision,
       completion_active(item->state), completion_outcome(item->state));
   }
   if (!count) {
     const char *lifecycle = pet_p4_state_effective_lifecycle(state, now_ms);
-    pet_completion_observe(&g_completion_cues, agent, state->current_session_id, 0,
+    pet_completion_observe(&g_completion_cues, fallback_agent, state->current_session_id, 0,
       completion_active(lifecycle), completion_outcome(lifecycle));
   }
   pet_completion_snapshot_end(&g_completion_cues);
   portEXIT_CRITICAL(&g_status_cue_mux);
+  #undef COMPLETION_ITEM_AGENT
 }
 void pet_p4_audio_process(
   const pet_p4_runtime_state_t *state,
@@ -1846,7 +1848,10 @@ void pet_p4_audio_process(
   const pet_p4_session_queue_item_t *current_session = NULL;
   for (unsigned i = 0; i < state->session_queue_count && i < PET_P4_SESSION_QUEUE_MAX; i += 1) {
     if (state->current_session_id[0]
-        && strcmp(state->session_queue[i].id, state->current_session_id) == 0) {
+        && strcmp(state->session_queue[i].id, state->current_session_id) == 0
+        && (!state->current_session_agent[0]
+          || !state->session_queue[i].agent[0]
+          || strcmp(state->session_queue[i].agent, state->current_session_agent) == 0)) {
       current_session = &state->session_queue[i];
       break;
     }

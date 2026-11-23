@@ -1067,6 +1067,11 @@ fn session_payload(input: &Value, agent: &str) -> Result<Value, String> {
         .ok_or("Invalid LAN active sessions.")?;
     let sessions: Vec<_> = rows.iter().map(|row| json!({
         "id": clipped(&row["id"], 127),
+        "agentId": if row["agentId"].as_str().is_some_and(|id| !id.trim().is_empty()) {
+            clipped(&row["agentId"], 64)
+        } else {
+            Value::String(agent.to_string())
+        },
         "title": clipped(&row["title"], 191),
         "content": clipped(&row["content"], 383),
         "state": clipped(&row["state"], 23),
@@ -1156,7 +1161,7 @@ pub(crate) async fn lan_follow_agent(
         }))
             .map_err(|_| "无法准备 Wi-Fi 跟随指令。")?;
         exchange(&peer, SNAPSHOT, &body).map_err(|_| "Wi-Fi 设备未确认本次切换，请检查连接。")?;
-        crate::save_agent_selection(crate::AgentSelectionInput {
+        crate::write_agent_selection(crate::AgentSelectionInput {
             enabled_agents: vec![agent.clone()],
             selected_agent_id: Some(agent),
         }).map_err(|_| "设备已收到指令，桌面跟随配置保存失败。")?;

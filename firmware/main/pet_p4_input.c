@@ -1100,6 +1100,7 @@ static void send_input_event(
     const pet_p4_session_queue_item_t *selected =
       &state->session_queue[state->current_session_index - 1];
     cJSON_AddStringToObject(payload, "sessionId", selected->id);
+    cJSON_AddStringToObject(payload, "agentId", selected->agent);
     cJSON_AddStringToObject(payload, "sessionTitle", selected->title);
     cJSON_AddNumberToObject(payload, "sessionIndex", state->current_session_index);
     cJSON_AddNumberToObject(payload, "sessionCount", state->session_queue_count);
@@ -1274,6 +1275,11 @@ static bool apply_local_action(
       state->current_session_id,
       sizeof(state->current_session_id),
       state->session_queue[selected].id
+    );
+    copy_text(
+      state->current_session_agent,
+      sizeof(state->current_session_agent),
+      state->session_queue[selected].agent
     );
     copy_text(
       state->current_session_title,
