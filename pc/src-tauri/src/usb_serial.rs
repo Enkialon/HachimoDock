@@ -3365,7 +3365,7 @@ impl UsbSerialManager {
         let agent = agent.trim();
         if agent.is_empty() { return; }
         if let Ok(mut scope) = self.follow_scope.lock() {
-            if let Some(scope) = scope.as_mut() {
+            if let Some(scope) = scope.as_mut().filter(|scope| scope.agent != agent) {
                 scope.agent = agent.to_string();
                 scope.session = None;
             }

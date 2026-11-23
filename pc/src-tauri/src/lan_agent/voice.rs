@@ -25,6 +25,7 @@ const MAX_FRAMES: u64 = 1500;
 pub(crate) struct Route {
     target: AudioTarget,
     usb: UsbSerialManager,
+    session_selection: bool,
     valid: Arc<AtomicBool>,
 }
 
@@ -77,6 +78,12 @@ struct Capture {
 }
 
 fn capture(app: &tauri::AppHandle, route: &Route, token: u32) -> Option<Capture> {
+    let peer = load_peer().filter(|peer| route.target.matches_peer(Some(peer)))?;
+    let pressed = if route.session_selection {
+        let pressed = super::read_local_selection(&peer, route.target.boot_id(), 3).ok()?;
+        if pressed.sequence != token { return None; }
+        Some(pressed)
+    } else { None };
     let (mut stream, key) = route.target.open_voice(token).ok()?;
     if !route.is_current() {
         return None;
@@ -96,9 +103,14 @@ fn capture(app: &tauri::AppHandle, route: &Route, token: u32) -> Option<Capture>
     }
     let board = route.target.board_id();
     let boot = route.target.boot_id();
+    let target = super::voice_target(board, boot);
+    if !queue_empty && pressed.as_ref().is_some_and(|p|
+        !target.as_ref().is_some_and(|t| t.agent_id == p.agent_id && t.session_id == p.session_id)) {
+        return None;
+    }
     let utterance_id = uuid::Uuid::new_v4().to_string();
     start_device_voice_context(app, board, &utterance_id, &utterance_id, "", boot,
-        queue_empty, Some(route.clone()), None);
+        queue_empty, Some(route.clone()), None, target);
     let context = active_device_voice_context().lock().ok()
         .and_then(|current| current.as_ref().filter(|context| context.utterance_id == utterance_id).cloned())?;
 
@@ -138,6 +150,7 @@ fn probe(peer: &Peer, usb: &UsbSerialManager) -> Option<Route> {
         return None;
     }
     Some(Route {
+        session_selection: status.rtc_key & 64 != 0,
         target: AudioTarget::from_status(peer.clone(), status, "").ok()?,
         usb: usb.clone(),
         valid: Arc::new(AtomicBool::new(true)),

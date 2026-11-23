@@ -359,11 +359,32 @@ pub(crate) async fn lan_device_status(app: tauri::AppHandle) -> Result<PairedLan
     }).await.map_err(|_| "Wi-Fi 设备状态查询任务未完成。")?
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalSelection {
+    boot_id: String,
+    sequence: u32,
+    agent_id: String,
+    session_id: String,
+}
+
+fn read_local_selection(peer: &Peer, boot: &str, request: u8) -> io::Result<LocalSelection> {
+    let bytes = exchange_response(peer, DEVICE_STATUS, &[request], Some(2048))?;
+    let row: LocalSelection = serde_json::from_slice(&bytes)?;
+    if row.boot_id != boot { return Err(io::Error::other("Wi-Fi device restarted")); }
+    Ok(row)
+}
+
 fn current_status(app: &tauri::AppHandle, peer: Peer) -> Result<PairedLanStatus, String> {
     let (peer, device) = read_peer_with_recovery(peer, query_status,
         "无法读取 Wi-Fi 设备状态，请确认设备在线且固件支持无线状态查询。")?;
     let (version, blocked) = ota::bundled_wifi6_status(app, &device.board_device_id);
+    let session_selection = device.rtc_key & 64 != 0 && device.control_trusted;
+    let selection = if session_selection {
+        read_local_selection(&peer, &device.boot_id, 2).ok()
+    } else { None };
     Ok(PairedLanStatus {
+        session_selection, selection,
         address: peer.address.ip().to_string(),
         bundled_firmware_version: version,
         bundled_firmware_rollback_blocked: blocked,
@@ -396,6 +417,8 @@ pub(crate) async fn lan_connection_snapshot(app: tauri::AppHandle) -> Result<Con
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PairedLanStatus {
+    session_selection: bool,
+    selection: Option<LocalSelection>,
     address: String,
     bundled_firmware_version: Option<&'static str>,
     bundled_firmware_rollback_blocked: bool,
@@ -1035,6 +1058,8 @@ pub(crate) fn paired() -> bool {
 struct SessionSnapshot {
     value: Value,
     observed: Instant,
+    voice_target: crate::P4SessionBinding,
+    boot_id: String,
 }
 static SESSIONS: Mutex<Option<SessionSnapshot>> = Mutex::new(None);
 // Order explicit follow changes with background presentation snapshots.
@@ -1085,6 +1110,7 @@ fn session_payload(input: &Value, agent: &str) -> Result<Value, String> {
         "index": input["index"].as_u64().unwrap_or(0).min(999),
         "count": input["count"].as_u64().unwrap_or(0).min(999),
         "displayEnabled": input["displayEnabled"].as_bool().unwrap_or(false),
+        "selectionSequence": input["selectionSequence"].as_u64().unwrap_or(0),
         "activeSessionIds": active.iter().map(|id| clipped(id, 127)).collect::<Vec<_>>(),
         "sessions": sessions,
     }))
@@ -1100,20 +1126,34 @@ pub(crate) fn lan_agent_sessions(input: Value) -> Result<(), String> {
     *SESSIONS
         .lock()
         .map_err(|_| "LAN session queue unavailable.")? = Some(SessionSnapshot {
+        voice_target: crate::P4SessionBinding {
+            board_device_id: input["boardDeviceId"].as_str().unwrap_or_default().into(),
+            agent_id: agent,
+            session_id: input["sessionId"].as_str().filter(|s| *s != "auto").unwrap_or_default().into(),
+            session_title: input["title"].as_str().unwrap_or_default().into(),
+            session_cwd: input["sessionCwd"].as_str().unwrap_or_default().into(),
+            session_title_unique: input["sessionTitleUnique"] == true,
+            auto_follow: input["autoFollow"] == true,
+            ..Default::default()
+        },
+        boot_id: input["bootId"].as_str().unwrap_or_default().into(),
         value,
         observed: Instant::now(),
     });
     Ok(())
 }
 
+pub(crate) fn voice_target(board: &str, boot: &str) -> Option<crate::P4SessionBinding> {
+    let guard = SESSIONS.lock().ok()?;
+    let row = guard.as_ref()?;
+    (row.voice_target.board_device_id == board && row.boot_id == boot &&
+        row.observed.elapsed() <= SNAPSHOT_MAX_AGE).then(|| row.voice_target.clone())
+}
+
 fn current_sessions(agent: &str) -> Option<Value> {
-    // The explicit follow request clears the old device cards once. Further
-    // empty snapshots would reset the Antigravity speech bubble.
-    if agent == "antigravity" {
-        return None;
-    }
     let snapshot = SESSIONS.lock().ok()?;
     let snapshot = snapshot.as_ref()?;
+    if agent == "antigravity" && snapshot.value["sessions"].as_array().is_some_and(Vec::is_empty) { return None; }
     let age = snapshot.observed.elapsed();
     if age > SNAPSHOT_MAX_AGE || snapshot.value["agentId"] != agent {
         return None;

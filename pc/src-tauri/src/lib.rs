@@ -1194,6 +1194,7 @@ fn voice_needs_current_composer(target: &P4SessionBinding, frontmost: bool, empt
     // Codex chats can have a visible composer before the session feed has an ID.
     // Let the existing AX bridge validate and pin the unique visible composer;
     // never synthesize an ID or navigate to another conversation here.
+    if device_voice_bound_target_is_addressable(empty_queue, target) { return false; }
     should_use_current_visible_session(frontmost, empty_queue, &target.agent_id)
         || (agent_uses_visible_composer(&target.agent_id) && target.session_id.trim().is_empty())
 }
@@ -1246,7 +1247,10 @@ fn device_voice_target_is_current(context: &DeviceVoiceContext) -> bool {
         return false;
     }
     if let Some(route) = &context.wireless_route {
-        return route.is_current() && resolve_usb_inject_agent_id() == context.target.agent_id;
+        if !route.is_current() || resolve_usb_inject_agent_id() != context.target.agent_id { return false; }
+        if context.target.session_id.is_empty() { return true; }
+        return lan_agent::voice_target(&context.board_device_id, &context.boot_id)
+            .is_some_and(|target| device_voice_binding_matches(&context.target, &target));
     }
     if !context.connection_id.is_empty() {
         let manager = context.emitter.state::<usb_serial::UsbSerialManager>();
@@ -2454,8 +2458,9 @@ fn start_device_voice_context(
     session_queue_empty_at_start: bool,
     wireless_route: Option<lan_agent::voice::Route>,
     feedback_token: Option<u32>,
+    captured_target: Option<P4SessionBinding>,
 ) {
-    let target = if wireless_route.is_some() {
+    let target = captured_target.unwrap_or_else(|| if wireless_route.is_some() {
         P4SessionBinding {
             board_device_id: board_device_id.to_string(),
             agent_id: resolve_usb_inject_agent_id(),
@@ -2463,7 +2468,7 @@ fn start_device_voice_context(
         }
     } else {
         device_voice_target_snapshot(board_device_id)
-    };
+    });
     // Publish the capture before doing any desktop work. The USB reader can
     // then drain incoming PCM into the existing bounded pending queue.
     let use_current_visible_session = voice_needs_current_composer(
@@ -3678,6 +3683,17 @@ fn handle_incoming_usb_message_with_voice_feedback(
                 && event.get("ok").and_then(|value| value.as_bool()) == Some(true)
                 && event.get("duplicate").and_then(|value| value.as_bool()) != Some(true)
             {
+                let board = event["boardDeviceId"].as_str().unwrap_or_default();
+                let target = device_voice_target_snapshot(board);
+                if let Some(session) = payload["targetSessionId"].as_str() {
+                    if target.session_id != session || payload["targetAgentId"].as_str() != Some(target.agent_id.as_str()) {
+                        let _ = emitter.emit("voice-transcript", serde_json::json!({
+                            "phase": "error", "boardDeviceId": board,
+                            "error": "所选会话正在同步，请重新按住说话。"
+                        }));
+                        return;
+                    }
+                }
                 eprintln!("[device-voice] validated audio capture began");
                 start_device_voice_context(
                     emitter,
@@ -3696,6 +3712,7 @@ fn handle_incoming_usb_message_with_voice_feedback(
                     None,
                     device_voice_feedback::supported(&payload["_nativeUsbScope"])
                         .then(|| device_voice_feedback::token(&payload["voiceFeedbackToken"])),
+                    Some(target),
                 );
             } else if event["ok"] == false {
                 let active = active_device_voice_context()
