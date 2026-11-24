@@ -82,6 +82,19 @@ export function formatDeviceSessionTitle(session, fallbackSessionId = "") {
   return sessionId && sessionId !== "auto" ? `会话 ${sessionId.slice(0, 8)}` : "";
 }
 
+export function nextWifiSelectionAction({
+  connectionChanged,
+  hasRow,
+  selectionKey,
+  lastSelectionKey,
+}) {
+  // A reported device card wins over the connection reset in the same update;
+  // the reset only applies when the new link has no selectable card.
+  if (hasRow && selectionKey !== lastSelectionKey) return "apply";
+  if (connectionChanged) return "reset";
+  return "ignore";
+}
+
 export function isDeviceSessionTargetUnique(selectedSession, sessions) {
   const selectedTitle = formatDeviceSessionTitle(selectedSession);
   if (!selectedTitle) return false;
@@ -263,21 +276,48 @@ export function useP4SessionSync({
     }).finally(() => { pendingAgent.current = ""; });
   }, [selectedAgentId, agentId, rememberAgent, bindingSyncRevision, push]);
 
+  const lastConnectionIdentity = useRef("");
   const lastWifiSelection = useRef("");
   useEffect(() => {
-    if (!wifi?.selectionSequence) return;
-    const key = [wifi.boardDeviceId, wifi.bootId, wifi.selectionSequence].join("/");
-    if (key === lastWifiSelection.current) return;
-    const row = selectableSessions.find(s => s.id === wifi.selectionSession && s.agentId === wifi.selectionAgent);
-    if (!row) return;
-    lastWifiSelection.current = key;
-    onSessionChange(row.id, row.agentId);
-  }, [wifi, selectableSessions, onSessionChange]);
-
-  useEffect(() => {
-    setSelection({ agentId: "", sessionId: "auto", selectedAt: 0 });
-    pendingNoticeRef.current = null;
-  }, [boardDeviceId, wifi?.boardDeviceId, wifi?.bootId]);
+    const identity = [boardDeviceId, wifi?.boardDeviceId, wifi?.bootId].join("/");
+    const connectionChanged = identity !== lastConnectionIdentity.current;
+    if (connectionChanged) {
+      lastConnectionIdentity.current = identity;
+      // Allow the new link to re-apply its reported card after the reset gate.
+      lastWifiSelection.current = "";
+      pendingNoticeRef.current = null;
+    }
+    const selectionKey = [wifi?.boardDeviceId, wifi?.bootId, wifi?.selectionSequence].join("/");
+    const row = wifi?.selectionSequence
+      ? selectableSessions.find(
+        (session) => session.id === wifi.selectionSession && session.agentId === wifi.selectionAgent,
+      )
+      : null;
+    const action = nextWifiSelectionAction({
+      connectionChanged,
+      hasRow: Boolean(row),
+      selectionKey,
+      lastSelectionKey: lastWifiSelection.current,
+    });
+    if (action === "apply") {
+      lastWifiSelection.current = selectionKey;
+      onSessionChange(row.id, row.agentId);
+      return;
+    }
+    if (action === "reset") {
+      setSelection({ agentId: "", sessionId: "auto", selectedAt: 0 });
+    }
+  }, [
+    boardDeviceId,
+    wifi?.boardDeviceId,
+    wifi?.bootId,
+    wifi?.selectionSequence,
+    wifi?.selectionSession,
+    wifi?.selectionAgent,
+    selectableSessions,
+    onSessionChange,
+    setSelection,
+  ]);
 
   useEffect(() => {
     if (!agentId) return undefined;
