@@ -670,16 +670,29 @@ fn validate_p4_session_transition_metadata(
     Ok(())
 }
 
+fn p4_session_effective_agent<'a>(
+    session: &'a P4SessionQueueInput,
+    default_agent: &'a str,
+) -> &'a str {
+    let agent = session.agent_id.trim();
+    if agent.is_empty() { default_agent.trim() } else { agent }
+}
+
 fn p4_session_target_is_unique(
     session_title: &str,
     session_cwd: &str,
+    agent_id: &str,
     sessions: &[P4SessionQueueInput],
 ) -> bool {
     if session_title.is_empty() {
         return false;
     }
+    // Window titles only collide inside the selected Agent's application, so
+    // uniqueness must follow the same Agent scope as the PC composer target.
+    let selected_agent = agent_id.trim();
     let title_matches = sessions
         .iter()
+        .filter(|session| p4_session_effective_agent(session, selected_agent) == selected_agent)
         .filter(|session| session.title.trim() == session_title)
         .collect::<Vec<_>>();
     if title_matches.len() <= 1 {
@@ -5240,11 +5253,7 @@ fn build_p4_device_sessions(
     let mut device_sessions = Vec::with_capacity(sessions.len());
     for session in sessions {
         let id = session.id.trim();
-        let item_agent = if session.agent_id.trim().is_empty() {
-            default_agent.trim()
-        } else {
-            session.agent_id.trim()
-        };
+        let item_agent = p4_session_effective_agent(session, default_agent);
         let title = session.title.trim();
         let cwd = session.cwd.trim();
         let content = session.content.trim();
@@ -5350,7 +5359,7 @@ fn set_p4_session_binding_blocking(
         active_session_ids.push(session_id.to_string());
     }
     let session_title_unique = input.session_title_unique
-        && p4_session_target_is_unique(session_title, session_cwd, &input.sessions);
+        && p4_session_target_is_unique(session_title, session_cwd, &agent_id, &input.sessions);
     let device_sessions = build_p4_device_sessions(&input.sessions, &agent_id)?;
 
     // Validate authoritative native follow ownership BEFORE any UI navigation
@@ -16153,9 +16162,10 @@ mod tests {
         assert!(p4_session_target_is_unique(
             "修复语音",
             r"D:\code\one",
+            "codex",
             &sessions
         ));
-        assert!(!p4_session_target_is_unique("修复语音", "", &sessions));
+        assert!(!p4_session_target_is_unique("修复语音", "", "codex", &sessions));
     }
 
     #[test]
@@ -16186,6 +16196,87 @@ mod tests {
         assert!(!p4_session_target_is_unique(
             "修复语音",
             r"D:\code\one",
+            "codex",
+            &sessions
+        ));
+    }
+
+    #[test]
+    fn duplicate_titles_across_agents_do_not_block_voice_targeting() {
+        let sessions = vec![
+            P4SessionQueueInput {
+                id: "codex".to_string(),
+                agent_id: "codex".to_string(),
+                title: "修复语音".to_string(),
+                cwd: r"D:\code\shared".to_string(),
+                content: String::new(),
+                state: "working".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+            P4SessionQueueInput {
+                id: "claude".to_string(),
+                agent_id: "claude-code".to_string(),
+                title: "修复语音".to_string(),
+                cwd: r"D:\code\shared".to_string(),
+                content: String::new(),
+                state: "working".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+        ];
+
+        assert!(p4_session_target_is_unique(
+            "修复语音",
+            r"D:\code\shared",
+            "codex",
+            &sessions
+        ));
+        assert!(p4_session_target_is_unique(
+            "修复语音",
+            r"D:\code\shared",
+            "claude-code",
+            &sessions
+        ));
+    }
+
+    #[test]
+    fn empty_item_agent_falls_back_to_the_selected_agent() {
+        let sessions = vec![
+            P4SessionQueueInput {
+                id: "one".to_string(),
+                agent_id: "codex".to_string(),
+                title: "修复语音".to_string(),
+                cwd: r"D:\code\one".to_string(),
+                content: String::new(),
+                state: "working".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+            P4SessionQueueInput {
+                id: "legacy".to_string(),
+                agent_id: String::new(),
+                title: "修复语音".to_string(),
+                cwd: r"D:\code\one".to_string(),
+                content: String::new(),
+                state: "idle".to_string(),
+                transition_revision: 0,
+                terminal_remaining_ms: 0,
+            },
+        ];
+
+        // The legacy row belongs to the selected Agent, so Codex now has two
+        // identical targets; other Agents still see only the fallback row.
+        assert!(!p4_session_target_is_unique(
+            "修复语音",
+            r"D:\code\one",
+            "codex",
+            &sessions
+        ));
+        assert!(p4_session_target_is_unique(
+            "修复语音",
+            r"D:\code\one",
+            "claude-code",
             &sessions
         ));
     }
