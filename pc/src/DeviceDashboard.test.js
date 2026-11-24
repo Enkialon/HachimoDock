@@ -157,11 +157,6 @@ test("follow changes keep the prior Agent sessions and never reset the merged qu
   const source = readSource("DeviceDashboard.jsx");
   const sessionFeed = readSource("dashboard/useAgentSessionFeed.js");
   const rust = readRepoFile("src-tauri", "src", "lib.rs");
-  const match = rust.match(
-    /async fn dispatch_remote_cli_binding[\s\S]*?\/\/ ── Desktop device ID ──/,
-  );
-  assert.ok(match, "expected dispatch_remote_cli_binding block");
-  const dispatch = match[0];
 
   // The focused Agent's own feed still resets when its identity changes.
   assert.match(sessionFeed, /agentId:\s*""/);
@@ -172,11 +167,11 @@ test("follow changes keep the prior Agent sessions and never reset the merged qu
   assert.match(sessionFeed, /type:\s*"replace_snapshot",[\s\S]*agentId,/);
   assert.match(source, /busSessions:\s*selectedAgentBusSessions/);
   assert.match(source, /busRoutingSessions:\s*selectedAgentRoutingSessions/);
-  // The binding reset stays in use, but the merged queue is not cleared for
-  // ordinary source switches; only the cardless Antigravity channel is.
-  assert.match(dispatch, /reset_p4_session_binding_after_send/);
-  assert.match(dispatch, /if target_source == "antigravity"/);
-  assert.match(dispatch, /sessions_reset,/);
+  // The merged queue survives ordinary source switches; only the cardless
+  // Antigravity channel gets an empty snapshot.
+  assert.match(rust, /let device_sessions = build_p4_device_sessions\(&input\.sessions/);
+  assert.match(rust, /if result\.agent_id == "antigravity"/);
+  assert.doesNotMatch(rust, /dispatch_remote_cli_binding/);
 });
 
 // ---- PORTED: voice button configuration now in BoardButtonPanel ----
@@ -836,25 +831,6 @@ test("voice action injection avoids stale legacy bridge runtimes", () => {
   assert.match(rust, /error\.is_connect\(\) && attempt < 8/);
   assert.match(rust, /"requestId": request_id\.clone\(\)/);
   assert.doesNotMatch(rust, /let ports = \[DEFAULT_BRIDGE_PORT,\s*LEGACY_BRIDGE_PORT\];/);
-});
-
-test("channel switching is exact-board USB-only with no Bridge MQTT fallback", () => {
-  const rust = readRepoFile("src-tauri", "src", "lib.rs");
-  const match = rust.match(
-    /async fn dispatch_remote_cli_binding[\s\S]*?\/\/ ── Desktop device ID ──/,
-  );
-  assert.ok(match, "expected dispatch_remote_cli_binding block");
-  const dispatch = match[0];
-
-  assert.match(dispatch, /if !usb_status\.connected/);
-  assert.match(dispatch, /requested_board_device_id != board_device_id/);
-  assert.match(dispatch, /follow_connection_generation\(/);
-  assert.match(dispatch, /send_follow_change_for_connection\(/);
-  assert.match(dispatch, /send_session_current_for_connection\(/);
-  assert.doesNotMatch(dispatch, /send_to_board\(/);
-  assert.match(dispatch, /"control\/remote-cli-binding"/);
-  assert.doesNotMatch(dispatch, /publish-remote-binding/);
-  assert.doesNotMatch(dispatch, /mqtt_sent/);
 });
 
 // ---- PORTED: JS-side in orchestrator; panel-side in BoardButtonPanel; Rust stays ----
