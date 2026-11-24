@@ -78,6 +78,10 @@ test("current-Agent P4 session visibility is always on and follows adjacent snap
   assert.doesNotMatch(source, /saveSessionDisplayCount/);
   assert.doesNotMatch(source, /reconcileDeviceSessionQueue\(/);
   assert.match(sessionService, /reconcileDeviceSessionQueue\(/);
+  // Background Agent snapshots use the same internal-session filter as the
+  // live feed, and auto routing never falls back to a dismissed card.
+  assert.match(multiAgentFeed, /buildP4RoutingSessions\(otherByAgent\[agentId\] \|\| \[\]\)/);
+  assert.match(sessionSync, /filterDismissedP4Sessions\(sessions, dismissedSessions\)\.find\(autoEligible\)/);
   assert.doesNotMatch(source, /p4SessionDisplayLimit/);
   assert.doesNotMatch(source, /selectedAgentId === "codex"\s*\?\s*\(sessionDisplayEnabled/);
   assert.match(sessionSync, /displayEnabled \? visibleSessions : \[\]/);

@@ -15,7 +15,10 @@ import {
   sortRoutingSessions,
   toEnabledAgentIds,
 } from "../lib/agent-focus.js";
-import { filterDismissedP4Sessions } from "../lib/p4-session-service.js";
+import {
+  buildP4RoutingSessions,
+  filterDismissedP4Sessions,
+} from "../lib/p4-session-service.js";
 import { isTerminalDeviceSession } from "../lib/session-display.js";
 import {
   P4_SESSION_SNAPSHOT_POLL_MS,
@@ -118,12 +121,14 @@ export function useMultiAgentSessionFeed({
     if (liveAgentId) {
       const focusRows = focusFeed.loaded
         ? focusFeed.routingSessions
-        : (otherByAgent[liveAgentId] || []);
+        : buildP4RoutingSessions(otherByAgent[liveAgentId] || []);
       rows.push({ agentId: liveAgentId, sessions: focusRows });
     }
     for (const agentId of agentIds) {
       if (!agentId || agentId === liveAgentId) continue;
-      rows.push({ agentId, sessions: otherByAgent[agentId] || [] });
+      // Background snapshots need the same internal-session filtering as the
+      // live feed; otherwise Codex review threads become device cards.
+      rows.push({ agentId, sessions: buildP4RoutingSessions(otherByAgent[agentId] || []) });
     }
     return rows;
   }, [agentIds, liveAgentId, focusFeed.loaded, focusFeed.routingSessions, otherByAgent]);

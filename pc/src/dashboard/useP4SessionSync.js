@@ -19,6 +19,7 @@ import {
 import {
   buildP4DeviceSessionTransportPayload,
   enqueueP4SessionBinding,
+  filterDismissedP4Sessions,
   p4SessionDisplayTitle,
   p4SessionActivitySignature,
 } from "../lib/p4-session-service.js";
@@ -169,18 +170,10 @@ export function useP4SessionSync({
   const sessionId = selection.sessionId;
   const selectionAgentId = normalizeText(selection.agentId);
 
-  const visibleSessions = useMemo(() => (
-    (Array.isArray(sessions) ? sessions : []).filter((session) => {
-      const identity = deviceSessionIdentity(session);
-      if (!identity) return true;
-      // Legacy dismissals stored only the raw id; keep them effective.
-      const rawId = normalizeText(session?.id);
-      const dismissed = dismissedSessions && Object.hasOwn(dismissedSessions, identity)
-        ? dismissedSessions[identity]
-        : dismissedSessions?.[rawId];
-      return dismissed !== p4SessionActivitySignature(session);
-    })
-  ), [dismissedSessions, sessions]);
+  const visibleSessions = useMemo(
+    () => filterDismissedP4Sessions(sessions, dismissedSessions),
+    [dismissedSessions, sessions],
+  );
   const selectableSessions = useMemo(
     () => displayEnabled ? visibleSessions : [],
     [displayEnabled, visibleSessions],
@@ -195,7 +188,7 @@ export function useP4SessionSync({
     .find(Boolean) || selectableSessions.find(autoEligible) || null;
   const autoRoutingSession = autoVisibleSession
     || (routingSessions || []).find(autoEligible)
-    || (sessions || []).find(autoEligible)
+    || filterDismissedP4Sessions(sessions, dismissedSessions).find(autoEligible)
     || null;
   const matchesSelection = useCallback((session) => {
     if (normalizeText(session?.id) !== normalizeText(sessionId)) return false;
