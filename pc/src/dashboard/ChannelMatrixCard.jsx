@@ -1,6 +1,6 @@
 /**
  * [Input] useDeviceContext for appearances/agentOptions/currentDisplay/enabledAgents/verified USB status/cancellable appearanceSync/refreshAppearances/applyDesktopPet/enableQueuedAgent/removeQueuedAgent/cancelAppearanceSync; useToast for notices.
- * [Output] Agent matrix with enable/remove queue controls, authenticated USB/Wi-Fi appearance sync, cancel controls, and Devin cloud configuration.
+ * [Output] Agent matrix with start/stop switches, authenticated USB/Wi-Fi appearance sync, cancel controls, and Devin cloud configuration.
  * [Pos] component node in pc/src/dashboard
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md`.
  */
@@ -145,12 +145,12 @@ export default function ChannelMatrixCard({ children, subtitle, actions }) {
       const result = await enableQueuedAgent(agentId);
       push({
         tone: "success",
-        title: result?.notice || `已将 ${channelLabelForId(agentOptions, agentId)} 加入会话队列`,
+        title: result?.notice || `已启动 ${channelLabelForId(agentOptions, agentId)}`,
       });
     } catch (error) {
       push({
         tone: "error",
-        title: "加入会话队列失败",
+        title: "启动 Agent 失败",
         message: error?.message || String(error),
       });
     }
@@ -163,7 +163,7 @@ export default function ChannelMatrixCard({ children, subtitle, actions }) {
     } catch (error) {
       push({
         tone: "warning",
-        title: "移出队列失败",
+        title: "关闭 Agent 失败",
         message: error?.message || String(error),
       });
     }
@@ -284,37 +284,28 @@ export default function ChannelMatrixCard({ children, subtitle, actions }) {
                 )}
 
                 <div className="channel-row__follow">
-                  {isEnabled ? (
-                    <span className="channel-row__follow-current">已加入</span>
-                  ) : !isDetected ? (
-                    <span
-                      className="channel-row__unavailable"
-                      title="安装对应客户端或 CLI 后重新扫描"
-                    >
-                      不可用
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={isEnabled}
+                    aria-label={isEnabled ? `关闭 ${agent.label}` : `启动 ${agent.label}`}
+                    className={`channel-row__toggle${isEnabled ? " is-on" : ""}`}
+                    onClick={() => (isEnabled ? handleRemove(agent.id) : handleEnable(agent.id))}
+                    disabled={(!isDetected && !isEnabled) || syncing || (isEnabled && queuedAgentCount <= 1)}
+                    title={
+                      !isDetected && !isEnabled
+                        ? "安装对应客户端或 CLI 后重新扫描"
+                        : isEnabled
+                          ? queuedAgentCount <= 1
+                            ? "至少保留一个 Agent，无法关闭"
+                            : "关闭 Agent"
+                          : "启动 Agent"
+                    }
+                  >
+                    <span className="channel-row__toggle-track" aria-hidden="true">
+                      <span className="channel-row__toggle-thumb" />
                     </span>
-                  ) : (
-                    <button
-                      type="button"
-                      className="btn-primary btn-sm channel-row__follow-button"
-                      onClick={() => handleEnable(agent.id)}
-                      disabled={syncing}
-                      title="把这个 Agent 的会话加入合并队列"
-                    >
-                      加入队列
-                    </button>
-                  )}
-                  {isEnabled && queuedAgentCount > 1 && (
-                    <button
-                      type="button"
-                      className="btn-ghost btn-sm"
-                      onClick={() => handleRemove(agent.id)}
-                      disabled={syncing}
-                      title="从合并队列中移出这个 Agent"
-                    >
-                      移出队列
-                    </button>
-                  )}
+                  </button>
                 </div>
               </article>
             );

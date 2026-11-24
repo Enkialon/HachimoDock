@@ -1,6 +1,6 @@
 /**
  * [Input] Read ChannelMatrixCard.jsx source.
- * [Output] Static Node coverage: default export, visible unavailable-client/CLI Agent rows, removed redundant session controls, followed row state, per-agent appearance saving, picker-open appearance refresh, USB-only followed-agent gating/sync, inline USB sync progress, AgentAppearancePickerModal subcomponent and compact picker modal CSS.
+ * [Output] Static Node coverage: default export, visible unavailable-client/CLI Agent rows, removed redundant session controls, start/stop switch state, per-agent appearance saving, picker-open appearance refresh, USB-only followed-agent gating/sync, inline USB sync progress, AgentAppearancePickerModal subcomponent and compact picker modal CSS.
  * [Pos] test node in pc/src/dashboard
  * [Sync] If this file changes, update `pc/src/dashboard/.folder.md`.
  */
@@ -33,11 +33,10 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
   assert.match(source, /未检测到客户端或 CLI/);
   assert.match(source, /安装对应客户端或 CLI 后重新扫描/);
   assert.doesNotMatch(source, /channel-row__change-inline/);
-  assert.match(source, /!isDetected \? \(/);
-  assert.match(source, /className="channel-row__unavailable"/);
-  assert.match(source, /不可用/);
+  assert.match(source, /!isDetected && !isEnabled/);
+  assert.match(source, /disabled=\{\(!isDetected && !isEnabled\) \|\| syncing/);
+  assert.doesNotMatch(source, /channel-row__unavailable/);
   assert.match(source, /const canSyncAppearance = Boolean\(usb\?\.connected \|\| wifi\)/);
-  assert.match(source, /disabled=\{syncing\}/);
   assert.match(source, /enableQueuedAgent\(agentId\)/);
   assert.match(source, /removeQueuedAgent\(agentId\)/);
   assert.match(source, /设备连接 USB 或 Wi-Fi 后可更换形象/);
@@ -46,8 +45,8 @@ test("ChannelMatrixCard keeps supported agents visible and marks unavailable cli
   const unavailableRule = extractCssRule(styles, ".channel-row.is-undetected");
   assert.match(unavailableRule, /border-style:\s*dashed/);
   assert.doesNotMatch(unavailableRule, /opacity:/);
-  const unavailableActionRule = extractCssRule(styles, ".channel-row__unavailable");
-  assert.match(unavailableActionRule, /background:\s*var\(--surface-muted\)/);
+  const disabledToggleRule = extractCssRule(styles, ".channel-row__toggle:disabled");
+  assert.match(disabledToggleRule, /opacity:\s*0\.55/);
 });
 
 test("ChannelMatrixCard destructures multiple fields from useDeviceContext", () => {
@@ -79,19 +78,26 @@ test("ChannelMatrixCard applies is-active class to the active channel row", () =
   assert.match(source, /isFollowed\s*\?\s*["'].*is-active.*["']/);
 });
 
-test("Agents can join the queue independently of the selected Session", () => {
-  assert.match(source, /已加入/);
-  assert.match(source, /加入队列/);
-  assert.match(source, /channel-row__follow-current/);
-  assert.match(source, /channel-row__follow-button/);
+test("Agents start and stop from one switch independently of the selected Session", () => {
+  assert.match(source, /role="switch"/);
+  assert.match(source, /aria-checked=\{isEnabled\}/);
+  assert.match(source, /channel-row__toggle/);
+  assert.match(source, /aria-label=\{isEnabled/);
+  assert.match(source, /"启动 Agent"/);
+  assert.match(source, /"关闭 Agent"/);
+  assert.doesNotMatch(source, /channel-row__toggle-label/);
   assert.match(source, /handleEnable\(agent\.id\)/);
+  assert.doesNotMatch(source, /加入队列/);
+  const toggleRule = extractCssRule(styles, ".channel-row__toggle");
+  assert.match(toggleRule, /border-radius:\s*var\(--radius-pill\)/);
+  assert.match(extractCssRule(styles, ".channel-row__toggle.is-on"), /background:\s*var\(--accent-soft\)/);
 });
 
-test("Enabled agents can be removed from the queue while the last one is kept", () => {
+test("Switching an Agent off keeps the last one running", () => {
   assert.match(source, /removeQueuedAgent/);
-  assert.match(source, /移出队列/);
-  assert.match(source, /queuedAgentCount > 1/);
+  assert.match(source, /queuedAgentCount <= 1/);
   assert.match(source, /handleRemove\(agent\.id\)/);
+  assert.doesNotMatch(source, /移出队列/);
   assert.doesNotMatch(source, /requestFollow|pendingFollow|FollowAgentConfirmModal/);
 });
 

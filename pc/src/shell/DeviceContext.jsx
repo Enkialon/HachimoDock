@@ -671,11 +671,11 @@ export function DeviceContextProvider({ binding: bindingProp, onBindingChange, c
   const rememberAgent = useCallback(id => changeSources("select", id), [changeSources]);
   const enableQueuedAgent = useCallback(async id => {
     await changeSources("enable", id);
-    return { notice: `已将 ${channelLabelForId(agentOptions, id)} 加入会话队列` };
+    return { notice: `已启动 ${channelLabelForId(agentOptions, id)}` };
   }, [agentOptions, changeSources]);
   const removeQueuedAgent = useCallback(async id => {
     await changeSources("remove", id);
-    return { notice: `已将 ${channelLabelForId(agentOptions, id)} 移出会话队列` };
+    return { notice: `已关闭 ${channelLabelForId(agentOptions, id)}` };
   }, [agentOptions, changeSources]);
 
   const cancelAppearanceSync = useCallback(async () => {
