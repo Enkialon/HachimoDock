@@ -526,8 +526,10 @@ test("device dashboard remains the management surface with a multi-Agent focus q
   assert.doesNotMatch(channelMatrix, /className="channel-row__thumb-wrap"/);
   assert.match(channelMatrix, /agentOptions\.filter\(\(agent\) => agent\?\.id\)/);
   assert.match(channelMatrix, /BUILTIN_TERRIER_APPEARANCE_ID/);
-  assert.match(channelMatrix, /saveAgentAppearance\(agentId, appearance\.id\)/);
-  assert.match(channelMatrix, /applyDesktopPet\(agentId, appearance/);
+  assert.match(channelMatrix, /applyDesktopPet\(appearance, \{/);
+  assert.match(channelMatrix, /const activeAgentId = currentDisplay\.agentId/);
+  assert.doesNotMatch(channelMatrix, /saveAgentAppearance/);
+  assert.doesNotMatch(channelMatrix, /applyDesktopPet\(agentId, appearance/);
   assert.match(channelMatrix, /formosa-picker__grid/);
   assert.match(channelMatrix, /enableQueuedAgent\(agentId\)/);
   assert.match(channelMatrix, /removeQueuedAgent\(agentId\)/);

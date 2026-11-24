@@ -30,18 +30,21 @@ function readRepoFile(...parts) {
 
 // ---- PORTED: channel switch persistence now lives in ChannelMatrixCard ----
 
-test("agent appearance matrix keeps unavailable channels visible and syncs only the followed agent", () => {
+test("agent appearance matrix keeps unavailable channels visible and syncs the global appearance", () => {
   const source = readSource("dashboard/ChannelMatrixCard.jsx");
 
   assert.match(source, /visibleAgents/);
   assert.match(source, /is-undetected/);
   assert.match(source, /未检测到客户端或 CLI/);
   assert.match(source, /BUILTIN_TERRIER_APPEARANCE_ID/);
-  assert.match(source, /saveAgentAppearance\(agentId, appearance\.id\)/);
-  assert.match(source, /agentId === activeAgentId/);
+  assert.match(source, /applyDesktopPet\(appearance, \{/);
+  assert.match(source, /const activeAgentId = currentDisplay\.agentId/);
+  assert.match(source, /activeAgentId === agent\.id/);
+  assert.match(source, /enabledAgents\?\.has\?\.\(agent\.id\) === true/);
   assert.match(source, /enableQueuedAgent\(agentId\)/);
   assert.match(source, /removeQueuedAgent\(agentId\)/);
-  assert.match(source, /applyDesktopPet\(agentId, appearance/);
+  assert.doesNotMatch(source, /saveAgentAppearance/);
+  assert.doesNotMatch(source, /applyDesktopPet\(agentId, appearance/);
   assert.doesNotMatch(source, /shouldConfirmChannelSwitch\(/);
   assert.doesNotMatch(source, /pendingActivate/);
 });
@@ -55,14 +58,16 @@ test("Agent and appearance card summarizes detected Agents and device bubble beh
   assert.match(source, /aria-label="重新扫描本机 CLI Agent"/);
   assert.match(source, /loading=\{agentScan\?\.pending === true\}/);
   assert.match(source, /重新扫描/);
-  assert.match(source, /USB 下设备端合并显示已启用 Agent 的会话/);
-  assert.match(source, /Wi-Fi 下设备仅显示当前会话来源的会话，多 Agent 合并需 USB/);
+  assert.match(source, /设备端合并显示已启用 Agent 的会话/);
+  assert.match(source, /当前 Wi-Fi 固件仅显示当前会话来源的会话/);
+  assert.match(source, /对话结束后设备气泡保留显示 60 秒/);
 });
 
 test("current-Agent P4 session visibility is always on and follows adjacent snapshots", () => {
   const source = readSource("DeviceDashboard.jsx");
   const matrix = readSource("dashboard/ChannelMatrixCard.jsx");
   const sessionFeed = readSource("dashboard/useAgentSessionFeed.js");
+  const multiAgentFeed = readSource("dashboard/useMultiAgentSessionFeed.js");
   const sessionSync = readSource("dashboard/useP4SessionSync.js");
   const sessionDisplay = readSource("lib/session-display.js");
   const sessionService = readSource("lib/p4-session-service.js");
@@ -102,7 +107,10 @@ test("current-Agent P4 session visibility is always on and follows adjacent snap
   );
   assert.match(source, /useMultiAgentSessionFeed\(/);
   assert.match(source, /useP4SessionSync\(/);
-  assert.match(sessionFeed, /buildP4ConversationQueue\(/);
+  // The focused feed stores routing rows; the multi-Agent boundary builds the
+  // bounded device queue from every enabled Agent.
+  assert.match(multiAgentFeed, /buildMultiAgentDeviceQueue\(/);
+  assert.doesNotMatch(sessionFeed, /buildP4ConversationQueue\(/);
   assert.match(source, /useMultiAgentSessionFeed\(\{[\s\S]*displayEnabled: true,/);
   assert.match(source, /useP4SessionSync\(\{[\s\S]*displayEnabled: true,/);
   assert.match(source, /<ChannelMatrixCard\b/);
@@ -120,6 +128,7 @@ test("current-Agent P4 session visibility is always on and follows adjacent snap
 
 test("P4 sessions consume ordered lifecycle events without accelerating metadata scans", () => {
   const source = readSource("dashboard/useAgentSessionFeed.js");
+  const multiAgentFeed = readSource("dashboard/useMultiAgentSessionFeed.js");
   const sessionSync = readSource("dashboard/useP4SessionSync.js");
 
   assert.match(source, /fetchAgentSessionEvents\(/);
@@ -128,7 +137,11 @@ test("P4 sessions consume ordered lifecycle events without accelerating metadata
   assert.match(source, /type: "apply_event"/);
   assert.match(source, /pendingEvents\.shift\(\)/);
   assert.match(source, /P4_SESSION_EVENT_DISPATCH_GAP_MS/);
-  assert.match(source, /type: "tick_terminal"/);
+  // Terminal deadline advancement lives in the multi-Agent queue now; the
+  // focused reducer only merges routing snapshots/events.
+  assert.match(multiAgentFeed, /setNowTick\(\(value\) => value \+ 1\)/);
+  assert.match(multiAgentFeed, /buildMultiAgentDeviceQueue\(/);
+  assert.doesNotMatch(source, /type: "tick_terminal"/);
   assert.match(source, /mergeP4SessionSnapshot/);
   assert.match(source, /mergeP4SessionEvent/);
   assert.match(sessionSync, /bindingQueueRef\.current[\s\S]*invoke\("set_p4_session_binding"/);
@@ -545,6 +558,7 @@ test("P4 reconnect automatically rearms device microphone relay without PC captu
 test("Button-selected conversations are temporary and bound to status and input routing", () => {
   const source = readSource("DeviceDashboard.jsx");
   const sessionFeed = readSource("dashboard/useAgentSessionFeed.js");
+  const multiAgentFeed = readSource("dashboard/useMultiAgentSessionFeed.js");
   const sessionSync = readSource("dashboard/useP4SessionSync.js");
   const sessionService = readSource("lib/p4-session-service.js");
   const panelSource = readSource("dashboard/BoardButtonPanel.jsx");
@@ -556,7 +570,8 @@ test("Button-selected conversations are temporary and bound to status and input 
   assert.match(sessionSync, /selectedAt/);
   assert.match(source, /sessionsLoaded: sessionFeed\.loaded/);
   assert.match(sessionService, /buildP4RoutingSessions/);
-  assert.match(sessionFeed, /buildP4ConversationQueue/);
+  assert.match(multiAgentFeed, /buildMultiAgentDeviceQueue\(/);
+  assert.match(sessionService, /buildP4ConversationQueue\(/);
   assert.match(sessionSync, /filterActiveDeviceSessions/);
   assert.doesNotMatch(sessionSync, /P4_SESSION_DONE_HOLD_MS/);
   assert.doesNotMatch(sessionSync, /P4_SESSION_STALE_MS/);
@@ -564,11 +579,12 @@ test("Button-selected conversations are temporary and bound to status and input 
   assert.match(sessionSync, /action === "session_previous"/);
   assert.match(sessionSync, /set_p4_session_binding/);
   assert.match(source, /boardDeviceId: p4TargetBoardDeviceId/);
-  assert.match(sessionSync, /const confirmedEmptyQueue = sessionsLoaded/);
+  assert.match(sessionSync, /const confirmedSnapshot = sessionsLoaded/);
   assert.match(sessionSync, /const autoEligible = \(session\) => normalizeText\(session\?\.agentId\) !== "deepseek-harness"/);
-  assert.match(sessionSync, /const autoRoutingSession = selectableSessions\.find\(autoEligible\)/);
+  assert.match(sessionSync, /const autoVisibleSession = \(routingSessions \|\| \[\]\)\.filter\(autoEligible\)/);
+  assert.match(sessionSync, /const autoRoutingSession = autoVisibleSession/);
   assert.match(sessionSync, /const autoFollow = sessionId === "auto" && Boolean\(selectedRoutingSession\)/);
-  assert.match(sessionSync, /!selectedRoutingSession[\s\S]*!confirmedEmptyQueue/);
+  assert.match(sessionSync, /!selectedRoutingSession[\s\S]*!confirmedSnapshot/);
   assert.match(sessionFeed, /case "reset"/);
   assert.match(sessionSync, /normalizeText\(selectedRoutingSession\?\.id\)/);
   assert.match(sessionSync, /sessionId: requestedSessionId/);
